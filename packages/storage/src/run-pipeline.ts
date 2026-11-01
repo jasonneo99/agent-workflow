@@ -118,7 +118,10 @@ export async function requirePreparedRunPipeline(input: {projectId:string;owner:
   if(input.authority.kind!=='direct-human'||typeof input.authority.instruction!=='string'||!input.authority.instruction.trim())throw Error('Direct human rollout authority is required');
   return withClient(async c=>{await c.query('begin');try{
     if(!(await c.query('select 1 from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3 and expires_at>clock_timestamp() for update',[input.projectId,input.owner,input.fencingToken])).rowCount)throw Error('Rollout intent is not current');
-    await c.query(runPipelineSchemaSql);
+    const guards=await c.query(`select count(*)::int count from pg_trigger where not tgisinternal and tgenabled in('O','A')
+      and ((tgrelid='workflow_runs'::regclass and tgname='agentflow_prepared_run_insert' and tgfoid='agentflow_prepared_run_fence()'::regprocedure)
+        or (tgrelid='workflow_tasks'::regclass and tgname='agentflow_prepared_worker_claim' and tgfoid='agentflow_prepared_worker_fence()'::regprocedure))`);
+    if(guards.rows[0]?.count!==2)throw Error('Migrate the compatible pipeline guards before enabling required execution');
     const authority={...input.authority,digest:acceptanceDigest(input.authority)};
     await c.query(`insert into run_pipeline_settings(id,required,version,authority) values(1,true,1,$1)
       on conflict(id) do update set required=true,version=1,authority=excluded.authority,updated_at=clock_timestamp()`,[JSON.stringify(authority)]);

@@ -19,6 +19,7 @@ export const environmentProfileSchema = z.object({
   source_paths: z.array(relativePath).min(1).max(128),
   source_extensions: z.array(z.string().regex(/^\.[a-zA-Z0-9]+$/u)).max(40).optional(),
   source_exclude_paths: z.array(relativePath).max(128).optional(),
+  fixture_paths: z.array(relativePath).max(128).optional(),
   dependency_paths: z.array(relativePath).max(128).default([]),
   setup: z.array(argv).max(32).default([]),
   build_network: z.enum(["none", "default"]).default("none"),

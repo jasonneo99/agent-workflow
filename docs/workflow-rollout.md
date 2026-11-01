@@ -34,6 +34,11 @@ portable repository. Source snapshots exclude private/generated inputs;
 can omit exact files or subtrees such as vendored symlink consumers. Neither
 exclusions nor contract patterns grant action authority.
 
+Directory snapshots respect Git ignore rules. Exact `fixture_paths` can include
+reviewed nested example project context needed by tests, while root runtime
+context, credentials, generated data and symlinks remain excluded. Preparation
+never force-adds ignored files to its candidate baseline.
+
 Workspaces snapshot the current declared source without consuming the canonical
 index. They retain immutable baseline and source hashes. Project context is
 copied only into ignored runtime storage. Governed writes acquire exact source

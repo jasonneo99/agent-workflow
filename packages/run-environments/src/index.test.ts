@@ -70,6 +70,18 @@ test("preview is deterministic, source-bound and has no Docker or filesystem sid
   } finally { await f.cleanup(); }
 });
 
+test('only exact nested context fixtures can enter tests; root context and secret files remain private',async()=>{
+ const f=await fixture();try{
+  await fs.mkdir(path.join(f.cwd,'fixtures/example/.agent-workflow'),{recursive:true});await fs.mkdir(path.join(f.cwd,'.agent-workflow'));
+  await fs.writeFile(path.join(f.cwd,'fixtures/example/.agent-workflow/project.yaml'),'project: {name: synthetic}\n');
+  await fs.writeFile(path.join(f.cwd,'fixtures/example/.agent-workflow/.env'),'PRIVATE=example\n');
+  await fs.writeFile(path.join(f.cwd,'.agent-workflow/project.yaml'),'project: {name: owning-project}\n');
+  const profile=f.project.execution.environments!.profiles.test!;profile.fixture_paths=['fixtures/example/.agent-workflow/project.yaml'];
+  const plan=await planRunEnvironment({...f,context:{runId:'fixture'}});assert.ok(plan.sourceFiles.some(file=>file.path===profile.fixture_paths![0]));
+  for(const denied of ['.agent-workflow/project.yaml','fixtures/example/.agent-workflow/.env']){profile.fixture_paths=[denied];await assert.rejects(planRunEnvironment({...f,context:{runId:'fixture'}}),/Private or generated/);}
+ }finally{await f.cleanup();}
+});
+
 test("profiles are selected per run, workflow, stage and command without changing command authority", async () => {
   const f = await fixture(); try {
     const env = f.project.execution.environments!;

@@ -98,11 +98,18 @@ function privatePath(relative: string): boolean {
 
 async function snapshot(root: string, profile: EnvironmentProfile, project: ProjectConfig): Promise<Snapshot> {
   const files = new Map<string, Snapshot[number]>();
+  const visibility=await runProcess(['git','ls-files','--cached','--others','--exclude-standard','-z'],{cwd:root,timeoutMs:10000,maxOutputChars:2_000_000});
+  if(visibility.timedOut||visibility.outputTruncated)throw Error('Git source visibility could not be bounded');
+  const visible=visibility.exitCode===0?new Set(visibility.stdout.split('\0').filter(Boolean)):null;
+  const directories=new Set<string>();for(const file of visible??[])for(let parent=path.posix.dirname(file);parent!=='.';parent=path.posix.dirname(parent))directories.add(parent);
   let bytes = 0, inspected = 0;
   const walk = async (relative: string, explicit: boolean): Promise<void> => {
     if (++inspected > profile.limits.max_files * 4) throw Error("Environment source inspection exceeds its bound.");
+    if(!explicit&&visible&&!visible.has(relative)&&!directories.has(relative))return;
     if(profile.source_exclude_paths?.some(excluded=>relative===excluded||relative.startsWith(excluded+'/'))){if(explicit)throw Error('An explicit environment input is excluded: '+relative);return;}
-    if (privatePath(relative)) {
+    const declaredContextFixture=profile.fixture_paths?.includes(relative)&&relative.includes('/.agent-workflow/')
+      &&!relative.startsWith('.agent-workflow/')&&!privatePath(relative.replace('/.agent-workflow/','/fixture-context/'));
+    if (privatePath(relative)&&!declaredContextFixture) {
       if (explicit) throw Error(`Private or generated source cannot enter an environment: ${relative}`);
       return;
     }
@@ -132,7 +139,7 @@ async function snapshot(root: string, profile: EnvironmentProfile, project: Proj
     bytes += body.length;
     files.set(relative, { path: relative, body, sha256: hash(body), bytes: body.length, mode: stat.mode & 0o111 ? 0o755 : 0o644 });
   };
-  for (const relative of [...new Set([...profile.source_paths, ...profile.dependency_paths])]) await walk(relative, true);
+  for (const relative of [...new Set([...profile.source_paths, ...profile.dependency_paths,...profile.fixture_paths??[]])]) await walk(relative, true);
   if (!files.size) throw Error("Environment source snapshot is empty.");
   return [...files.values()].sort((a, b) => a.path.localeCompare(b.path));
 }

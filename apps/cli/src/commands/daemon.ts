@@ -12965,7 +12965,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ${renderOpsMetric("Active projects", formatNumber(activeProjects), `${health.projects.length} registered`, health.projects.slice(0, 10).map((project) => project.runCount), "violet")}
         </div>
       </section>
-      ${renderDashboardQuestionPanel(health.projects, process.env.AGENTFLOW_DASHBOARD_PROJECT ?? ctx.rootDir)}
       <div class="ops-chart-grid">
         <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Workflow throughput</h2><span>Runs by final state · rolling 7 days</span></div><a href="/runs">View runs</a></div>${renderOpsThroughputChart(throughput)}</section>
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>

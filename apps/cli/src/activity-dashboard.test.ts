@@ -67,8 +67,9 @@ test("home human intervention renders as a compact keyboard-scrollable list", ()
   assert.match(stylesSource, /\.ops-approval-row \{[^}]+min-height: 40px; padding: 5px 2px/u);
 });
 
-test("home exposes a bounded governed question chat", () => {
-  assert.match(source, /renderDashboardQuestionPanel\(health\.projects, process\.env\.AGENTFLOW_DASHBOARD_PROJECT \?\? ctx\.rootDir\)/u);
+test("home omits the conversation while queue and run surfaces retain governed Partner chat", () => {
+  const home=source.slice(source.indexOf('function renderDashboardHtml('),source.indexOf('\n  function ',source.indexOf('function renderDashboardHtml(')+1));
+  assert.doesNotMatch(home,/renderDashboardQuestionPanel\(/u);
   assert.match(questionChatSource, /id="dashboard-question-form"/u);
   assert.match(questionChatSource, /id="dashboard-question-thread"[^>]+role="log"/u);
   assert.match(questionChatSource, /fetch\('\/api\/queue-partner-message'/u);

@@ -105,7 +105,11 @@ export async function prepareRunWorkspace(input:{canonicalRoot:string;runId:stri
     await fs.writeFile(ignore,previous+(previous&&!previous.endsWith('\n')?'\n':'')+lines.filter(line=>!previous.split('\n').includes(line)).map(line=>line+'\n').join(''));copied.push('.gitignore');
     for(const file of sourceFiles)if(sha(await fs.readFile(path.join(canonicalRoot,file.path)))!==file.sha256)throw Error('Canonical source moved during preparation '+file.path);
     await input.assertAuthority();
-    for(let index=0;index<copied.length;index+=64)await git(root,['add','--force','--',...copied.slice(index,index+64)]);
+    for(let index=0;index<copied.length;index+=64){
+      const batch=copied.slice(index,index+64),ignored=(await git(canonicalRoot,['ls-files','--others','--ignored','--exclude-standard','-z','--',...batch]));
+      const skipped=new Set(ignored.stdout.split('\0').filter(Boolean)),staged=batch.filter(file=>!skipped.has(file));
+      if(staged.length)await git(root,['add','--',...staged]);
+    }
     await git(root,['-c','user.name=Agent Workflow','-c','user.email=agent-workflow@localhost','commit','--allow-empty','-m','Prepare isolated current-source baseline']);
     const baselineCommit=(await git(root,['rev-parse','HEAD'])).stdout.trim();
     if((await git(root,['status','--porcelain=v1','--untracked-files=all'])).stdout)throw Error('Prepared workspace contains unowned changes');
