@@ -1,6 +1,6 @@
 {
   "name": "agent-workflow",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Run governed Agent Workflow agents and workflows from any local Codex project.",
   "author": {
     "name": "Agent Workflow Contributors"

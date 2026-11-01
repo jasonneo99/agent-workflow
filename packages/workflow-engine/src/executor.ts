@@ -14,7 +14,7 @@ import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
 import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
-import {prepareTaskExecution,literalScopeVerificationCommands,type PreparedTaskExecution} from './run-preparation.js';
+import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,type PreparedTaskExecution} from './run-preparation.js';
 import {integratePreparedSource} from './source-integration.js';
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation, oversizedReplacementPatchHint } from "../../local-tools/src/file-patcher.js";
@@ -236,7 +236,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const currentProject = task.executionPipeline?.required?await loadProjectConfig(projectResolution.localRootUri):await loadProjectConfig(projectResolution.localRootUri).catch(() => snapshotProject);
       const effectiveProject=applyCurrentAutoApprovalThreshold(snapshotProject,currentProject);
       const project = task.executionPipeline?.required&&!task.executionPipeline.sourceChanges
-        ? {...effectiveProject,actions:{...effectiveProject.actions,allowed_write_paths:[]}}
+        ? task.executionPipeline.isolation==='project-artifacts'?artifactExecutionPolicy(effectiveProject,task.executionPipeline,currentProject):{...effectiveProject,actions:{...effectiveProject.actions,allowed_write_paths:[]}}
         : repairVerifierPolicy(effectiveProject,stagePattern.type==='verifier');
       if(task.executionPipeline?.required){
         try{
@@ -290,7 +290,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         throw new Error("Invalid bounded stage continuation round.");
       }
       const actionResults: unknown[] = Array.isArray(continuation.actionResults) ? [...continuation.actionResults] : [];
-      const repairCommitSelected = project.execution.repair_commits?.enabled === true && (project.execution.repair_commits.stages.includes(task.stageId)||task.checkpointAfter===true);
+      const repairCommitSelected = (!task.executionPipeline?.required||task.executionPipeline.sourceChanges) && project.execution.repair_commits?.enabled === true && (project.execution.repair_commits.stages.includes(task.stageId)||task.checkpointAfter===true);
       let repairParent: string | null = null;
       if (repairCommitSelected) {
         const saved = actionResults.find(action => (action as { type?: string }).type === "repair_commit_baseline") as { parent?: string } | undefined;

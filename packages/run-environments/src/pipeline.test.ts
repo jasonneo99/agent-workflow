@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {loadWorkflows} from '../../agent-registry/src/loaders.js';
 import {projectConfigSchema,workflowSchema} from '../../agent-registry/src/schemas.js';
-import {pipelineContract,preparedWorkflow,sourceChangingWorkflow} from './pipeline.js';
+import {pipelineContract,preparedWorkflow,sourceChangingWorkflow,projectArtifactPaths} from './pipeline.js';
 import {verificationCommandMatches} from './evidence.js';
 
 const root=fileURLToPath(new URL('../../../',import.meta.url));
@@ -30,10 +30,32 @@ test('required normalization preserves source goals and ends every source phase 
 test('read-only workflows keep their contracts and installation requirement cannot be opted out by project config',async()=>{
  const workflows=await loadWorkflows(root),repair=workflows.find(w=>w.id==='repair-blocked-item')!;
  const project=projectConfigSchema.parse({project:{name:'Portable fixture'},execution:{pipeline:{required:false}}});
- for(const workflow of workflows.filter(w=>!sourceChangingWorkflow(w))){
+ for(const workflow of workflows.filter(w=>w.execution?.kind==='read-only')){
   assert.equal(preparedWorkflow(workflow,true,repair),workflow);
   const contract=pipelineContract(project,workflow,true,true);
   assert.equal(contract.required,true);assert.equal(contract.isolation,'read-only');assert.equal(contract.preparedOnly,true);
  }
  assert.equal(preparedWorkflow(repair,false,repair),repair);
+});
+test('context and roadmap maintenance retain their original stages and exact artifact-only contract',async()=>{
+ const workflows=await loadWorkflows(root),repair=workflows.find(w=>w.id==='repair-blocked-item')!;
+ const project=projectConfigSchema.parse({project:{name:'Portable fixture',roadmap_path:'docs/ROADMAP.md'}});
+ for(const id of ['maintain-context','roadmap-curation']){
+  const workflow=workflows.find(w=>w.id===id)!;
+  assert.equal(sourceChangingWorkflow(workflow),false);
+  assert.equal(preparedWorkflow(workflow,true,repair),workflow);
+  const contract=pipelineContract(project,workflow,true);
+  assert.equal(contract.isolation,'project-artifacts');assert.equal(contract.sourceChanges,false);
+  assert.deepEqual(contract.checkpointStageIds,[]);
+  assert.ok(contract.artifactPaths?.length);
+  if(id==='roadmap-curation'){
+   assert.deepEqual(contract.artifactPaths,['docs/ROADMAP.md']);
+   assert.equal(workflow.stages.at(-1)?.approval_required,true);
+  }
+ }
+ const roadmap=workflows.find(w=>w.id==='roadmap-curation')!;
+ for(const relative of ['../ROADMAP.md','/ROADMAP.md','.env/notes.md','src/code.ts','.git/config.md','node_modules/notes.md']){
+  assert.throws(()=>projectArtifactPaths({...project,project:{...project.project,roadmap_path:relative}},roadmap),/Invalid/);
+ }
+ assert.throws(()=>workflowSchema.parse({...roadmap,execution:{kind:'project-artifacts',artifact_paths:['src/code.ts']}}));
 });

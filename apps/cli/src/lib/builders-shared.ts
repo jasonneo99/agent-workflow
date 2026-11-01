@@ -1,5 +1,6 @@
 import type { Dirent } from "node:fs";
 import {resolveRunExecutionRoot} from '../../../../packages/storage/src/run-pipeline.js';
+import {artifactExecutionPolicy,assertPhysicalArtifactPath} from '../../../../packages/workflow-engine/src/run-preparation.js';
 import {acquireWorkIntent,releaseWorkIntent} from '../../../../packages/storage/src/postgres.js';
 import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
 import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
@@ -16,6 +17,7 @@ import { optimizeStaticWorkflowForLatency } from "../../../../packages/dynamic-w
 import { type ExecutorResult, type ExecutorSnapshot, assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot } from "../../../../packages/executor-adapters/src/index.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
 import { executeAllowedFileMutation, summarizeFileMutation } from "../../../../packages/local-tools/src/file-patcher.js";
+import {assertFilePathAllowed} from '../../../../packages/local-tools/src/file-writer.js';
 import { selectApprovedFileMutation } from "../../../../packages/local-tools/src/approved-file-mutation.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
@@ -484,6 +486,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     if (approval.actionType === "local_command") {
       const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
       const execution=await resolveRunExecutionRoot({runId:approval.runId,canonicalRoot:await resolveLocalProjectRootUri(approval.projectRootUri)});
+      if(execution.contract?.required&&execution.contract.isolation==='project-artifacts')throw Error('Project-artifact workflows do not authorize local commands');
       const localProjectRootUri = execution.root;
       const runBinding = await withClient(async c => (await c.query<ApprovedCommandRunBinding>(`select r.id::text as "runId",
         r.project_id::text as "projectId",p.root_uri as "projectRootUri",r.task,r.evaluation_metadata->'acceptanceContract' as contract,
@@ -560,6 +563,12 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     const approvedProjectRoot = stringFromRecord(approval.payload, "canonicalProjectRoot");
     const execution=await resolveRunExecutionRoot({runId:approval.runId,canonicalRoot:localProjectRootUri,requestedRoot:approvedProjectRoot??undefined});
     const canonicalProjectRoot = execution.root;
+    const mutationProject=execution.contract?.required&&!execution.contract.sourceChanges
+      ? artifactExecutionPolicy(project,execution.contract):project;
+    if(execution.contract?.isolation==='project-artifacts'){
+      assertFilePathAllowed(fileWrite.request.path,mutationProject);
+      await assertPhysicalArtifactPath(canonicalProjectRoot,fileWrite.request.path);
+    }
     const approvedProjectRootHash = stringFromRecord(approval.payload, "projectRootHash");
     if (approvedProjectRoot && approvedProjectRoot !== canonicalProjectRoot) {
       throw new Error(`Approved file mutation project root changed: expected ${approvedProjectRoot}, resolved ${canonicalProjectRoot}.`);
@@ -572,7 +581,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     try{result = await withProjectExecutionLock({projectRootUri:canonicalProjectRoot,resource:`file:${fileWrite.request.path.replace(/\\/gu,"/")}`},()=>executeAllowedFileMutation({
       ...fileWrite,
       cwd: canonicalProjectRoot,
-      project
+      project:mutationProject
     }));}finally{if(intent)await releaseWorkIntent(intent);}
     const summary = summarizeFileMutation(result, fileWrite.isPatch);
     const artifactUri = await recordRunAction({

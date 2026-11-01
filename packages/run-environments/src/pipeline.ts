@@ -5,10 +5,26 @@ export interface RunPipelineContract {
   version: 1;
   required: boolean;
   sourceChanges: boolean;
-  isolation: 'worktree' | 'read-only';
+  isolation: 'worktree' | 'read-only' | 'project-artifacts';
   preparedOnly: boolean;
   checkpointStageIds: string[];
   sourcePaths?: string[];
+  artifactPaths?: string[];
+}
+export const projectContextArtifactPaths = ['AGENTS.md','.agent-workflow/context.md','.agent-workflow/commands.md','.agent-workflow/decisions.md','.agent-workflow/memory.md'] as const;
+export function projectArtifactPaths(project: ProjectConfig, workflow: WorkflowDefinition): string[] {
+  if(workflow.execution?.kind!=='project-artifacts')return [];
+  if(!workflow.execution.artifact_paths?.length)throw Error('Project-artifact workflows need exact artifact paths');
+  return [...new Set(workflow.execution.artifact_paths.map(value=>{
+    const relative=value==='project.roadmap_path'?project.project.roadmap_path:value;
+    if(!validProjectArtifactPath(relative,project))throw Error('Invalid project artifact path: '+relative);
+    return relative;
+  }))];
+}
+export function validProjectArtifactPath(relative:string,project:ProjectConfig):boolean {
+  if(projectContextArtifactPaths.some(value=>value===relative))return true;
+  return relative===project.project.roadmap_path&&relative.endsWith('.md')
+    &&relative.split('/').every((part,index)=>(part!=='.'&&part!=='..'&&part!=='node_modules'&&/^[A-Za-z0-9_][A-Za-z0-9_. -]*$/u.test(part))||(index===0&&part==='.agent-workflow'));
 }
 const readOnly = new Set(['review-pr','code-review','security-audit','product-discovery','architecture-decision','roadmap-curation','ship-release','production-readiness','model-improvement']);
 export function sourceChangingWorkflow(workflow: WorkflowDefinition): boolean {
@@ -55,6 +71,8 @@ export function preparedWorkflow(workflow: WorkflowDefinition, required: boolean
 export function pipelineContract(project: ProjectConfig, workflow: WorkflowDefinition, installationRequired: boolean, preparedOnly = false): RunPipelineContract {
   const required = installationRequired || project.execution?.pipeline?.required === true;
   const sourceChanges = sourceChangingWorkflow(workflow);
-  return { version:1, required, sourceChanges, isolation:sourceChanges?'worktree':'read-only', preparedOnly,
+  const artifacts=workflow.execution?.kind==='project-artifacts';
+  return { version:1, required, sourceChanges, isolation:sourceChanges?'worktree':artifacts?'project-artifacts':'read-only', preparedOnly,
+    ...(artifacts?{artifactPaths:projectArtifactPaths(project,workflow)}:{}),
     checkpointStageIds:workflow.stages.filter(stage=>stage.checkpoint_after).map(stage=>stage.id) };
 }

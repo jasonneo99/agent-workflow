@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "1707b815388da7b10542cf843c1b6fcc4f4c1e18c5bc38e1cb82f3dc9b1242e2"
+    "value": "07adee801d8d0ff44f7fbe693e1883bbd7eaeb51a71c73abccab62b95769d4fa"
   },
   "agents": [
     {
@@ -222,7 +222,7 @@
     {
       "id": "maintain-context",
       "path": "workflows/maintain-context.yaml",
-      "checksum": "c9112ba4042f532d0058ccf9b71efb8e92b11611160eb92a96136b127f84f142"
+      "checksum": "f6939f4fd9060fd8481b235dd4258b05cfe258865e644765b9bd41cbb9edbd54"
     },
     {
       "id": "model-improvement",
@@ -262,7 +262,7 @@
     {
       "id": "roadmap-curation",
       "path": "workflows/roadmap-curation.yaml",
-      "checksum": "2508d5725150cda4911e7f709ece943f363384a678c22cf4f7b67c757144f0ef"
+      "checksum": "597c65228dd0ec228663646b53baf7d69bc875fa82bb3ac5a3452674ff4961bf"
     },
     {
       "id": "security-audit",
@@ -444,7 +444,7 @@
     },
     {
       "path": "workflows/maintain-context.yaml",
-      "checksum": "c9112ba4042f532d0058ccf9b71efb8e92b11611160eb92a96136b127f84f142"
+      "checksum": "f6939f4fd9060fd8481b235dd4258b05cfe258865e644765b9bd41cbb9edbd54"
     },
     {
       "path": "workflows/model-improvement.yaml",
@@ -476,7 +476,7 @@
     },
     {
       "path": "workflows/roadmap-curation.yaml",
-      "checksum": "2508d5725150cda4911e7f709ece943f363384a678c22cf4f7b67c757144f0ef"
+      "checksum": "597c65228dd0ec228663646b53baf7d69bc875fa82bb3ac5a3452674ff4961bf"
     },
     {
       "path": "workflows/security-audit.yaml",

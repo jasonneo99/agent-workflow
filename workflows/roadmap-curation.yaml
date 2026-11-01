@@ -3,7 +3,9 @@ name: Roadmap Curation
 description: Review daemon suggestions and add explicitly approved items to a project roadmap without starting implementation.
 lead: product-strategist
 execution:
-  kind: read-only
+  kind: project-artifacts
+  artifact_paths:
+    - project.roadmap_path
 default_autonomy: 1
 triggers:
   manual: true

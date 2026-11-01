@@ -8,6 +8,8 @@ import {materializeVerificationRecipes} from '../../storage/src/partner-recovery
 import {assertRepairCommitEnabled} from '../../run-environments/src/repair-checkpoint.js';
 import {pipelineEnvironmentPlans,prepareRunWorkspace,type RunWorkspace} from '../../run-environments/src/workspace.js';
 import {acquireWorkIntent,renewWorkIntent,releaseWorkIntent,withClient,type ClaimedWorkflowTask} from '../../storage/src/postgres.js';
+import {validProjectArtifactPath,type RunPipelineContract} from '../../run-environments/src/pipeline.js';
+import type {EnvironmentPlan} from '../../run-environments/src/index.js';
 
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 export interface PreparedTaskExecution {
@@ -15,6 +17,48 @@ export interface PreparedTaskExecution {
  beforeWrite(relative:string,verifiedPostimageHash?:string):Promise<void>;
  assertAuthority():Promise<void>;
  release():Promise<void>;
+}
+/** Artifact declarations narrow the current and frozen policies; they never grant source or command authority. */
+export function artifactExecutionPolicy(project:ProjectConfig,contract:RunPipelineContract,current=project):ProjectConfig {
+ if(contract.sourceChanges||contract.isolation!=='project-artifacts')throw Error('Expected a project-artifact contract');
+ const paths=contract.artifactPaths;
+ if(!paths?.length||paths.some(relative=>!validProjectArtifactPath(relative,project)||!validProjectArtifactPath(relative,current)))throw Error('Invalid project-artifact contract paths');
+ return {...project,actions:{...project.actions,allowed_commands:[],allowed_write_paths:paths.filter(relative=>{
+  try{assertFilePathAllowed(relative,project);assertFilePathAllowed(relative,current);return true;}catch{return false;}
+ })}};
+}
+export async function assertPhysicalArtifactPath(root:string,relative:string):Promise<void>{
+ const canonical=await fs.realpath(root);let absolute=canonical;
+ for(const part of relative.split('/')){
+  absolute=path.join(absolute,part);
+  try{const stat=await fs.lstat(absolute);if(stat.isSymbolicLink()||await fs.realpath(absolute)!==absolute)throw Error('Project artifact path is an alias');}
+  catch(error:any){if(error.code!=='ENOENT')throw error;}
+ }
+}
+export function defaultProfileVerificationCommands(project:ProjectConfig,plans:readonly EnvironmentPlan[]):string[]{
+ const name=project.execution.environments?.default_profile;
+ const selected=name?plans.find(plan=>plan.profile===name):plans.length===1?plans[0]:undefined;
+ return [...new Set(selected?.spec.verification.flatMap(rule=>rule.commands)??[])].filter(command=>{
+  if(command.includes('*'))return false;
+  try{assertCommandAllowed(command,project);return true;}catch{return false;}
+ });
+}
+async function prepareProjectArtifacts(task:ClaimedWorkflowTask,root:string,project:ProjectConfig,assertLease:()=>Promise<void>):Promise<PreparedTaskExecution>{
+ const policy=artifactExecutionPolicy(project,task.executionPipeline!);
+ const scopes=policy.actions.allowed_write_paths.filter(relative=>!Array.isArray(task.executionWritePaths)||task.executionWritePaths.includes(relative));
+ await assertLease();
+ const intent=scopes.length?await acquireWorkIntent({projectId:task.projectId!,owner:`run-artifacts:${task.runId}:${task.taskId}`,objective:`Maintain exact project artifacts for ${task.runId}/${task.taskId}`,fileScopes:scopes,ttlSeconds:900}):undefined;
+ let lost=false,released=false;
+ const assertAuthority=async()=>{
+  await assertLease();if(lost||released)throw Error('Project-artifact ownership was lost');
+  if(intent&&!await withClient(async c=>(await c.query('select 1 from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3 and expires_at>clock_timestamp()',[intent.projectId,intent.owner,intent.fencingToken])).rowCount))throw Error('Project-artifact intent is not current');
+ };
+ const renewal=intent?setInterval(()=>{void renewWorkIntent({...intent,ttlSeconds:900}).then(ok=>{if(!ok)lost=true;}).catch(()=>{lost=true;});},60000):undefined;renewal?.unref();
+ return {root,commands:[],assertAuthority,release:async()=>{released=true;if(renewal)clearInterval(renewal);if(intent)await releaseWorkIntent(intent);},beforeWrite:async(relative)=>{
+  await assertAuthority();assertFilePathAllowed(relative,policy);
+  if(!scopes.includes(relative))throw Error('Artifact path is outside the exact task grant: '+relative);
+  await assertPhysicalArtifactPath(root,relative);
+ }};
 }
 export async function literalScopeVerificationCommands(root:string,project:ProjectConfig,paths:readonly string[]):Promise<string[]>{
  const commands=materializeVerificationRecipes(project,paths);
@@ -32,6 +76,7 @@ export async function prepareTaskExecution(task:ClaimedWorkflowTask,canonicalRoo
  if(!contract?.required)throw Error('A required pipeline contract is missing');
  if(contract.version!==1)throw Error('This worker cannot execute the required pipeline version');
  if(!task.projectId)throw Error('Prepared execution needs the current owning project UUID');
+ if(!contract.sourceChanges&&contract.isolation==='project-artifacts')return prepareProjectArtifacts(task,canonicalRoot,project,assertLease);
  if(!contract.sourceChanges)return {root:canonicalRoot,commands:[],beforeWrite:async()=>{throw Error('Read-only runs cannot write source; request a source-change workflow.');},assertAuthority:assertLease,release:async()=>{}};
  assertRepairCommitEnabled(project);
  const projectId=task.projectId,owner=`run-workspace:${task.runId}`;
@@ -71,6 +116,6 @@ export async function prepareTaskExecution(task:ClaimedWorkflowTask,canonicalRoo
    }
   };
   const commands=await literalScopeVerificationCommands(workspace.root,project,task.executionPipeline?.sourcePaths??[]);
-  return {root:workspace.root,workspace,commands:commands.length?commands:workspace.verificationCommands,beforeWrite,assertAuthority,release};
+  return {root:workspace.root,workspace,commands:commands.length?commands:defaultProfileVerificationCommands(project,plans),beforeWrite,assertAuthority,release};
  }catch(error){await release();throw error;}
 }

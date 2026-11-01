@@ -20904,6 +20904,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const project = await loadProjectConfig(projectDir);
       const commandLine = commandParts.join(" ");
       const execution=await resolveRunExecutionRoot({runId:options.run,canonicalRoot:projectDir});
+      if(execution.contract?.required&&execution.contract.isolation==='project-artifacts')throw Error('Project-artifact workflows do not authorize local commands');
       const result = await executeAllowedCommand({
         commandLine,
         cwd: execution.root,

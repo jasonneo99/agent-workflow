@@ -9,6 +9,11 @@ claim required runs. Historical workflow snapshots and action authorities are
 never rewritten.
 
 Read-only workflows retain their stage contracts and cannot write source.
+Context and roadmap maintenance retain their own stages and use exact declared
+Markdown artifact paths. Both the frozen and current action policies must allow
+each path. These tasks use a fenced project intent and ordinary mutation
+receipts; they cannot run commands or create source checkpoints. Roadmap
+curation still requires its existing explicit approval.
 Source workflows retain their original goals; the runtime inserts checkpoint
 boundaries, a final verifier and source integration. Partner selects the same
 repair/verify/integrate definition. These controls require execution evidence:
@@ -24,6 +29,9 @@ versions, digest-pinned images or native hosts, dependency setup, readiness
 checks, collection contracts and resource limits. Commands still pass action
 policy independently. Missing tools or a mismatched target platform block before
 model work or host fallback.
+Task-scoped tests take precedence. An unscoped source run uses literal tests
+from its default profile, or its sole profile when no default is configured;
+it never inherits unrelated specialized test commands from other profiles.
 
 Private local installations may add `.agent-workflow/project.local.yaml` with
 only `execution` and `actions` configuration. Keep that file ignored. Objects

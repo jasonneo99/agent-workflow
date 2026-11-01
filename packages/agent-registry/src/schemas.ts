@@ -76,7 +76,10 @@ const dynamicWorkflowMetadataSchema = z.object({
 });
 
 export const workflowSchema = z.object({
-  execution: z.object({ kind: z.enum(["source-change", "read-only"]) }).optional(),
+  execution: z.object({
+    kind: z.enum(["source-change", "read-only", "project-artifacts"]),
+    artifact_paths: z.array(z.enum(["AGENTS.md", ".agent-workflow/context.md", ".agent-workflow/commands.md", ".agent-workflow/decisions.md", ".agent-workflow/memory.md", "project.roadmap_path"])).min(1).optional()
+  }).optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().min(1),
