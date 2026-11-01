@@ -29,6 +29,10 @@ The script downloads the exact published npm version pinned in
 `runtime-version.json`, installs its production dependencies beneath `runtime/`,
 removes npm bin symlinks, and records package integrity in
 `runtime/runtime-manifest.json`.
+The manifest also records public registry integrity and dependency file digests.
+Boundary validation inspects decoded framework files and rejects altered or
+unattributed dependency contents. Local installer paths and platform-specific
+archive metadata are excluded from the distribution.
 The generated runtime is ignored by Git but must be included in the
 distributable plugin ZIP and local marketplace source. The build also creates
 `runtime-bundle.tgz` plus a SHA-256 file. Those two regular files are committed

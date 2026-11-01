@@ -79,7 +79,7 @@ export async function publishSourceIntegration(plan:SourceIntegrationPlan,projec
    if(tree===(await git(root,['rev-parse','HEAD^{tree}'])).stdout.trim())return {commit:parent,changed:false};
    const changed=(await git(root,['diff-tree','--no-commit-id','--name-only','-r','-z',parent,tree])).stdout.split('\0').filter(Boolean);
    if(changed.some(file=>!plan.files.some(owned=>owned.path===file)))throw Error('Integration tree changed outside the verified delta');
-   const commit=(await git(root,['-c','user.name=Agent Workflow','-c','user.email=agent-workflow@localhost','commit-tree',tree,'-p',parent,'-p',plan.candidate.commit!,'-m','Integrate independently verified source candidate'])).stdout.trim();
+   const commit=(await git(root,['-c','user.name=Agent Workflow','-c','user.email=agent-workflow@localhost','commit-tree',tree,'-p',parent,'-m',`Integrate independently verified source candidate\n\nAgentflow-Candidate: ${plan.candidate.commit}\nSource-Snapshot: ${plan.candidate.sourceHash}`])).stdout.trim();
    await assertAuthority();const published=await git(root,['update-ref',reference,commit,parent],undefined,true);
    if(published.exitCode!==0)continue;
    await git(root,['restore','--staged','--source',commit,'--',...plan.files.map(file=>file.path)]);

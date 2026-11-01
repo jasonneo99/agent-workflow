@@ -46,6 +46,8 @@ intents and stop on another owner or changed canonical bytes. Successful
 integration publishes only the independently verified delta with a local Git
 compare-and-swap commit; unrelated staging is preserved. An already-correct
 revision receives a tested checkpoint without an artificial source edit.
+The canonical commit records the candidate digest without merging the
+preparation snapshot's history.
 
 ## Preparing existing families
 

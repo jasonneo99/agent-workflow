@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { packageProvenanceViolations, scanBoundaryFile } from "./open-source-boundary-rules.mjs";
+import { scanRuntimeArchive } from './open-source-boundary-archive.mjs';
 
 const root = process.cwd();
 const trackedFiles = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
@@ -12,7 +13,7 @@ for (const file of trackedFiles) {
   if (["scripts/validate-open-source-boundary.mjs", "scripts/open-source-boundary-rules.mjs"].includes(file)) continue;
   if (!fs.existsSync(file)) continue;
   const buffer = fs.readFileSync(file);
-  violations.push(...scanBoundaryFile(file, buffer));
+  violations.push(...(file==='plugins/agent-workflow/runtime-bundle.tgz'?scanRuntimeArchive(file,buffer):scanBoundaryFile(file, buffer)));
 }
 
 const packed = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8" });

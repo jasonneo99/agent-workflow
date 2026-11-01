@@ -71,6 +71,7 @@ test('verified source publication commits only the owned delta and preserves unr
   const before=await f.git(f.canonicalRoot,'diff','--cached');
   const result=await publishSourceIntegration(plan,f.project,async()=>{});
   assert.equal(result.changed,true);assert.equal(await f.git(f.canonicalRoot,'diff','--cached'),before);
+  assert.equal((await f.git(f.canonicalRoot,'rev-list','--parents','-n','1','HEAD')).split(' ').length,2,'canonical history must not merge the preparation snapshot or unrelated candidate ancestors');
   assert.equal(await f.git(f.canonicalRoot,'show','--format=','--first-parent','--name-only','HEAD'),'src/value.js');
   assert.match(await fs.readFile(path.join(f.canonicalRoot,'src/value.js'),'utf8'),/reviewed change/);
  }finally{await f.cleanup();}
