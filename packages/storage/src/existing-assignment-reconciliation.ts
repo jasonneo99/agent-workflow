@@ -46,6 +46,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  const {assertFilePathAllowed}=await import('../../local-tools/src/file-writer.js');
  const {assertCommandAllowed}=await import('../../local-tools/src/command-executor.js');
  const {findAgentWorkflowRoot}=await import('../../runtime-root/src/index.js');
+ const {assertRepairCommitEnabled,REPAIR_COMMIT_COMMAND}=await import('../../run-environments/src/repair-checkpoint.js');
  const {queueWorkingOccupancyOnClient}=await import('./queue-coordinator.js');
  if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.phaseId)||!input.owner||!input.actor||!input.reason||
   !input.goal||input.goal.length>8192||!exactPaths(input.sourcePaths)||input.sourcePaths.length>128||
@@ -109,7 +110,8 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
   depends_on:repair.stages.slice(0,index).map(s=>prefix+'-'+s.id)}));
  if(!Array.isArray(row.workflow_snapshot?.stages)||stages.some(stage=>row.workflow_snapshot.stages.some((old:any)=>old.id===stage.id)))
   throw Error('Prospective stage identity conflicts with retained workflow');
- const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:input.commands,
+ assertRepairCommitEnabled(current);
+ const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:[...input.commands,REPAIR_COMMIT_COMMAND],
   allowed_write_paths:input.writePaths,blocked_commands:[...new Set([...current.actions.blocked_commands,...(row.policy_snapshot.actions.blocked_commands??[])])],
   blocked_write_paths:[...new Set([...current.actions.blocked_write_paths,...(row.policy_snapshot.actions.blocked_write_paths??[])])],isolate_command_writes:true},execution:{...current.execution,
   repair_commits:{enabled:true,stages:[stages[0]!.id]},environments:{default_profile:profile,profiles:{[profile]:{
@@ -119,6 +121,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
    limits:{timeout_ms:Math.min(current.actions.command_timeout_ms,600000),max_source_bytes:67108864,max_files:1000}
   }}}}});
  if(current.execution.repair_commits?.enabled!==true)throw Error('Current project must authorize source checkpoints');
+ assertRepairCommitEnabled(policy);
  const sourceHash=await sourceSubjectHash(row.root_uri,input.sourcePaths);
  const phaseContract:StructuredAcceptanceContract={version:1,contractId:prefix,projectId:row.project_key,
   originRunId:input.runId,taskHash:acceptanceDigest(row.task),sourcePaths:input.sourcePaths,subjectHash:sourceHash,
