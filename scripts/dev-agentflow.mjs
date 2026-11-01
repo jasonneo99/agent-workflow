@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import YAML from "yaml";
 import { supervisedDaemonLaneStatus } from "./supervisor-daemon-lanes.mjs";
+import { rotateSupervisorLogs } from "./supervisor-log-rotation.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageMetadata = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8"));
@@ -20,6 +21,7 @@ const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorLockPath = path.join(runtimeDir, "supervisor.lock");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const supervisorEventPath = path.join(runtimeDir, "supervisor-events.jsonl");
+const supervisorLogDir = path.join(runtimeDir, "launchd");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
 const learningScope = normalizeLearningScope(process.env.AGENTFLOW_LEARNING_SCOPE ?? (process.env.AGENTFLOW_LEARNING_ALL_PROJECTS === "0" ? "project" : "all-projects"));
@@ -43,6 +45,8 @@ const learningDaemonId = process.env.AGENTFLOW_LEARNING_DAEMON_ID ?? "supervised
 const queuePartnerEnabled = process.env.AGENTFLOW_QUEUE_PARTNER !== "0";
 const queuePartnerIntervalMs = Number.parseInt(process.env.AGENTFLOW_QUEUE_PARTNER_INTERVAL_MS ?? "5000", 10);
 const monitorIntervalMs = Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_INTERVAL_MS ?? "5000", 10);
+const supervisorLogMaxBytes = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_LOG_MAX_BYTES ?? String(10 * 1024 * 1024), 10), 10 * 1024 * 1024);
+const supervisorLogKeep = boundedPositiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_LOG_KEEP ?? "5", 10), 5, 20);
 const restartWindowMs = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_WINDOW_MS ?? "60000", 10), 60_000);
 const restartLimit = boundedPositiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_LIMIT ?? "3", 10), 3, 20);
 const restartCooldownMs = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_COOLDOWN_MS ?? "120000", 10), 120_000);
@@ -63,6 +67,7 @@ let ticks = 0;
 
 async function main() {
   await fs.mkdir(runtimeDir, { recursive: true });
+  await rotateSupervisorLogs(supervisorLogDir, { maxBytes: supervisorLogMaxBytes, keep: supervisorLogKeep });
   const lockOwner = await acquireSupervisorLock();
   if (lockOwner) {
     console.log(`Agent Workflow supervisor is already starting or running (pid ${lockOwner.pid}); leaving it in control.`);
@@ -232,6 +237,7 @@ async function startManagedProcesses() {
 
 async function monitor() {
   ticks += 1;
+  await rotateSupervisorLogs(supervisorLogDir, { maxBytes: supervisorLogMaxBytes, keep: supervisorLogKeep });
   resetStableRestartBreakers();
   for (const [name, child] of children) {
     if (child.exitCode !== null || child.signalCode !== null) {
