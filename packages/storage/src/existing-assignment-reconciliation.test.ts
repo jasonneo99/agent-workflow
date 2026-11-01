@@ -23,7 +23,7 @@ test('one prospective source phase retains exhausted history and requires exact 
   await fs.writeFile(path.join(root,'tests.py'),'# synthetic tests\n');
   const commands=['python3 -m unittest discover -s tests','git diff --check'];
   const config={project:{name:'Portable prospective fixture'},execution:{repair_commits:{enabled:true}},
-   actions:{allowed_commands:[...commands,'npm run agentflow -- repair-checkpoint *'],allowed_write_paths:['source.py','tests.py'],blocked_write_paths:['.env']}};
+   actions:{allowed_commands:[...commands,'npm run agentflow -- repair-checkpoint *','npm run agentflow -- environments *'],allowed_write_paths:['source.py','tests.py'],blocked_write_paths:['.env']}};
   const configFile=path.join(root,'.agent-workflow/project.yaml');await fs.writeFile(configFile,JSON.stringify(config));
   const policy=await loadProjectConfig(root);
   await withClient(async c=>{await c.query('begin');try{
@@ -134,6 +134,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    assert.equal(fresh.evaluation_metadata.executionPipeline.required,true);
    assert.equal(fresh.evaluation_metadata.executionPipeline.isolation,'worktree');
    assert.ok(fresh.policy_snapshot.actions.allowed_commands.includes('npm run agentflow -- repair-checkpoint *'));
+   assert.ok(fresh.policy_snapshot.actions.allowed_commands.includes('npm run agentflow -- environments *'));
    assert.equal(fresh.workflow_snapshot.stages.length,4);
    assert.equal((await c.query("select count(*)::int n from workflow_tasks where run_id=$1 and status='queued' and attempts=0",[run])).rows[0].n,3);
    assert.equal((await c.query('select count(*)::int n from workflow_handoffs where run_id=$1',[run])).rows[0].n,3);

@@ -49,6 +49,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  const {assertCommandAllowed}=await import('../../local-tools/src/command-executor.js');
  const {findAgentWorkflowRoot}=await import('../../runtime-root/src/index.js');
  const {assertRepairCommitEnabled,REPAIR_COMMIT_COMMAND}=await import('../../run-environments/src/repair-checkpoint.js');
+ const {ENVIRONMENT_COMMAND,planRunEnvironment}=await import('../../run-environments/src/index.js');
  const {queueWorkingOccupancyOnClient}=await import('./queue-coordinator.js');
  if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.phaseId)||!input.owner||!input.actor||!input.reason||
   !input.goal||input.goal.length>8192||!exactPaths(input.sourcePaths)||input.sourcePaths.length>128||
@@ -143,7 +144,8 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
    [input.runId,stages[0]!.agent])).rowCount)throw Error('Correction requires no source execution effects');
  }
  assertRepairCommitEnabled(current);
- const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:[...input.commands,REPAIR_COMMIT_COMMAND],
+ assertCommandAllowed(ENVIRONMENT_COMMAND,current);
+ const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:[...input.commands,REPAIR_COMMIT_COMMAND,ENVIRONMENT_COMMAND],
   allowed_write_paths:input.writePaths,blocked_commands:[...new Set([...current.actions.blocked_commands,...(row.policy_snapshot.actions.blocked_commands??[])])],
   blocked_write_paths:[...new Set([...current.actions.blocked_write_paths,...(row.policy_snapshot.actions.blocked_write_paths??[])])],isolate_command_writes:true},execution:{...current.execution,
   repair_commits:{enabled:true,stages:[stages[0]!.id]},environments:{default_profile:profile,profiles:{[profile]:{
@@ -154,6 +156,10 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
   }}}}});
  if(current.execution.repair_commits?.enabled!==true)throw Error('Current project must authorize source checkpoints');
  assertRepairCommitEnabled(policy);
+ // Exercise the actual planner's capability, source and profile checks before
+ // consuming human execution authority; this does not execute a command.
+ await planRunEnvironment({cwd:row.root_uri,project:policy,context:{runId:input.runId,
+  workflowId:row.workflow_id??'prospective-source',stageId:stages[0]!.id,profile}});
  const sourceHash=await sourceSubjectHash(row.root_uri,input.sourcePaths);
  const phaseContract:StructuredAcceptanceContract={version:1,contractId:prefix,projectId:row.project_key,
   originRunId:input.runId,taskHash:acceptanceDigest(row.task),sourcePaths:input.sourcePaths,subjectHash:sourceHash,
