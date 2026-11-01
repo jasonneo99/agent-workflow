@@ -61,6 +61,24 @@ test("owned stored payloads retain long commands, middle evidence and exact rece
   assert.match(observation.storedContent.stdout, /fixture-removed/);
 });
 
+test("prepared source diagnostics retain owned output without inventing acceptance enrollment", () => {
+  const row = ownedCommand({ subjectHash: undefined, environment: {
+    runId: "example-run", taskId: "example-task", sourceHash: "a".repeat(64),
+    profile: "source-tests", attemptId: "synthetic-attempt"
+  } });
+  const before = JSON.stringify(row);
+  assert.equal(commandAcceptanceReference(row), undefined);
+  const observation = JSON.parse(commandEvidencePacket([row]))[0];
+  assert.equal(observation.commandOwnership, "verified");
+  assert.equal(observation.storedContentComplete, true);
+  assert.equal(observation.acceptanceReference, undefined);
+  assert.equal(observation.omissionReason, undefined);
+  assert.equal(observation.contentHash, acceptanceDigest(row.content));
+  assert.match(observation.storedContent.stdout, /MIDDLE_EVIDENCE: isolated=true/);
+  assert.equal(observation.executionOutputCompleteness, "not-attested");
+  assert.equal(JSON.stringify(row), before, "stored evidence is immutable");
+});
+
 test("oversized stored output stays an explicit preview without losing failure evidence", () => {
   const row = ownedCommand({ stdout: "x".repeat(COMMAND_EVIDENCE_CONTENT_MAX_BYTES) + "FINAL_FAILURE", exitCode: 1 });
   const observation = JSON.parse(commandEvidencePacket([row]))[0];
@@ -88,7 +106,7 @@ test("aggregate evidence has a byte bound and retains newest complete observatio
 });
 
 test("foreign or missing command ownership cannot expose a complete stored body", () => {
-  const row = ownedCommand();
+ for (const row of [ownedCommand(), ownedCommand({ subjectHash: undefined })]) {
   for (const candidate of [
     { ...row, runId: "different-run" },
     { ...row, taskId: "different-task" },
@@ -100,7 +118,9 @@ test("foreign or missing command ownership cannot expose a complete stored body"
     assert.equal(observation.storedContentComplete, false);
     assert.equal(observation.omissionReason, "unverified-command-ownership");
     assert.equal(observation.storedContent, undefined);
+    assert.equal(observation.commandOwnership, "unverified");
   }
+ }
 });
 
 test("multibyte evidence and malformed metadata cannot escape the packet byte bound", () => {

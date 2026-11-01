@@ -20,6 +20,13 @@ repair/verify/integrate definition. These controls require execution evidence:
 model prose, empty collections, skipped tests and truncated output cannot satisfy
 the verification gate.
 
+Stored command diagnostics bind to their actual run, task, stage, timestamp and
+receipt path. Reading those diagnostics does not require a legacy acceptance
+contract. Prepared source receipts may therefore expose their owned output
+without an acceptance reference. Acceptance references still require their
+original subject binding, and complete stored output does not attest complete
+process-stream capture.
+
 ## Project configuration
 
 Enable `execution.pipeline.required`, declare `execution.environments`, enable

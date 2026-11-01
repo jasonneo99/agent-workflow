@@ -27,12 +27,17 @@ export function commandEvidencePacket(rows: EvidenceRow[]): string {
   }));
   const packet: Record<string, unknown>[] = selected.map(({ row, reference, contentBytes }) => {
     const command = String(row.content.commandLine ?? "");
-    const owned = Boolean(reference)
+    // Ownership of stored diagnostics is independent of acceptance enrollment.
+    // Prepared source runs carry an environment source binding, but need not
+    // have a legacy acceptance subjectHash. Never manufacture that reference.
+    const owned = Boolean(row.runId && row.taskId && row.stageId && row.createdAt)
+      && Number.isFinite(new Date(row.createdAt!).getTime())
       && row.uri.startsWith(`db://workflow_runs/${row.runId}/command_output/`)
       && row.content.requestedByTaskId === row.taskId
       && row.content.requestedByStageId === row.stageId;
     const preview: Record<string, unknown> = {
       acceptanceReference: reference,
+      commandOwnership: owned ? "verified" : "unverified",
       artifactUri: row.uri.slice(0, 1024),
       artifactUriTruncated: row.uri.length > 1024,
       command: command.slice(0, 4096),
