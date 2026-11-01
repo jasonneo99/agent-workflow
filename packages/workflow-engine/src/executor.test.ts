@@ -14,7 +14,9 @@ test("independent candidate tests are scheduled when the review omits actions, w
   for (const exitCode of [0, 1]) assert.deepEqual(missingRepairVerifierCommands(project, true, files, [], [{ commandLine: command, exitCode }]), [], "never replay an observed test");
   assert.deepEqual(missingRepairVerifierCommands(project, false, files, [], []), []);
   assert.deepEqual(missingRepairVerifierCommands(project, true, undefined, [], []), []);
-  assert.deepEqual(missingRepairVerifierCommands(project, true, [files[0]!], [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands(project, true, [files[0]!], [], []), [command], "unchanged regression tests still run for a changed source file");
+  assert.deepEqual(missingRepairVerifierCommands(project, true, ["src/unrelated.py"], [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands({ ...project, actions: { ...project.actions, verification_recipes: undefined } }, true, files, [], []), []);
   assert.deepEqual(missingRepairVerifierCommands({ ...project, actions: { ...project.actions, allowed_commands: [] } }, true, files, [], []), []);
   assert.deepEqual(missingRepairVerifierCommands({ ...project, execution: { ...project.execution, repair_commits: { enabled: false, stages: ["repair"] } } }, true, files, [], []), []);
 });

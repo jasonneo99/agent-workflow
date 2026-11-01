@@ -85,7 +85,9 @@ export function missingRepairVerifierCommands(project: ReturnType<typeof project
   if (!verifier || !project.execution.repair_commits?.enabled || !candidateFiles?.length) return [];
   const seen = new Set([...requested, ...observations.flatMap(value => value && typeof value === "object"
     && typeof (value as { commandLine?: unknown }).commandLine === "string" ? [(value as { commandLine: string }).commandLine] : [])]);
-  return materializeVerificationRecipes(project, candidateFiles).filter(command => !seen.has(command));
+  const declared = (project.actions.verification_recipes ?? []).filter(recipe => recipe.source_paths.some(file => candidateFiles.includes(file)))
+    .flatMap(recipe => materializeVerificationRecipes({ ...project, actions: { ...project.actions, verification_recipes: [recipe] } }, recipe.source_paths));
+  return [...new Set(declared)].filter(command => !seen.has(command));
 }
 
 export function repairVerifierNeedsCheckpoint(project: ReturnType<typeof projectConfigSchema.parse>, verifier: boolean, workflowId: string, hasCandidate: boolean): boolean {
@@ -1965,8 +1967,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         ?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
       if (repairParent || repairVerifierNeedsCheckpoint(project, stagePattern.type === "verifier", task.workflowId, Boolean(priorRepairCandidate))) {
         try {
-          const observations = actionResults as Array<{ environment?: { status?: string; receiptPath?: string | null }; verificationRecipe?: { status?: string } }>;
-          const evidence = [...observations].reverse().find(action => action.environment?.status === "ready" && action.environment.receiptPath && action.verificationRecipe?.status === "passed");
+          const observations = actionResults as Array<{ environment?: { status?: string; receiptPath?: string | null; recipeHash?: string; sourceHash?: string }; verificationRecipe?: { status?: string } }>;
+          const evidence = [...observations].reverse().find(action => action.environment?.status === "ready" && action.environment.receiptPath && action.verificationRecipe?.status === "passed"
+            && (stagePattern.type !== "verifier" || !priorRepairCandidate || (action.environment.recipeHash === priorRepairCandidate.recipeHash && action.environment.sourceHash === priorRepairCandidate.sourceHash)));
           const changed = repairParent ? await repairChangedFiles(localProjectRootUri) : [];
           if (repairParent && changed.length) {
             const owned = await reconstructRunWriteFootprint(task.runId, localProjectRootUri);
