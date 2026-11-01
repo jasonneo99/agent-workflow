@@ -51,6 +51,11 @@ try {
     throw new Error("Runtime lacks request-scoped Codex origin binding; use a reviewed patched runtime tarball.");
   }
   fs.rmSync(path.join(runtimeRoot, "node_modules", ".bin"), { recursive: true, force: true });
+  // Installer metadata contains the temporary local tarball location. It is not
+  // needed to execute the sealed runtime and must not enter a portable bundle.
+  for (const installerFile of ["package.json", "package-lock.json", "node_modules/.package-lock.json"]) {
+    fs.rmSync(path.join(runtimeRoot, installerFile), { force: true });
+  }
   fs.writeFileSync(path.join(runtimeRoot, "runtime-manifest.json"), `${JSON.stringify({
     package: runtimePin.package,
     version: runtimePin.version,
