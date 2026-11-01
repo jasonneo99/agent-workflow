@@ -19,11 +19,12 @@ test('one prospective source phase retains exhausted history and requires exact 
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'prospective-source-')));
  try{
   await fs.mkdir(path.join(root,'.agent-workflow'));
+  await fs.mkdir(path.join(root,'tests'));
   await fs.writeFile(path.join(root,'source.py'),'# synthetic source\n');
-  await fs.writeFile(path.join(root,'tests.py'),'# synthetic tests\n');
+  await fs.writeFile(path.join(root,'tests/test_source.py'),'# synthetic tests\n');
   const commands=['python3 -m unittest discover -s tests','git diff --check'];
-  const config={project:{name:'Portable prospective fixture'},execution:{repair_commits:{enabled:true}},
-   actions:{allowed_commands:[...commands,'npm run agentflow -- repair-checkpoint *','npm run agentflow -- environments *'],allowed_write_paths:['source.py','tests.py'],blocked_write_paths:['.env']}};
+  const config={project:{name:'Portable prospective fixture'},execution:{repair_commits:{enabled:true},environments:{profiles:{offline:{kind:'container',platform:'linux/arm64',image:'python:3.12-slim@sha256:'+'a'.repeat(64),source_paths:['source.py'],readiness:[{argv:['python3','--version']}],build_network:'none'}}}},
+   actions:{allowed_commands:[...commands,'npm run agentflow -- repair-checkpoint *','npm run agentflow -- environments *'],allowed_write_paths:['source.py','tests/test_source.py'],blocked_write_paths:['.env']}};
   const configFile=path.join(root,'.agent-workflow/project.yaml');await fs.writeFile(configFile,JSON.stringify(config));
   const policy=await loadProjectConfig(root);
   await withClient(async c=>{await c.query('begin');try{
@@ -63,7 +64,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    await c.query("insert into workflow_tasks(id,run_id,status,attempts,stage_id,agent_id,finished_at,idempotency_key)values($1,$2,'blocked',7,'original-assessment','test-engineer',clock_timestamp(),'original-task')",[oldTask,run]);
    await c.query(`insert into queue_coordinator_assignments(id,project_id,source_run_id,child_run_id,family_id,state,role,lane,owner,intent_fence,file_scopes)
     values($1,$2,$3,$4,$5,'held','repair',1,'historical-owner','1','["source.py"]')`,[assignment,project,source,run,project+':'+set]);
-   await c.query("insert into work_intents values($1,'fresh-human-source',2,'[\"source.py\",\"tests.py\"]',clock_timestamp()+interval '1 hour')",[project]);
+   await c.query("insert into work_intents values($1,'fresh-human-source',2,'[\"source.py\",\"tests/test_source.py\"]',clock_timestamp()+interval '1 hour')",[project]);
    await appendActionReceipt(c,{runId:source,agentId:'workflow-orchestrator',actionType:'fixture_created',target:source,summary:'Synthetic original',metadata:'{}'});
    const prior={runId:run,assignmentId:assignment,fence:'1',contract};
    await c.query("insert into artifacts(run_id,kind,uri,content)values($1,'existing_assignment_reconciled',$2,$3)",[run,priorUri,prior]);
@@ -71,7 +72,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    for(const actionType of ['existing_assignment_repaired_resumed','existing_assignment_repaired_resumed','existing_assignment_repaired_resumed','existing_assignment_explicit_source_phase_resumed'])
     await appendActionReceipt(c,{runId:run,agentId:'workflow-orchestrator',actionType,target:'synthetic://consumed',summary:'Retained consumed history',metadata:'{}'});
    await c.query(coordinatorClaimFenceSql);
-   const input={runId:run,assignmentId:assignment,expectedFence:'1',expectedStateVersion:'19',phaseId:randomUUID(),owner:'fresh-human-source',intentFence:'2',actor:'synthetic human control',reason:'Approved one prospective source phase',sourcePaths:['source.py','tests.py'],writePaths:['source.py','tests.py'],commands,goal:'Implement a bounded portable input contract and regressions; retain original acceptance.',lane:1};
+   const input={runId:run,assignmentId:assignment,expectedFence:'1',expectedStateVersion:'19',phaseId:randomUUID(),owner:'fresh-human-source',intentFence:'2',actor:'synthetic human control',reason:'Approved one prospective source phase',sourcePaths:['source.py','tests/test_source.py'],writePaths:['source.py','tests/test_source.py'],commands,goal:'Implement a bounded portable input contract and regressions; retain original acceptance.',lane:1};
    const preview=await previewProspectiveSourcePhaseOnClient(c,input);
    const before=(await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0];
    const putGrant=async(overrides:Record<string,unknown>={},actionType='operator_prospective_source_phase_authorized',boundPreview=preview,kind='prospective_source_phase_authorization')=>{
@@ -105,7 +106,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    await negative("update workflow_runs set state_version=20 where id=$1",[run]);
    await negative("update queue_coordinator_assignments set project_id=$2 where id=$1",[assignment,randomUUID()]);
    await negative("update queue_coordinator_assignments set family_id='forged-family' where id=$1",[assignment]);
-   await negative("update workflow_runs set policy_snapshot=jsonb_set(policy_snapshot,'{actions,blocked_write_paths}','[\"tests.py\"]') where id=$1",[run]);
+   await negative("update workflow_runs set policy_snapshot=jsonb_set(policy_snapshot,'{actions,blocked_write_paths}','[\"tests/test_source.py\"]') where id=$1",[run]);
    await negative("insert into action_approvals values($1,'pending')",[run]);
    await negative("insert into side_effect_receipts values($1,'uncertain')",[project]);
    await negative("update action_receipts set receipt_hash='corrupt' where run_id=$1 and action_type='fixture_created'",[source]);
@@ -156,7 +157,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    // attempts. It cannot create another phase or retry arbitrary failures.
    await c.query("update workflow_runs set status='blocked',state_version=23 where id=$1",[run]);
    await c.query("update work_intents set expires_at=clock_timestamp()-interval '1 second'",[]);
-   await c.query("insert into work_intents values($1,'fresh-correction',3,'[\"source.py\",\"tests.py\"]',clock_timestamp()+interval '1 hour')",[project]);
+   await c.query("insert into work_intents values($1,'fresh-correction',3,'[\"source.py\",\"tests/test_source.py\"]',clock_timestamp()+interval '1 hour')",[project]);
    const correction={...input,correctedAttempt:true as const,expectedFence:result.fence,expectedStateVersion:'23',owner:'fresh-correction',intentFence:'3'};
    const phaseIds=fresh.workflow_snapshot.stages.slice(1).map((stage:any)=>stage.id);
    await c.query("update workflow_tasks set status=case when stage_id=$2 then 'blocked' else 'cancelled' end,attempts=case when stage_id=$2 then 1 else 0 end where run_id=$1 and id<>$3",[run,phaseIds[0],oldTask]);
@@ -182,6 +183,28 @@ test('one prospective source phase retains exhausted history and requires exact 
    await assert.rejects(admitProspectiveSourcePhaseOnClient(c,correction,correctedPreview.digest,correctionGrant));
    await c.query("update workflow_runs set status='blocked' where id=$1",[run]);
    await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...correction,expectedFence:corrected.fence,expectedStateVersion:'24'}),/One corrected attempt/);
+   await c.query("update workflow_tasks set status=case when stage_id=$2 then 'blocked' else 'cancelled' end,attempts=case when stage_id=$2 then 2 else 0 end where run_id=$1 and id<>$3",[run,phaseIds[0],oldTask]);
+   await c.query("update artifacts set content=$2 where uri=$1",['synthetic://refusal',{phase:'runtime-preparation',blockedReason:'Run environments require the exact project capability: npm run agentflow -- environments *'}]);
+   await c.query("update work_intents set expires_at=clock_timestamp()-interval '1 second'");
+   await c.query("insert into work_intents values($1,'fresh-amendment',4,'[\"source.py\",\"tests/test_source.py\"]',clock_timestamp()+interval '1 hour')",[project]);
+   const focused='python3 -m unittest discover -s tests -p test_source.py -v';
+   const amendment={...correction,expectedFence:corrected.fence,expectedStateVersion:'24',owner:'fresh-amendment',intentFence:'4',
+    commands:[...commands,focused],amendedAttempt:{verificationCommand:focused,rootFinalizationPaths:[],environmentProfile:'offline'}};
+   const amendedPreview=await previewProspectiveSourcePhaseOnClient(c,amendment);
+   assert.equal(amendedPreview.snapshot.policy.execution.environments?.profiles['source-phase-'+input.phaseId]?.kind,'container');
+   assert.deepEqual(amendedPreview.snapshot.policy.execution.environments?.profiles['source-phase-'+input.phaseId]?.verification[0]?.commands,[focused]);
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...amendment,writePaths:['source.py','tests/test_source.py','extra.py']}));
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...amendment,commands:[...amendment.commands,'additional command']}));
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...amendment,amendedAttempt:{...amendment.amendedAttempt,verificationCommand:'python3 -m unittest discover -s tests -p test_other.py -v'}}));
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,amendment,amendedPreview.digest,correctionGrant),/direct-human/);
+   const amendmentGrant=await putGrant({},'operator_prospective_source_phase_amendment_authorized',amendedPreview,'prospective_source_phase_amendment_authorization');
+   const amended=await admitProspectiveSourcePhaseOnClient(c,amendment,amendedPreview.digest,amendmentGrant);
+   assert.ok(BigInt(amended.fence)>BigInt(corrected.fence));
+   assert.equal((await c.query('select attempts from workflow_tasks where id=$1',[firstTask])).rows[0].attempts,2);
+   assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before);
+   assert.equal((await c.query('select count(*)::int n from workflow_tasks where run_id=$1',[run])).rows[0].n,4);
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_amended_once'",[run])).rows[0].n,1);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,amendment,amendedPreview.digest,amendmentGrant));
   }finally{await c.query('rollback');}});
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
