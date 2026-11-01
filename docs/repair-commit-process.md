@@ -1,5 +1,11 @@
 # Repair commit checkpoints
 
+Required source pipelines perform these phases automatically and finish with
+trusted canonical source integration. An unchanged revision still requires
+executed tests and a fresh independent verifier, but needs no artificial edit.
+See [prepared execution](workflow-rollout.md) for installation enforcement and
+existing-family preparation.
+
 A repair phase produces a source candidate with a durable revision. Independent
 verification checks that exact revision in a fresh environment. Failed attempts
 remain history; a candidate commit is never product acceptance.

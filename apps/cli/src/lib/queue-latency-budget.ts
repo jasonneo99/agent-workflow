@@ -23,6 +23,7 @@ const result=(phase:string,workClass:QueueLatencyBudget["workClass"],elapsedMs:n
 };
 
 export function queueLatencyBudget(item:QueueLatencyItem,now=Date.now()):QueueLatencyBudget{
+ if(item.waitReason?.category==='prepared')return {phase:'prepared: awaiting activation',workClass:'operator',elapsedMs:0,budgetMs:0,remainingMs:0,progress:0,status:'within'};
  if(item.queuedTasks>0&&item.runningTasks===0&&item.waitReason){
   return result(`waiting: ${item.waitReason.category}`,classify(item),item.waitReason.waitedMs,item.waitReason.budgetMs);
  }

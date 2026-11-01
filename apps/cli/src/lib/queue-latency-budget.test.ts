@@ -23,3 +23,8 @@ test("blocked and failed work gets a bounded decision phase",()=>{
  const budget=queueLatencyBudget({...base,runStatus:"blocked",runningTasks:0,latestActivityAt:"2026-10-26T10:00:00Z"},Date.parse("2026-10-26T10:05:01Z"));
  assert.equal(budget.workClass,"operator");assert.equal(budget.status,"overdue");assert.match(budget.phase,/blocked/);
 });
+
+test('an intentionally prepared entry has no invented execution deadline or overdue alert',()=>{
+ const budget=queueLatencyBudget({...base,runningTasks:0,queuedTasks:1,waitReason:{category:'prepared',waitedMs:0,budgetMs:0}},0);
+ assert.equal(budget.phase,'prepared: awaiting activation');assert.equal(budget.status,'within');assert.equal(budget.progress,0);assert.equal(budget.budgetMs,0);
+});

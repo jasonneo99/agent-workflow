@@ -47,6 +47,12 @@ function scopesOverlap(left: string[], right: string[]): boolean {
   const normalize = (value: string) => value.replaceAll("\\", "/").replace(/^\.\//u, "").replace(/\/$/u, "");
   return left.some((a) => right.some((b) => {
     const x = normalize(a); const y = normalize(b);
+    // Scope patterns inhibit conflicting work; they never grant file access.
+    // A conservative literal prefix also covers subtree and filename globs.
+    if(/[\*?\[]/u.test(x+y)){
+      const prefix=(value:string)=>value.split(/[\*?\[]/u,1)[0]!.replace(/\/$/u,'');
+      const px=prefix(x),py=prefix(y);return px.startsWith(py)||py.startsWith(px);
+    }
     return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
   }));
 }

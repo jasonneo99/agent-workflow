@@ -19,3 +19,21 @@ test('wait reasons identify the first authoritative scheduler constraint',()=>{
 test('class-specific wait budgets become alerts without changing eligibility',()=>{
  const reason=classifyQueueWait(row(),worker,now);assert.equal(reason.overdue,true);assert.equal(reason.budgetMs,30_000);assert.match(reason.reason,/Eligible/);
 });
+
+test('malformed and missing availability timestamps retain an honest hold without throwing',()=>{
+ for(const availableAt of ['infinity','not-a-date','',null,undefined]){
+  const reason=classifyQueueWait(row({available:false,availableAt}),worker,now);
+  assert.equal(reason.category,'availability-unknown');assert.match(reason.reason,/missing or invalid/);assert.equal(reason.overdue,false);
+  assert.ok(Number.isFinite(reason.waitedMs));assert.ok(Number.isFinite(reason.budgetMs));
+ }
+ const backoff=classifyQueueWait(row({available:false,availableAt:'2026-01-01T00:20:00Z'}),worker,now);
+ assert.equal(backoff.category,'backoff');assert.match(backoff.reason,/2026-01-01T00:20:00.000Z/);
+});
+test('unknown wait start times never fabricate elapsed time or overdue alerts; prepared entries remain paused',()=>{
+ for(const waitSince of ['infinity','invalid','',null,undefined]){
+  const reason=classifyQueueWait(row({waitSince}),worker,now);
+  assert.equal(reason.category,'eligible');assert.equal(reason.timingKnown,false);assert.equal(reason.waitedMs,0);assert.equal(reason.overdue,false);assert.match(reason.reason,/start time is unavailable/);
+ }
+ const prepared=classifyQueueWait(row({preparedOnly:true,available:false,availableAt:'infinity',waitSince:'infinity'}),worker,now);
+ assert.equal(prepared.category,'prepared');assert.match(prepared.reason,/explicit activation/);assert.equal(prepared.overdue,false);
+});

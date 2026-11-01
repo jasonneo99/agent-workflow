@@ -17,6 +17,8 @@ export const environmentProfileSchema = z.object({
   platform: z.enum(["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64", "win32/amd64", "win32/arm64"]),
   image: image.optional(),
   source_paths: z.array(relativePath).min(1).max(128),
+  source_extensions: z.array(z.string().regex(/^\.[a-zA-Z0-9]+$/u)).max(40).optional(),
+  source_exclude_paths: z.array(relativePath).max(128).optional(),
   dependency_paths: z.array(relativePath).max(128).default([]),
   setup: z.array(argv).max(32).default([]),
   build_network: z.enum(["none", "default"]).default("none"),
@@ -79,6 +81,10 @@ export const repairCommitPolicySchema = z.object({
   enabled: z.boolean().default(false),
   stages: z.array(z.string().min(1)).default(["implement", "repair"])
 }).strict();
+export const runPipelinePolicySchema = z.object({
+  required: z.boolean().default(false),
+  isolation: z.literal("worktree").default("worktree")
+}).strict();
 export interface EnvironmentContext {
   runId: string;
   taskId?: string;
@@ -86,6 +92,8 @@ export interface EnvironmentContext {
   stageId?: string;
   profile?: string;
   requireVerification?: boolean;
+  requireEnvironment?: boolean;
+  managedSource?: boolean;
   /** Independent runs may reuse a frozen recipe, never another run's authority. */
   reuseRunId?: string;
 }

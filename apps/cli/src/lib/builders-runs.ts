@@ -110,6 +110,7 @@ export function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAge
     description: `Run ${agent.display_name} directly as a one-stage specialist task.`,
     lead: agent.id,
     default_autonomy: agent.autonomy,
+    execution: {kind:agent.can.includes('edit_local_files')?'source-change':'read-only'},
     triggers: {
       manual: true,
       events: []

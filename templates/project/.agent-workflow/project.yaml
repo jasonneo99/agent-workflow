@@ -37,6 +37,12 @@ storage:
     allow_restore_execution: false
     allow_prune_execution: false
 execution:
+  pipeline:
+    required: true
+    isolation: worktree
+  repair_commits:
+    enabled: true
+    stages: [repair, implement, fix]
   policy_profile: local
   policy_profiles: {}
   # Remote executors are opt-in. Register a fixed adapter here, then bind an
@@ -94,6 +100,8 @@ team:
       read_only: true
 actions:
   allowed_commands:
+    - npm run agentflow -- environments *
+    - npm run agentflow -- repair-checkpoint *
     - npm install
     - npm test
     - npm run typecheck

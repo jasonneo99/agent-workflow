@@ -2,6 +2,8 @@ id: build-feature
 name: Build Feature
 description: Create, verify, package, and deliver a usable feature change. The keyword build never means analysis or planning alone.
 lead: workflow-orchestrator
+execution:
+  kind: source-change
 default_autonomy: 3
 triggers:
   manual: true

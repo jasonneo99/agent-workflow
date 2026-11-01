@@ -6,7 +6,7 @@ import path from "node:path";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import { assertFileReadAllowed } from "../../local-tools/src/file-reader.js";
 import { ENVIRONMENT_COMMAND, runEnvironmentsSchema, type EnvironmentContext, type EnvironmentProfile } from "./schema.js";
-import { testEvidence, type TestEvidence } from "./evidence.js";
+import { testEvidence, verificationCommandMatches, type TestEvidence } from "./evidence.js";
 
 export { environmentProfileSchema, runEnvironmentsSchema, ENVIRONMENT_COMMAND } from "./schema.js";
 export type { EnvironmentContext, EnvironmentProfile, RunEnvironments } from "./schema.js";
@@ -92,7 +92,7 @@ function assertEnabled(project: ProjectConfig): void {
 }
 
 function privatePath(relative: string): boolean {
-  return relative.split("/").some(part => [".git", ".agent-workflow", "node_modules", ".npmrc", ".pypirc", ".netrc", "__pycache__"].includes(part) ||
+  return relative.split("/").some(part => [".git", ".agent-workflow", "node_modules", ".npmrc", ".pypirc", ".netrc", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "DerivedData"].includes(part) ||
     /^\.env(?:\.|$)/u.test(part) || /\.(?:pem|key)$/iu.test(part) || /^id_(?:rsa|ed25519)(?:\.|$)/u.test(part));
 }
 
@@ -101,12 +101,14 @@ async function snapshot(root: string, profile: EnvironmentProfile, project: Proj
   let bytes = 0, inspected = 0;
   const walk = async (relative: string, explicit: boolean): Promise<void> => {
     if (++inspected > profile.limits.max_files * 4) throw Error("Environment source inspection exceeds its bound.");
+    if(profile.source_exclude_paths?.some(excluded=>relative===excluded||relative.startsWith(excluded+'/'))){if(explicit)throw Error('An explicit environment input is excluded: '+relative);return;}
     if (privatePath(relative)) {
       if (explicit) throw Error(`Private or generated source cannot enter an environment: ${relative}`);
       return;
     }
     const absolute = path.join(root, relative);
     const stat = await fs.lstat(absolute);
+    if(!explicit&&!stat.isDirectory()&&profile.source_extensions?.length&&!profile.source_extensions.includes(path.extname(relative)))return;
     if (stat.isSymbolicLink() || await fs.realpath(absolute) !== absolute) throw Error(`Environment source contains a symlink: ${relative}`);
     if (stat.isDirectory()) {
       for (const entry of (await fs.readdir(absolute)).sort()) await walk(`${relative}/${entry}`, false);
@@ -234,7 +236,9 @@ export async function runEnvironmentCommand(input: {
   if (stable(await expandCompileArguments(input.commandLine, input.cwd)) !== stable(input.argv)) throw Error("Environment argv does not match the exact authorized command.");
   await input.assertAuthority?.();
   const { plan, files, root, config } = await resolvePlan(input);
-  const declaration = plan.spec.verification.find(item => item.commands.includes(input.commandLine));
+  const declarations = plan.spec.verification.filter(item => item.commands.some(pattern=>verificationCommandMatches(input.commandLine,pattern)));
+  if(declarations.length>1)throw Error('Ambiguous verification contract for this literal command.');
+  const declaration = declarations[0];
   if (input.context.requireVerification && !declaration) throw Error("Independent verification requires a declared test collection contract for this exact command.");
   const attemptId = randomUUID(), started = Date.now();
   const evidence: EnvironmentEvidence = { schemaVersion: 1, authority: "execution-evidence-only", runId: input.context.runId,
@@ -353,7 +357,8 @@ export async function runEnvironmentCommand(input: {
           successful(await invoke(["pull", "--platform", plan.platform, service.image]), "Pinned service image unavailable");
           const id = await create(service.image, service.argv ?? [], true, service.user, service.env, name);
           successful(await invoke(["start", id]), "Test service failed to start");
-          await probeUntilReady(service.readiness, () => invoke(["exec", id, ...service.readiness.argv], "service-readiness"), `Service ${name} is not ready`);
+          try{await probeUntilReady(service.readiness, () => invoke(["exec", id, ...service.readiness.argv], "service-readiness"), `Service ${name} is not ready`);}
+          catch(error){const logs=await invoke(['logs','--tail','60',id],'service-diagnostics');throw Error(`${String(error)}\n${logs.stdout.slice(-3000)}${logs.stderr.slice(-3000)}`);}
         }
       }
       for (const probe of plan.spec.readiness) {
@@ -369,7 +374,7 @@ export async function runEnvironmentCommand(input: {
   } finally {
     const cleanupErrors: string[] = [];
     for (const id of [...containers].reverse()) {
-      try { successful(await invoke(["rm", "--force", id], "cleanup", true), "Owned container cleanup failed"); }
+      try { successful(await invoke(["rm", "--force", "--volumes", id], "cleanup", true), "Owned container cleanup failed"); }
       catch (error) { cleanupErrors.push(String(error)); }
     }
     if (network) {

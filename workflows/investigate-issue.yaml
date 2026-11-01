@@ -2,6 +2,8 @@ id: investigate-issue
 name: Investigate Issue
 description: Read-only investigation for suspected problems, audits, and diagnostic questions that do not yet justify a repair workflow.
 lead: ci-debugger
+execution:
+  kind: read-only
 default_autonomy: 1
 triggers:
   manual: true

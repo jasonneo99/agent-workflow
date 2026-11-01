@@ -1,17 +1,24 @@
 import fs from "node:fs/promises";
 import { withClient } from "../../../../packages/storage/src/client.js";
 
-export type QueueWaitReason = { category: string; reason: string; waitedMs: number; budgetMs: number; overdue: boolean };
+export type QueueWaitReason = { category: string; reason: string; waitedMs: number; budgetMs: number; overdue: boolean; timingKnown?:boolean };
 type Candidate = {
   runId:string;available:boolean;availableAt:string;waitSince:string;runStatus:string;coordinatorClaim:boolean;coordinatorReady:boolean;
-  requiredProvider:string|null;allowedPlatforms:string[];projectActive:number;dependencyBlocked:boolean;serialBlocked:boolean;checkoutUnavailable:boolean;
+  requiredProvider:string|null;allowedPlatforms:string[];projectActive:number;dependencyBlocked:boolean;serialBlocked:boolean;checkoutUnavailable:boolean;preparedOnly?:boolean;
 };
 type WorkerEvidence={status?:string;providerIds?:string[];workerId?:string;perProjectConcurrency?:number};
 
 export function classifyQueueWait(candidate:Candidate,worker:WorkerEvidence,now=Date.now()):QueueWaitReason{
- const waitedMs=Math.max(0,now-Date.parse(candidate.waitSince));
- const result=(category:string,reason:string,budgetMs:number):QueueWaitReason=>({category,reason,waitedMs,budgetMs,overdue:waitedMs>budgetMs});
- if(!candidate.available)return result('backoff',`Retry backoff is active until ${new Date(candidate.availableAt).toISOString()}.`,Math.max(0,Date.parse(candidate.availableAt)-Date.parse(candidate.waitSince)));
+ const waitStart=Date.parse(candidate.waitSince),availableAt=Date.parse(candidate.availableAt);
+ const timingKnown=Number.isFinite(waitStart)&&Number.isFinite(now);
+ // Zero is only a display lower bound when timing is unknown, never an invented start timestamp.
+ const waitedMs=timingKnown?Math.max(0,now-waitStart):0;
+ const result=(category:string,reason:string,budgetMs:number):QueueWaitReason=>({category,reason:reason+(!timingKnown?' Wait start time is unavailable.':''),waitedMs,budgetMs,timingKnown,overdue:timingKnown&&category!=='prepared'&&category!=='availability-unknown'&&waitedMs>budgetMs});
+ if(candidate.preparedOnly)return result('prepared','Prepared for the new workflow; waiting for explicit activation.',0);
+ if(!candidate.available){
+  if(!Number.isFinite(availableAt))return result('availability-unknown','Work is unavailable; its next eligible timestamp is missing or invalid.',60_000);
+  return result('backoff',`Retry backoff is active until ${new Date(availableAt).toISOString()}.`,Math.max(0,availableAt-(timingKnown?waitStart:Number.isFinite(now)?now:availableAt)));
+ }
  if(!['queued','leased','running'].includes(candidate.runStatus))return result('lifecycle',`Parent run is ${candidate.runStatus}; queued child work is not claimable.`,60_000);
  if(candidate.coordinatorClaim&&!candidate.coordinatorReady)return result('intent-conflict','The Queue Partner ownership or work-intent fence is no longer current.',60_000);
  if(candidate.coordinatorClaim)return result('dedicated-owner','Reserved for its fenced Queue Partner actor; waiting for that actor to claim it.',120_000);
@@ -33,6 +40,7 @@ export async function withQueueWaitReasons<T extends {runId:string;queuedTasks:n
  const rows=await withClient(async client=>(await client.query<Candidate>(`select distinct on(wt.run_id)
   wt.run_id::text as "runId",wt.available_at<=clock_timestamp() available,wt.available_at::text as "availableAt",
   coalesce(wt.available_at,wr.started_at)::text as "waitSince",wr.status as "runStatus",
+  coalesce(wr.evaluation_metadata#>>'{executionPipeline,preparedOnly}','false')='true' as "preparedOnly",
   coalesce(wr.evaluation_metadata,'{}'::jsonb)?'queueCoordinatorClaimId' as "coordinatorClaim",
   case when coalesce(wr.evaluation_metadata,'{}'::jsonb)?'queueCoordinatorClaimId' then exists(
    select 1 from queue_coordinator_assignments q join work_intents i on i.project_id=q.project_id::text and i.owner=q.owner and i.fencing_token::text=q.intent_fence and i.expires_at>clock_timestamp()

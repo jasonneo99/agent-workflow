@@ -149,7 +149,7 @@ test('enabled Partner repairs use the checkpoint stage and an independent verifi
  const project=projectConfigSchema.parse({project:{name:'Declared repair'},execution:{repair_commits:{enabled:true}},actions:{allowed_commands:['npm run agentflow -- repair-checkpoint *'],blocked_commands:[]}});
  const workflow=partnerRecoveryWorkflow(worker,project,template);
  assert.equal(workflow.id,'partner-repair-backend-engineer');
- assert.deepEqual(workflow.stages.map(s=>[s.id,s.agent]),[['repair','backend-engineer'],['verify','test-engineer']]);
+ assert.deepEqual(workflow.stages.map(s=>[s.id,s.agent]),[['repair','backend-engineer'],['verify','test-engineer'],['integrate','workflow-orchestrator']]);
  assert.equal(workflow.stages[1]!.pattern.type,'verifier');
  assert.ok(partnerRecoveryCommands(project,['src/a.ts']).includes('npm run agentflow -- repair-checkpoint *'));
  assert.deepEqual(partnerRecoveryWorkflow(worker,project,undefined,false).stages.map(s=>s.id),['specialist-task']);

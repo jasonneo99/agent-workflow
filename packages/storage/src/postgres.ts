@@ -1,6 +1,8 @@
 import { queueCoordinatorSchemaSql } from "./queue-coordinator-schema.js";
 import { automaticRecoveryAdmissionFenceSql, automaticRecoveryWrapperReason, automaticRepeatForbidden, noAutomaticRepeatReason } from "./no-automatic-repeat.js";
 import {assertGenericRunRecoveryAllowed} from './managed-run-recovery.js';
+import { runPipelineSchemaSql, installationRequiresRunPipeline } from './run-pipeline.js';
+import { pipelineContract, preparedWorkflow, type RunPipelineContract } from '../../run-environments/src/pipeline.js';
 /** Persist unfinished stage state and yield its lease without promoting the stage. */
 export async function checkpointWorkflowTaskContinuation(input: {
   taskId: string; runId: string; agentId: string; workerId: string; fencingToken: string;
@@ -131,6 +133,7 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS requester_channel text NOT NULL DEFAULT 'dashboard'
     `);
     await client.query(automaticRecoveryAdmissionFenceSql);
+    await client.query(runPipelineSchemaSql);
     await client.query(`
       CREATE TABLE IF NOT EXISTS run_notifications (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1517,6 +1520,7 @@ export async function listProjectFileSummaries(input: {
 }
 
 export interface CreateRunInput {
+  prepareOnly?: boolean;
   acceptanceRequirements?: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables">;
   projectName: string;
   projectRootUri: string;
@@ -1549,6 +1553,19 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      const installationRequired = await installationRequiresRunPipeline(client);
+      const required = installationRequired || (input.policySnapshot as ProjectConfig)?.execution?.pipeline?.required === true;
+      if (required) {
+        const {loadWorkflows}=await import('../../agent-registry/src/loaders.js');
+        const {findAgentWorkflowRoot}=await import('../../runtime-root/src/index.js');
+        const repair=(await loadWorkflows(findAgentWorkflowRoot(import.meta.url))).find(workflow=>workflow.id==='repair-blocked-item');
+        if(!repair)throw Error('The required prepared repair workflow is missing from this runtime');
+        const workflow=preparedWorkflow(input.workflow,true,repair);
+        input={...input,workflow,workflowHash:workflowDefinitionHash(workflow)};
+      }
+      const executionPipeline=pipelineContract(input.policySnapshot as ProjectConfig,input.workflow,installationRequired,input.prepareOnly===true);
+      const hints=input.acceptanceRequirements?.sourcePaths??input.evaluationMetadata?.recoveryWritePaths??(input.evaluationMetadata?.taskGrant as {sourceWritePaths?:unknown}|undefined)?.sourceWritePaths;
+      if(Array.isArray(hints)&&hints.length<=256&&hints.every(value=>typeof value==='string'&&value.length>0&&value.length<=512&&!value.startsWith('/')&&!/[\\*?\[\]{}\x00-\x1f]/u.test(value)&&value.split('/').every(part=>part&&part!=='.'&&part!=='..')))executionPipeline.sourcePaths=[...new Set(hints)] as string[];
       const projectResult = await client.query<{ id: string }>(
         `insert into projects (name, root_uri, profile, config, updated_at)
          values ($1, $2, $3, $4, now())
@@ -1570,7 +1587,8 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const workflowVersion = String(input.workflowVersion ?? "1");
       const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
       if (input.evaluationMetadata?.acceptanceContract) throw new Error("Use acceptanceRequirements for atomic runtime enrollment.");
-      const evaluationMetadataJson = JSON.stringify({ ...(input.evaluationMetadata ?? {}),
+      const evaluationMetadataJson = JSON.stringify({ ...(input.evaluationMetadata ?? {}), executionPipeline,
+        ...(executionPipeline.required&&executionPipeline.sourceChanges?{partnerRepairPipeline:{version:1,requiresVerifierSlot:true}}:{}),
         ...(input.acceptanceRequirements ? { acceptanceRequirements: input.acceptanceRequirements } : {}) });
       const presentation = buildRunPresentation({ task: input.task, workflowId: input.workflow.id, projectName: input.projectName });
       const constructionRationale = input.constructionRationale && typeof input.constructionRationale === "object" && !Array.isArray(input.constructionRationale)
@@ -1659,14 +1677,15 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const taskIds: Record<string, string> = {};
       for (const stage of input.workflow.stages) {
         const taskResult = await client.query<{ id: string }>(
-          `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
-           values ($1, $2, $3, 'queued', $4)
+          `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key,available_at)
+           values ($1, $2, $3, 'queued', $4,case when $5::boolean then 'infinity'::timestamptz else now() end)
            returning id::text`,
           [
             runId,
             stage.id,
             stage.agent,
-            `${runId}:${stage.id}:${stage.agent}`
+            `${runId}:${stage.id}:${stage.agent}`,
+            input.prepareOnly===true
           ]
         );
         taskIds[stage.id] = taskResult.rows[0].id;
@@ -2388,6 +2407,12 @@ async function createWorkflowHandoffsForRun(client: pg.Client, runId: string, wo
 }
 
 export interface ClaimedWorkflowTask {
+  projectId?: string;
+  executionPipeline?: RunPipelineContract;
+  executionIntent?: {owner:string;fencingToken:string};
+  executionWritePaths?: string[];
+  checkpointAfter?: boolean;
+  runtimeOperation?: 'integrate-source';
   acceptanceContract?: StructuredAcceptanceContract;
   remainingStageIds?: string[];
   taskId: string;
@@ -2443,6 +2468,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      await client.query("select set_config('agentflow.execution_pipeline','1',true)");
       const workerId = input?.workerId?.trim() || `worker-${process.pid}`;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 120));
       const projectRootUri = input?.projectRootUri?.trim() || null;
@@ -2474,6 +2500,9 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality stage(definition, stage_order)
              on stage.definition->>'id' = wt.stage_id
            where wt.status = 'queued'
+             and coalesce(wr.evaluation_metadata#>>'{executionPipeline,preparedOnly}','false')<>'true'
+             and (not coalesce((select required from run_pipeline_settings where id=1),false)
+               or wr.evaluation_metadata#>>'{executionPipeline,required}'='true')
              and wr.status in ('queued', 'leased', 'running')
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
@@ -2568,6 +2597,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
          returning
            wt.id as "taskId",
            wt.run_id as "runId",
+           p.id::text as "projectId",
+           wr.evaluation_metadata->'executionPipeline' as "executionPipeline",
+           wr.evaluation_metadata->'workIntent' as "executionIntent",
+           wr.evaluation_metadata#>'{taskGrant,sourceWritePaths}' as "executionWritePaths",
+           coalesce((select (stage->>'checkpoint_after')::boolean from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot,'{}'::jsonb),wf.definition)->'stages') stage where stage->>'id'=wt.stage_id limit 1),false) as "checkpointAfter",
+           (select stage->>'runtime_operation' from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot,'{}'::jsonb),wf.definition)->'stages') stage where stage->>'id'=wt.stage_id limit 1) as "runtimeOperation",
            p.root_uri as "projectRootUri",
            coalesce(nullif(wr.policy_snapshot, '{}'::jsonb), p.config) as "projectConfig",
            wr.workflow_id as "workflowId",
@@ -2665,6 +2700,7 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
   await withClient(async (client) => {
     await client.query("begin");
     try {
+      await client.query("select set_config('agentflow.execution_pipeline','1',true)");
       const result = await client.query(`update workflow_tasks set status='running',started_at=coalesce(started_at,now()) where id=$1 and run_id=$2 and status='leased' and worker_id=$3 and lease_generation=$4::bigint and lease_expires_at>now()`, [input.taskId,input.runId,input.workerId,input.fencingToken]);
       if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
       await transitionWorkflowRun(client, {

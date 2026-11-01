@@ -2,6 +2,8 @@ id: review-pr
 name: Review Pull Request
 description: Review changes for correctness, risk, UX impact, security, and missing tests.
 lead: workflow-orchestrator
+execution:
+  kind: read-only
 default_autonomy: 2
 triggers:
   manual: true

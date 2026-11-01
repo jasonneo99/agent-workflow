@@ -51,7 +51,8 @@ export async function queueWorkingOccupancyOnClient(c:Client){
   (select count(*) from queue_coordinator_assignments where state in ${active})+
   (select count(*) from workflow_runs r where (r.status in ('leased','running') or
    (r.status='queued' and (r.evaluation_metadata->>'source'='authorized-project-dependency'
-    or r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true')))
+    or (r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true'
+      and coalesce(r.evaluation_metadata#>>'{executionPipeline,preparedOnly}','false')<>'true'))))
    and not exists(select 1 from queue_coordinator_assignments q where q.child_run_id=r.id and q.project_id=r.project_id
     and q.state in ${active} and r.evaluation_metadata->>'queueCoordinatorClaimId'=q.id::text
     and r.evaluation_metadata->>'queueCoordinatorFence'=q.fence::text)) as count,
@@ -62,7 +63,8 @@ export async function queueWorkingOccupancyOnClient(c:Client){
      and a.action_type='queue_partner_reasoning_reserved' and a.target=q.id::text
      and a.metadata->>'fence'=q.fence::text and a.metadata->>'requiresVerifierSlot'='true')))
    or exists(select 1 from workflow_runs r where r.status in ('queued','leased','running')
-    and r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true')) verifier`)).rows[0];
+    and r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true'
+    and coalesce(r.evaluation_metadata#>>'{executionPipeline,preparedOnly}','false')<>'true')) verifier`)).rows[0];
  const external=await externalQueueReservationOccupancyOnClient(c);
  return {count:Number(row.count)+external.count,dependencies:Number(row.dependencies),verifier:Boolean(row.verifier)||external.verifier,externalFamilyIds:external.reservations.map(b=>b.familyId)};
 }

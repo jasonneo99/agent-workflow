@@ -1,10 +1,14 @@
 # Per-run execution environments
 
 An owning project can select a reproducible environment for each run, workflow,
-stage or command. Existing projects keep their command execution behavior until
-they declare profiles and enable the exact environment capability. A profile
+stage or command. Required installations enforce the prepared execution path
+for every new run; projects must declare profiles and the exact environment
+capability before source execution. A profile
 prepares the toolchain and dependencies; it does not authorize an otherwise
 blocked command, replay an older run, or accept a product requirement.
+
+See [prepared execution and queue reprocessing](workflow-rollout.md) for rollout,
+isolated workspaces and paused preparation entries.
 
 ## Configure a profile
 

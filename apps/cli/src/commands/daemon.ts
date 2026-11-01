@@ -25,6 +25,7 @@ import { type DaemonTrustSettings, type FleetProjectScope, classifyFleetProject,
 import { buildDaemonControlStatus } from "../../../../packages/daemon-control/src/status.js";
 import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../../packages/dashboard-report-cache/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../../packages/dashboard/src/queue-watcher.js";
+import {resolveRunExecutionRoot} from '../../../../packages/storage/src/run-pipeline.js';
 import {withQueueCardActivity,type QueueCardActivity} from '../lib/queue-card-activity.js';
 import {withQueueWaitReasons,type QueueWaitReason} from '../lib/queue-wait-reasons.js';
 import {QueueCardSnapshotCache,type QueueCardSnapshot} from '../lib/queue-card-snapshot.js';
@@ -20903,10 +20904,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const projectDir = path.resolve(process.cwd(), options.project);
       const project = await loadProjectConfig(projectDir);
       const commandLine = commandParts.join(" ");
+      const execution=await resolveRunExecutionRoot({runId:options.run,canonicalRoot:projectDir});
       const result = await executeAllowedCommand({
         commandLine,
-        cwd: projectDir,
-        project
+        cwd: execution.root,
+        project,
+        environmentContext:execution.contract?.required?{runId:options.run,workflowId:execution.workflowId,requireEnvironment:true,managedSource:execution.contract.sourceChanges}:undefined
       });
 
       const summary = [

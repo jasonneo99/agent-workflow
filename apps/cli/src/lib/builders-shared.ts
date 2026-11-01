@@ -1,4 +1,6 @@
 import type { Dirent } from "node:fs";
+import {resolveRunExecutionRoot} from '../../../../packages/storage/src/run-pipeline.js';
+import {acquireWorkIntent,releaseWorkIntent} from '../../../../packages/storage/src/postgres.js';
 import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
 import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 import type { CliContext } from "./context.js";
@@ -481,7 +483,8 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     }
     if (approval.actionType === "local_command") {
       const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
-      const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
+      const execution=await resolveRunExecutionRoot({runId:approval.runId,canonicalRoot:await resolveLocalProjectRootUri(approval.projectRootUri)});
+      const localProjectRootUri = execution.root;
       const runBinding = await withClient(async c => (await c.query<ApprovedCommandRunBinding>(`select r.id::text as "runId",
         r.project_id::text as "projectId",p.root_uri as "projectRootUri",r.task,r.evaluation_metadata->'acceptanceContract' as contract,
         r.evaluation_metadata->>'queueCoordinatorClaimId' as "coordinatorClaimId",r.evaluation_metadata->>'queueCoordinatorFence' as "coordinatorFence"
@@ -493,7 +496,8 @@ export async function executeApprovedAction(ctx: CliContext, input: {
         execute: () => executeAllowedCommand({
         commandLine,
         cwd: localProjectRootUri,
-        project
+        project,
+        environmentContext:execution.contract?.required?{runId:approval.runId,taskId:approval.taskId??undefined,workflowId:execution.workflowId,stageId:approval.stageId??undefined,requireEnvironment:true,managedSource:execution.contract.sourceChanges}:undefined
       }) });
       const result = bound.result;
       const summary = [
@@ -553,8 +557,9 @@ export async function executeApprovedAction(ctx: CliContext, input: {
 
     const fileWrite = await loadApprovedFileWrite(approval);
     const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
-    const canonicalProjectRoot = await fs.realpath(localProjectRootUri);
     const approvedProjectRoot = stringFromRecord(approval.payload, "canonicalProjectRoot");
+    const execution=await resolveRunExecutionRoot({runId:approval.runId,canonicalRoot:localProjectRootUri,requestedRoot:approvedProjectRoot??undefined});
+    const canonicalProjectRoot = execution.root;
     const approvedProjectRootHash = stringFromRecord(approval.payload, "projectRootHash");
     if (approvedProjectRoot && approvedProjectRoot !== canonicalProjectRoot) {
       throw new Error(`Approved file mutation project root changed: expected ${approvedProjectRoot}, resolved ${canonicalProjectRoot}.`);
@@ -562,11 +567,13 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     if (approvedProjectRootHash && approvedProjectRootHash !== textHash(canonicalProjectRoot)) {
       throw new Error("Approved file mutation project-root hash no longer matches the resolved checkout.");
     }
-    const result = await withProjectExecutionLock({projectRootUri:canonicalProjectRoot,resource:`file:${fileWrite.request.path.replace(/\\/gu,"/")}`},()=>executeAllowedFileMutation({
+    const intent=execution.contract?.required?await acquireWorkIntent({projectId:execution.projectId,owner:`approved-action:${approval.id}`,objective:`Execute exact approved source mutation ${approval.id}`,fileScopes:[fileWrite.request.path],ttlSeconds:120}):undefined;
+    let result:Awaited<ReturnType<typeof executeAllowedFileMutation>>;
+    try{result = await withProjectExecutionLock({projectRootUri:canonicalProjectRoot,resource:`file:${fileWrite.request.path.replace(/\\/gu,"/")}`},()=>executeAllowedFileMutation({
       ...fileWrite,
       cwd: canonicalProjectRoot,
       project
-    }));
+    }));}finally{if(intent)await releaseWorkIntent(intent);}
     const summary = summarizeFileMutation(result, fileWrite.isPatch);
     const artifactUri = await recordRunAction({
       runId: approval.runId,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runEnvironmentsSchema, repairCommitPolicySchema } from "../../run-environments/src/schema.js";
+import { runEnvironmentsSchema, repairCommitPolicySchema, runPipelinePolicySchema } from "../../run-environments/src/schema.js";
 
 export const autonomyLevelSchema = z.union([
   z.literal(0),
@@ -76,6 +76,7 @@ const dynamicWorkflowMetadataSchema = z.object({
 });
 
 export const workflowSchema = z.object({
+  execution: z.object({ kind: z.enum(["source-change", "read-only"]) }).optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().min(1),
@@ -116,6 +117,8 @@ export const workflowSchema = z.object({
       max_tokens: z.number().int().positive().default(4000)
     }).default({ load: [], max_tokens: 4000 }),
     approval_required: z.boolean().default(false),
+    checkpoint_after: z.boolean().optional(),
+    runtime_operation: z.literal('integrate-source').optional(),
     executor: z.object({
       id: z.string().min(1),
       operation: z.enum(["typecheck", "validate", "test"])
@@ -284,6 +287,7 @@ export const projectConfigSchema = z.object({
     executor_adapters: z.record(z.string(), executorAdapterRegistrationSchema).optional(),
     environments: runEnvironmentsSchema.optional(),
     repair_commits: repairCommitPolicySchema.optional(),
+    pipeline: runPipelinePolicySchema.optional(),
     worker_pool: workerPoolSchema.optional()
   }).default({ policy_profile: "local", policy_profiles: {}, executor_adapters: {} }),
   policies: z.object({

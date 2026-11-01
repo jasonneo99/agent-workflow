@@ -2,6 +2,8 @@ id: training-evaluation
 name: Training Proposal Evaluation
 description: Convert one approved public-source training proposal into a bounded local holdout, execute it without changing production behavior, and produce reviewable evidence.
 lead: eval-curator
+execution:
+  kind: source-change
 default_autonomy: 2
 triggers:
   manual: true

@@ -1,4 +1,5 @@
 import type { CliContext } from "../lib/context.js";
+import {activatePreparedWorkflowRun} from '../../../../packages/storage/src/run-pipeline.js';
 import { withEvaluationSlot } from "../../../../packages/evaluation/src/execution.js";
 import type { Command } from "commander";
 import type { DashboardFollowUpResult } from "../lib/cli-types.js";
@@ -28,6 +29,12 @@ import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/sour
 import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 
 export function registerRunsCommands(program: Command, ctx: CliContext): void {
+  program.command('activate-prepared-run').description('Activate an exact prepared source plan under a current owning intent; preserve historical attempts')
+    .requiredOption('--run <id>','prepared workflow run')
+    .requiredOption('--plan-hash <hash>','exact prepared plan hash')
+    .requiredOption('--owner <owner>','current owning project intent')
+    .requiredOption('--fence <token>','current intent fencing token')
+    .action(async(options:{run:string;planHash:string;owner:string;fence:string})=>{console.log(JSON.stringify(await activatePreparedWorkflowRun({runId:options.run,planHash:options.planHash,owner:options.owner,fencingToken:options.fence})));});
   function formatOrchestrationPlan(plan: OrchestrationPlan): string {
     return [
       "Orchestration Plan",

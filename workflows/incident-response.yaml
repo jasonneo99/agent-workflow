@@ -2,6 +2,8 @@ id: incident-response
 name: Incident Response
 description: Triage, contain, diagnose, recover, and document an operational or security incident.
 lead: workflow-orchestrator
+execution:
+  kind: source-change
 default_autonomy: 1
 triggers:
   manual: true

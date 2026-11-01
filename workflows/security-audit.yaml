@@ -2,6 +2,8 @@ id: security-audit
 name: Security Audit
 description: Perform a scoped security, privacy, secrets, dependency, and deployment-risk assessment with reviewable remediation.
 lead: security-reviewer
+execution:
+  kind: read-only
 default_autonomy: 1
 triggers:
   manual: true

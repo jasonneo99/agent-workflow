@@ -1,5 +1,10 @@
 import type { EnvironmentProfile } from "./schema.js";
 
+/** Patterns select a test contract, never a command or permission to execute. */
+export function verificationCommandMatches(command: string, pattern: string): boolean {
+  return new RegExp(`^${pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('.*')}$`, 'u').test(command);
+}
+
 export interface TestEvidence {
   status: "passed" | "failed";
   cases: number | null;

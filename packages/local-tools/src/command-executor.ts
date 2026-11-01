@@ -91,6 +91,11 @@ export async function executeAllowedCommand(input: {
   const commandLine = normalizeCommand(input.commandLine);
   assertCommandAllowed(commandLine, input.project);
   const argv = await expandCompileArguments(commandLine, input.cwd);
+  const managedGit = input.environmentContext?.managedSource === true || input.environmentContext?.requireEnvironment === true;
+  const managedGitRead = managedGit && argv[0] === 'git'
+    && ['status','diff','show','log','rev-parse','ls-files','ls-tree','cat-file','check-attr','check-ignore','for-each-ref','describe','merge-base','version'].includes(argv[1]??'');
+  if(managedGit&&argv[0]==='git'&&!managedGitRead)throw Error('Source-control mutations are owned by the prepared runtime, not model-requested commands.');
+  if(managedGitRead&&argv.some(argument=>/^(?:--no-index|--ext-diff|--textconv|--filters|--output)(?:=|$)/u.test(argument)||argument.startsWith('../')||argument.includes('/../')||(path.isAbsolute(argument)&&!path.resolve(argument).startsWith(path.resolve(input.cwd)+path.sep))))throw Error('Prepared Git observations cannot escape the owning checkout or invoke external tools.');
   if (argv.join("\0") !== splitCommand(commandLine).join("\0")) {
     const moduleIndex = argv[1] === "-B" ? 2 : 1;
     const prefix = argv.slice(0, moduleIndex + 2);
@@ -119,7 +124,8 @@ export async function executeAllowedCommand(input: {
   const timeoutMs = input.project.actions.command_timeout_ms;
   const maxOutputChars = input.project.actions.max_output_chars;
 
-  const selectedEnvironment = input.environmentContext ? selectEnvironment(input.project, input.environmentContext, commandLine) : null;
+  const selectedEnvironment = input.environmentContext&&!managedGitRead ? selectEnvironment(input.project, input.environmentContext, commandLine) : null;
+  if(input.environmentContext?.requireEnvironment&&!selectedEnvironment&&!managedGitRead)throw Error('This run requires a declared prepared environment for this command; host fallback is disabled.');
   if (input.environmentContext && selectedEnvironment) {
     let observed: EnvironmentResult;
     try { observed = await runEnvironmentCommand({ cwd: input.cwd, project: input.project,
@@ -146,7 +152,8 @@ export async function executeAllowedCommand(input: {
     return { ...observed, commandLine, cwd: input.cwd, ...(verificationRecipe ? { verificationRecipe } : {}) };
   }
 
-  const sandbox=await prepareScopedCommandSandbox({enabled:input.project.actions.isolate_command_writes===true,nativePty:input.project.actions.isolate_command_writes===true && (input.project.actions.scoped_native_pty_commands??[]).includes(commandLine),argv,env:createProjectCommandEnv()});
+  const executionArgv=managedGitRead&&['diff','show','log'].includes(argv[1]??'')?[argv[0]!,argv[1]!,'--no-ext-diff','--no-textconv',...argv.slice(2)]:argv;
+  const sandbox=await prepareScopedCommandSandbox({enabled:input.project.actions.isolate_command_writes===true,nativePty:input.project.actions.isolate_command_writes===true && (input.project.actions.scoped_native_pty_commands??[]).includes(commandLine),argv:executionArgv,env:createProjectCommandEnv()});
   try{return await new Promise<CommandExecutionResult>((resolve, reject) => {
     const child = spawn(sandbox.argv[0], sandbox.argv.slice(1), {
       cwd: input.cwd,

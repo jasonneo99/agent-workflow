@@ -143,10 +143,10 @@ export function partnerRecoveryCommands(project:ProjectConfig,paths:readonly str
 }
 
 export function partnerRecoveryWorkflow(worker:Awaited<ReturnType<typeof loadAgents>>[number],project:ProjectConfig,template?:WorkflowDefinition,sourceRepair=true):WorkflowDefinition {
- const selected=sourceRepair&&project.execution.repair_commits?.enabled===true;
+ const selected=sourceRepair;
  if(selected){
   assertRepairCommitEnabled(project);
-  if(!template||template.id!=='repair-blocked-item'||template.stages.length!==2||template.stages[0]?.id!=='repair'
+  if(!template||template.id!=='repair-blocked-item'||template.stages.length!==3||template.stages[0]?.id!=='repair'
     ||template.stages[1]?.id!=='verify'||template.stages[1]?.pattern?.type!=='verifier'
     ||!project.execution.repair_commits!.stages.includes('repair'))throw Error('Partner repair pipeline requires its repair/verify workflow and configured repair checkpoint stage.');
  }
@@ -156,7 +156,6 @@ export function partnerRecoveryWorkflow(worker:Awaited<ReturnType<typeof loadAge
 }
 
 export async function preflightPartnerRepairPipeline(cwd:string,project:ProjectConfig,paths:string[],workflow:WorkflowDefinition){
- if(!project.execution.repair_commits?.enabled)return;
  assertRepairCommitEnabled(project);
  const commands=materializeVerificationRecipes(project,paths);
  if(!commands.length)throw Error('Repair pipeline requires an exact declared behavioral test recipe before consuming a repair attempt.');
@@ -164,7 +163,11 @@ export async function preflightPartnerRepairPipeline(cwd:string,project:ProjectC
   const plan=await planRunEnvironment({cwd,project,context:{runId:'partner-repair-preflight',workflowId:workflow.id,stageId:stage,requireVerification:true},commandLine});
   if(!plan)throw Error(`Repair pipeline has no declared environment for ${stage}: ${commandLine}`);
  }
- await repairCommitBaseline(cwd);
+ // Shared dirt is snapshotted into a run-owned checkout by the required
+ // preparation phase; it cannot force the actor onto a legacy workflow.
+ const {runProcess}=await import('../../../../packages/run-environments/src/index.js');
+ const git=await runProcess(['git','rev-parse','--verify','HEAD'],{cwd,timeoutMs:10000,maxOutputChars:4096});
+ if(git.exitCode!==0)throw Error('Source repair requires a registered Git checkout with an immutable base revision');
 }
 
 export type PartnerRecoveryFact={runId:string;kind:string;target:string;summary:string;exitCode?:number;timedOut?:boolean;nextHash?:string};
@@ -375,7 +378,7 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
     allowed_write_paths:writePaths,allowed_commands:writePaths.length?partnerRecoveryCommands(resolved.project,writePaths):[],isolate_command_writes:true}});
    const admission=writePaths.length?await preparePartnerAdmission({sourceRunId:source.id,projectId:family.projectId,projectRootUri:source.root_uri,
     familyId:family.familyId,task:source.task,metadata:source.metadata,project:resolved.project,paths:writePaths}):undefined;
-   const pipelineAgents=writePaths.length&&policy.execution.repair_commits?.enabled?await loadAgents(ctx.rootDir):[];
+   const pipelineAgents=writePaths.length?await loadAgents(ctx.rootDir):[];
    const pipelineWorker=pipelineAgents.find(a=>a.id===selectPartnerWorkerAgent(writePaths))??pipelineAgents.find(a=>a.id==='implementation-agent');
    const pipelineTemplate=pipelineWorker?(await loadWorkflows(ctx.rootDir)).find(w=>w.id==='repair-blocked-item'):undefined;
    let pipelineGap='';
@@ -391,7 +394,7 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
    const reason=[holdReasons.get(family.familyId)??'Technical queue recovery',scopeGap].filter(Boolean).join('; ');
    const binding={projectId:family.projectId,projectRootUri:source.root_uri,sourceRunId:source.id,familyId:family.familyId,
     fileScopes:writePaths.length?writePaths:[`runtime/queue-partner/recovery/${source.id}`],taskHash:acceptanceHash,policyHash,sourceHash,writePaths,
-    ...(writePaths.length&&policy.execution.repair_commits?.enabled?{requiresVerifierSlot:true}:{}),
+    ...(writePaths.length?{requiresVerifierSlot:true}:{}),
     fingerprint:partnerActorFingerprint({task:source.task,blocker:source.blocker,reason,policyHash,sourceHash,writePaths,provider:null,tier:null,
      commands:policy.actions.allowed_commands,evidenceDigest:partnerRecoveryEvidenceDigest(priorFacts)})};
    return {binding,...(admission?{admission:(owner:string,fence:string)=>pipelineGap?Promise.resolve({ready:false,reason:pipelineGap}):enforcePartnerAdmission(admission,owner,fence)}:{}),execute:async claim=>{

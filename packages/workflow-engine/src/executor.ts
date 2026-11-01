@@ -13,7 +13,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
-import { assertRepairCommitEnabled, createRepairCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
+import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
+import {prepareTaskExecution,literalScopeVerificationCommands,type PreparedTaskExecution} from './run-preparation.js';
+import {integratePreparedSource} from './source-integration.js';
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation, oversizedReplacementPatchHint } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
@@ -188,6 +190,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
     let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     let attemptedProviderId: string | undefined;
     let stageTelemetry: ReturnType<typeof createStageTelemetry> | undefined;
+    let preparation: PreparedTaskExecution | undefined;
     try {
       const projectResolution = await resolveLocalProjectPath(task.projectRootUri);
       if (!projectResolution.localPathExists) {
@@ -226,9 +229,32 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (leaseLost) throw new LostWorkflowTaskLeaseError(task.taskId);
         await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
       };
-      const localProjectRootUri = projectResolution.localRootUri;
+      let localProjectRootUri = projectResolution.localRootUri;
       const stagePattern = normalizeStagePattern(task.stagePattern);
       stageTelemetry = createStageTelemetry(task, stagePattern);
+      const snapshotProject = projectConfigSchema.parse(task.projectConfig);
+      const currentProject = task.executionPipeline?.required?await loadProjectConfig(projectResolution.localRootUri):await loadProjectConfig(projectResolution.localRootUri).catch(() => snapshotProject);
+      const effectiveProject=applyCurrentAutoApprovalThreshold(snapshotProject,currentProject);
+      const project = task.executionPipeline?.required&&!task.executionPipeline.sourceChanges
+        ? {...effectiveProject,actions:{...effectiveProject.actions,allowed_write_paths:[]}}
+        : repairVerifierPolicy(effectiveProject,stagePattern.type==='verifier');
+      if(task.executionPipeline?.required){
+        try{
+          const assertPreparation=await createRenewingStageAuthority({projectId:task.projectRootUri,runId:task.runId,stageId:task.stageId,workflowId:task.workflowId,agentId:task.agentId,providerId:'runtime-preparation',project,evidence:task.compiledBrief||task.stageGoal,leaseSeconds,assertLeaseOwned});
+          preparation=await prepareTaskExecution(task,projectResolution.localRootUri,project,()=>assertPreparation(true));
+          localProjectRootUri=preparation.root;
+          await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'run_execution_prepared',target:localProjectRootUri,summary:'Prepared the required run context and isolated source workspace; no legacy host fallback or acceptance is implied.',artifactKind:'run_preparation',artifactContent:{executionPipeline:task.executionPipeline,workspace:preparation.workspace??null}});
+        }catch(error){
+          const reason=error instanceof Error?error.message:String(error);
+          await blockWorkflowTask({taskId:task.taskId,runId:task.runId,agentId:task.agentId,workerId:task.workerId!,fencingToken:task.fencingToken,summary:reason,reason,artifact:{phase:'runtime-preparation',outcome:'blocked',blockedReason:reason,executionPipeline:task.executionPipeline}});
+          stageTelemetry.end('blocked',reason);result.failed+=1;continue;
+        }
+      }
+      if(task.runtimeOperation==='integrate-source'){
+        if(!preparation?.workspace||!task.executionPipeline?.sourceChanges)throw Error('Trusted source integration requires the prepared source pipeline');
+        const outcome=await integratePreparedSource(task,preparation,effectiveProject,assertLeaseOwned);
+        stageTelemetry.end(outcome);if(outcome==='completed')result.completed+=1;else result.failed+=1;continue;
+      }
       await assertLeaseOwned();
       let sourcePostimages: Awaited<ReturnType<typeof inspectStageWritePostimages>>
         | { runId: string; matches: false; evidenceUnavailable: true };
@@ -264,16 +290,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         throw new Error("Invalid bounded stage continuation round.");
       }
       const actionResults: unknown[] = Array.isArray(continuation.actionResults) ? [...continuation.actionResults] : [];
-      const snapshotProject = projectConfigSchema.parse(task.projectConfig);
-      const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
-      const project = repairVerifierPolicy(applyCurrentAutoApprovalThreshold(snapshotProject, currentProject), stagePattern.type === "verifier");
-      const repairCommitSelected = project.execution.repair_commits?.enabled === true && project.execution.repair_commits.stages.includes(task.stageId);
+      const repairCommitSelected = project.execution.repair_commits?.enabled === true && (project.execution.repair_commits.stages.includes(task.stageId)||task.checkpointAfter===true);
       let repairParent: string | null = null;
       if (repairCommitSelected) {
         const saved = actionResults.find(action => (action as { type?: string }).type === "repair_commit_baseline") as { parent?: string } | undefined;
         try {
           assertRepairCommitEnabled(project);
-          repairParent = await repairCommitBaseline(localProjectRootUri, saved?.parent);
+          repairParent = await repairCommitBaseline(localProjectRootUri, saved?.parent, preparation?.workspace?[...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()]:[]);
           if (!saved) {
             await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "repair_commit_baseline", target: repairParent,
               summary: "Pinned the clean repair parent before implementation; no commit or acceptance is claimed.", artifactKind: "repair_commit_baseline", artifactContent: { parent: repairParent } });
@@ -299,6 +322,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
+      if(preparation?.workspace)stageInput.compiledBrief += `\nCurrent project instruction snapshots are read-only inputs under ${preparation.workspace.contextRoot}/. This is the run-owned checkout; the runtime manages ownership, test environments, commits and final source integration.\n`;
       if (task.executorSnapshot) {
         const assertExecutorAuthority = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
         await assertExecutorAuthority(true);
@@ -484,11 +508,20 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       await recordDirectProviderUsage({ stage: routedStageInput, attempts: execution.attempts, output: execution.output, latencyMs: Date.now() - startedAt }).catch(() => 0);
       let output = execution.output;
       let runtimeCompletionEvidence:RuntimeCompletionEvidence={};
+      let currentRevisionCheckpoint:RepairCheckpoint|null=null;
       const noChangeInput={runId:task.runId,taskId:task.taskId,workerId:task.workerId!,fencingToken:String(task.fencingToken),projectRootUri:localProjectRootUri};
       const refreshCompletionEvidence=async()=>{
         runtimeCompletionEvidence={};
         if(!routedStageInput.acceptanceContract&&task.agentId==='implementation-agent'
           &&await verifyLegacyNoChangeRecovery(noChangeInput))runtimeCompletionEvidence={verifiedNoChangeRecovery:true};
+        if(preparation?.workspace&&repairCommitSelected&&(await repairChangedFiles(localProjectRootUri)).length===0){
+          const executed=[...actionResults].reverse().find(action=>{const value=action as {type?:string;verificationRecipe?:{status?:string};environment?:{receiptPath?:string}};return value.type==='local_command'&&value.verificationRecipe?.status==='passed'&&value.environment?.receiptPath;}) as {environment:{receiptPath:string}}|undefined;
+          if(executed){
+            const receipt=path.relative(localProjectRootUri,executed.environment.receiptPath);
+            if(currentRevisionCheckpoint?.validationReceipt!==receipt)currentRevisionCheckpoint=await createCurrentRevisionCheckpoint({cwd:localProjectRootUri,project,runId:task.runId,taskId:task.taskId,validationReceipt:receipt,assertAuthority:async()=>{await assertLeaseOwned();await assertStageGuard(true);}});
+            runtimeCompletionEvidence={verifiedNoChangeRecovery:true};
+          }
+        }
       };
       const scoreOutput=(candidate:StageExecutionOutput)=>scoreStageOutput(routedStageInput,candidate,runtimeCompletionEvidence);
       const completionReason=(candidate:StageExecutionOutput)=>unfulfilledCompletionReason(routedStageInput,candidate,runtimeCompletionEvidence);
@@ -767,8 +800,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const candidateFiles = project.execution.repair_commits?.enabled && stagePattern.type === "verifier"
           ? ([...task.priorStageArtifacts ?? []].reverse().find(stage => stage.artifact.repairCheckpoint)
             ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files : undefined;
-        const scheduledVerifierCommands = missingRepairVerifierCommands(project, stagePattern.type === "verifier",
-          candidateFiles, output.requestedCommands ?? [], actionResults);
+        const candidateProfile=([...(task.priorStageArtifacts??[])].reverse().find(stage=>stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint|undefined)?.environmentProfile;
+        const candidateCommands=candidateProfile?project.execution.environments?.profiles[candidateProfile]?.verification.flatMap(rule=>rule.commands).filter(command=>!command.includes('*'))??[]:[];
+        const scopedCommands=preparation&&repairCommitSelected?await literalScopeVerificationCommands(localProjectRootUri,project,[...(task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()]):[];
+        const declaredPipelineCommands=scopedCommands.length?scopedCommands:candidateCommands.length?candidateCommands:preparation?.commands??[];
+        const observedCommands=new Set([...(output.requestedCommands??[]),...actionResults.flatMap(action=>typeof (action as {commandLine?:unknown}).commandLine==='string'?[(action as {commandLine:string}).commandLine]:[])]);
+        const scheduledVerifierCommands = preparation&&((repairCommitSelected)||stagePattern.type==='verifier')
+          ? declaredPipelineCommands.filter(command=>!observedCommands.has(command)&&(()=>{try{assertCommandAllowed(command,project);return true;}catch{return false;}})())
+          : missingRepairVerifierCommands(project, stagePattern.type === "verifier",candidateFiles, output.requestedCommands ?? [], actionResults);
         if (scheduledVerifierCommands.length) {
           output = { ...output, requestedCommands: [...output.requestedCommands ?? [], ...scheduledVerifierCommands] };
           await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId,
@@ -1032,7 +1071,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               }
               await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'execution_progress',target:commandLine,summary:'Starting the governed command; no result or acceptance is claimed.',artifactKind:'execution_progress',artifactContent:{operation:'command',status:'started',requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
               return executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project,
-                environmentContext: { runId: task.runId, taskId: task.taskId, workflowId: task.workflowId, stageId: task.stageId },
+                environmentContext: { runId: task.runId, taskId: task.taskId, workflowId: task.workflowId, stageId: task.stageId, managedSource:task.executionPipeline?.required===true,requireEnvironment:task.executionPipeline?.required===true,requireVerification:task.executionPipeline?.required===true&&(preparation?.commands??[]).includes(commandLine) },
                 assertEnvironmentAuthority: async () => { await assertLeaseOwned(); await assertStageGuard(true); }
               });
             };
@@ -1564,6 +1603,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
 
           await assertStageGuard(true);
+          await preparation?.beforeWrite(fileWrite.path);
           const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
           if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
             actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });
@@ -1981,6 +2021,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               assertAuthority: async () => { await assertLeaseOwned(); await assertStageGuard(true); } });
             await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "repair_commit_candidate", target: repairCheckpoint.commit!,
               summary: "Committed the tested repair candidate; independent verification remains pending.", artifactKind: "repair_commit_candidate", artifactContent: { ...repairCheckpoint } });
+          }else if(repairParent&&preparation){
+            if(!evidence?.environment?.receiptPath)throw Error('Current-revision review requires executed source-bound tests');
+            repairCheckpoint=currentRevisionCheckpoint??await createCurrentRevisionCheckpoint({cwd:localProjectRootUri,project,runId:task.runId,taskId:task.taskId,validationReceipt:path.relative(localProjectRootUri,evidence.environment.receiptPath),assertAuthority:async()=>{await assertLeaseOwned();await assertStageGuard(true);}});
+            await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'current_revision_checkpoint',target:repairCheckpoint.commit!,summary:'Retained an executed passing current-revision checkpoint; no artificial source edit or new product acceptance.',artifactKind:'repair_commit_candidate',artifactContent:{...repairCheckpoint}});
           }
           if (stagePattern.type === "verifier") {
             const candidate = priorRepairCandidate;
@@ -2082,6 +2126,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       result.failed += 1;
     } finally {
       if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+      if(preparation)await preparation.release();
     }
   }
 

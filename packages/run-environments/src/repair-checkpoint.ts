@@ -27,6 +27,8 @@ export interface RepairCheckpoint {
   validationReceiptHash: string;
   independentVerification: "pending";
   receiptPath: string | null;
+  environmentProfile?: string;
+  changeStatus?: 'changed'|'unchanged';
 }
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const validHash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
@@ -74,11 +76,11 @@ function gitRunner(root: string, runner: ProcessRunner, env?: Record<string, str
   };
 }
 
-export async function repairCommitBaseline(cwd: string, expectedParent?: string): Promise<string> {
+export async function repairCommitBaseline(cwd: string, expectedParent?: string, allowedDirtyFiles: readonly string[] = []): Promise<string> {
   const git = gitRunner(await fs.realpath(cwd), runProcess);
   const parent = (await git(["rev-parse", "HEAD"])).stdout.trim();
   if (!validHash(parent) || (expectedParent && parent !== expectedParent)) throw Error("Repair parent changed; its baseline cannot be adopted automatically.");
-  if (!expectedParent && (await git(["status", "--porcelain=v1", "--untracked-files=all"])).stdout) throw Error("Automatic repair commits require a clean isolated worktree before implementation.");
+  if (!expectedParent && (await repairChangedFiles(cwd)).some(file=>!allowedDirtyFiles.includes(file))) throw Error("Automatic repair commits require a clean isolated worktree or exact same-run recorded writes before implementation.");
   return parent;
 }
 
@@ -119,6 +121,7 @@ export async function createRepairCheckpoint(input: {
     if (!included && (!declared || await fs.lstat(path.join(root, file)).then(() => true, () => false))) throw Error(`Run-owned file has no current validation binding: ${file}`);
   }
   const checkpoint: RepairCheckpoint = { schemaVersion: 1, phase: "candidate", runId: input.runId, parent, commit: null, tree: null, files,
+    environmentProfile:validation.plan.profile,changeStatus:'changed',
     recipeHash: validation.plan.recipeHash, sourceHash: validation.plan.sourceHash, environmentImageId: validation.result.environment.imageId,
     environmentRuntimeHash: validation.result.environment.runtimeHash!,
     validationReceipt: input.validationReceipt, validationReceiptHash: read.hash, independentVerification: "pending", receiptPath: null };
@@ -160,6 +163,20 @@ export async function createRepairCheckpoint(input: {
     await fs.rm(index, { force: true }); await fs.rm(`${index}.lock`, { force: true });
     await lock.close(); await fs.unlink(lockPath);
   }
+}
+
+export async function createCurrentRevisionCheckpoint(input:{cwd:string;project:ProjectConfig;runId:string;taskId?:string;validationReceipt:string;assertAuthority:()=>Promise<void>}):Promise<RepairCheckpoint>{
+  assertRepairCommitEnabled(input.project);const root=await fs.realpath(input.cwd);
+  const read=await readOwnedJson(root,input.validationReceipt,'.agent-workflow/runtime/run-environments/'),validation=read.parsed as ValidationReceipt;
+  if(validation.result.environment.runId!==input.runId)throw Error('Current-revision evidence belongs to another run');
+  if(input.taskId&&validation.result.environment.taskId!==input.taskId)throw Error('Current-revision evidence belongs to another task');
+  await validatedSource(root,validation);await input.assertAuthority();
+  const git=gitRunner(root,runProcess);if((await git(['status','--porcelain=v1','--untracked-files=all'])).stdout)throw Error('Current-revision review requires a clean prepared checkout');
+  const commit=(await git(['rev-parse','HEAD'])).stdout.trim(),tree=(await git(['rev-parse','HEAD^{tree}'])).stdout.trim(),parent=(await git(['rev-parse','HEAD^'])).stdout.trim();
+  const directory=path.join(root,'.agent-workflow/runtime/repair-checkpoints');await fs.mkdir(directory,{recursive:true,mode:0o700});if(await fs.realpath(directory)!==directory)throw Error('Current-revision receipt directory is not owned');
+  const receiptPath=path.join(directory,randomUUID()+'.json');
+  const checkpoint:RepairCheckpoint={schemaVersion:1,phase:'candidate',runId:input.runId,parent,commit,tree,files:[],environmentProfile:validation.plan.profile,changeStatus:'unchanged',recipeHash:validation.plan.recipeHash,sourceHash:validation.plan.sourceHash,environmentImageId:validation.result.environment.imageId,environmentRuntimeHash:validation.result.environment.runtimeHash!,validationReceipt:input.validationReceipt,validationReceiptHash:read.hash,independentVerification:'pending',receiptPath};
+  await input.assertAuthority();await fs.writeFile(receiptPath,JSON.stringify({...checkpoint,recordedAt:new Date().toISOString()},null,2)+'\n',{flag:'wx',mode:0o400});return checkpoint;
 }
 
 export async function verifyRepairCheckpoint(input: { cwd: string; candidateReceipt: string; validationReceipt: string; runner?: ProcessRunner }) {

@@ -33,6 +33,7 @@ __pycache__/
 .agent-workflow/evals/
 .agent-workflow/model-improvement/
 .agent-workflow/runtime.env
+.agent-workflow/project.local.yaml
 .agent-workflow/perf-report.md
 .agent-workflow/plans/
 templates/**/.agent-workflow/learning/
