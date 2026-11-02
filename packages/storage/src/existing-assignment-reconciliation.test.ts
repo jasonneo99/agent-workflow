@@ -205,6 +205,28 @@ test('one prospective source phase retains exhausted history and requires exact 
    assert.equal((await c.query('select count(*)::int n from workflow_tasks where run_id=$1',[run])).rows[0].n,4);
    assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_amended_once'",[run])).rows[0].n,1);
    await assert.rejects(admitProspectiveSourcePhaseOnClient(c,amendment,amendedPreview.digest,amendmentGrant));
+   await fs.writeFile(path.join(root,'dependency.py'),'# read-only synthetic dependency\n');
+   let lastFence=amended.fence;
+   for(let ordinal=1;ordinal<=3;ordinal++){
+    await c.query("update workflow_runs set status='blocked' where id=$1",[run]);
+    await c.query("update workflow_tasks set status=case when stage_id=$2 then 'blocked' else 'cancelled' end,attempts=case when stage_id=$2 then $4 else 0 end where run_id=$1 and id<>$3",[run,phaseIds[0],oldTask,ordinal+2]);
+    await c.query("update work_intents set expires_at=clock_timestamp()-interval '1 second'");
+    await c.query("insert into work_intents values($1,$2,$3,'[\"source.py\",\"tests/test_source.py\",\"dependency.py\"]',clock_timestamp()+interval '1 hour')",[project,'bounded-'+ordinal,ordinal+4]);
+    const bounded={...amendment,sourcePaths:[...input.sourcePaths,'dependency.py'],owner:'bounded-'+ordinal,intentFence:String(ordinal+4),
+     expectedFence:lastFence,expectedStateVersion:String(24+ordinal),continuation:{ordinal,readonlyPaths:['dependency.py'],workerGoal:'Implement only the public source and regression; root owns private finalization.'}};
+    const boundedPreview=await previewProspectiveSourcePhaseOnClient(c,bounded);
+    assert.equal(boundedPreview.manifest.maxAttempts,3);
+    assert.ok(boundedPreview.snapshot.stages[0]!.goal.startsWith(bounded.continuation.workerGoal));
+    assert.ok(!boundedPreview.snapshot.policy.actions.allowed_write_paths.includes('dependency.py'));
+    await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...bounded,continuation:{...bounded.continuation,ordinal:4}}));
+    if(ordinal>1)await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...bounded,continuation:{...bounded.continuation,workerGoal:'broaden this budget'}}));
+    const boundedGrant=await putGrant({},'operator_prospective_source_phase_continuation_authorized',boundedPreview,'prospective_source_phase_continuation_authorization');
+    const continued=await admitProspectiveSourcePhaseOnClient(c,bounded,boundedPreview.digest,boundedGrant);lastFence=continued.fence;
+    assert.equal((await c.query('select attempts from workflow_tasks where id=$1',[firstTask])).rows[0].attempts,ordinal+2);
+    assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before);
+    assert.equal((await c.query('select count(*)::int n from workflow_tasks where run_id=$1',[run])).rows[0].n,4);
+   }
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_continued'",[run])).rows[0].n,3);
   }finally{await c.query('rollback');}});
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
