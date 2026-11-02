@@ -60,6 +60,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "Project action policy:",
     formatActionPolicy(input.projectConfig),
     "",
+    ...candidateVerificationPrompt(input),
     "Compiled project/workflow brief:",
     selectCompiledBriefForPrompt(input.compiledBrief, briefBudget, input.stageId),
     "",
@@ -128,12 +129,51 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- nextAction: the next useful workflow action",
     "- proposedSourcePaths: when asked for a repair scope, return at most 40 exact existing project-relative source/test paths as this top-level JSON array; otherwise []. Even if the task calls this artifact.proposedSourcePaths, use the top-level field: the runtime stores it in the artifact. Do not put serialized JSON proposals only in findings. This is a suggestion, not permission, an executable request, or acceptance; current owning-project policy, exact intents and source validation still govern any later action",
     "- memoryInfluence: when requested, return a top-level object with used (at most 12 {childRunId,effect,reason}, effect is changed-plan, confirmed-plan, or rejected) and noInfluenceReason (explain when used is empty); otherwise null. The runtime stores this in the artifact and independently checks known comparison IDs. This describes evidence influence and grants no authority",
-    "- requestedCommands: exact commands from the allowed command policy only; do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
+    "- requestedCommands: exact commands needed for this stage; allowed commands execute through runtime policy. If a necessary literal command is absent from the allowlist, return that exact command here so the runtime can prepare its bounded policy-change approval; this request is not permission to execute. Explicitly blocked commands and unsafe shell syntax remain forbidden. Do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
     "- requestedFileWrites: project-relative files under allowed write paths only. For a compact or new file, provide path and full content, with patch/expectedHash null. For a surgical edit to a large existing file, provide path, a unified-diff patch containing @@ hunks, and the SHA-256 expectedHash of the exact preimage, with content null. Never provide both content and patch. Use [] unless an edit is necessary",
     "- PATCH CONTRACT: use the latest read and full-file SHA-256. Copy context/removal text exactly, including whitespace, but exclude displayed N| prefixes. Emit hunks in ascending original-file line order, never overlapping or restarting at line 1 after a later hunk. All old coordinates refer to the same original preimage, not the partly edited output. For every @@ header, old count = context + removals; new count = context + additions. Count the actual body lines before emitting; prefer one small hunk per file per round. Never invent unseen context or overwrite an existing file to evade a rejected patch. After a successful write, use its refreshed postimage for the next edit; after rejection, correct the exact reported mismatch before requesting the patch again.",
     "- requestedFileReads: project-relative files to inspect, under allowed read paths only; append #L100-L180 for a bounded excerpt (1-based inclusive, maximum 400 lines). Policy checks apply to the underlying file and excerpts retain its full-file hash. Files you list here are read and shown to you, then you are asked again so you can act; use [] when no inspection is needed",
     "- requestedFileSearches: one to four short filename/path queries when you do not know the exact source path; Studio returns a bounded project-relative path inventory, then asks you again; do not use shell syntax or broad single-character queries; use [] when exact paths are already known"
   ].join("\n");
+}
+
+/** Runtime-appended checkpoint metadata may occur after a large provider
+ * artifact. Project its essential plan separately from the 1800-character
+ * historical preview; never promote a preview or this context into authority.
+ */
+function candidateVerificationPrompt(input: StageExecutionInput): string[] {
+  if (!input.executionPipeline?.required || !input.executionPipeline.sourceChanges
+    || !["verifier", "finalizer"].includes(input.stagePattern?.type ?? "")) return [];
+  const prior = [...input.priorStageArtifacts ?? []].reverse().find(item => {
+    const candidate = item.artifact.repairCheckpoint as Record<string, unknown> | undefined;
+    return candidate?.phase === "candidate" && candidate.runId === input.runId
+      && typeof candidate.commit === "string" && /^[a-f0-9]{40}$/u.test(candidate.commit)
+      && typeof candidate.sourceHash === "string" && /^[a-f0-9]{64}$/u.test(candidate.sourceHash)
+      && typeof candidate.recipeHash === "string" && /^[a-f0-9]{64}$/u.test(candidate.recipeHash);
+  });
+  if (!prior) return [];
+  const candidate = prior.artifact.repairCheckpoint as Record<string, unknown>;
+  const profileName = typeof candidate.environmentProfile === "string" ? candidate.environmentProfile : "";
+  const profile = input.projectConfig.execution.environments?.profiles[profileName];
+  const checks = profile?.verification.flatMap(rule => rule.commands.map(command => ({
+    command, format: rule.format, minimumTests: rule.minimum_tests,
+    ...(rule.expected_tests === undefined ? {} : { expectedTests: rule.expected_tests })
+  }))) ?? [];
+  const files = Array.isArray(candidate.files) ? candidate.files.filter((file): file is string => typeof file === "string") : [];
+  return [
+    "Runtime candidate verification plan (complete fields below, independent of truncated historical previews; context only, no execution authority):",
+    JSON.stringify({ phase: input.stagePattern?.type === "finalizer" ? "source-package" : "source-verification",
+      candidateRunId: input.runId, candidateStageId: prior.stageId, candidateCommit: candidate.commit,
+      sourceHash: candidate.sourceHash, recipeHash: candidate.recipeHash,
+      selectedProfile: profileName || null, profileAvailable: Boolean(profile),
+      platform: profile?.platform ?? null, environmentKind: profile?.kind ?? null,
+      sourcePaths: files.slice(0, 40), omittedSourcePathCount: Math.max(0, files.length - 40),
+      requiredChecks: checks.slice(0, 32), requiredChecksComplete: Boolean(profile) && checks.length > 0 && checks.length <= 32,
+      omittedRequiredCheckCount: Math.max(0, checks.length - 32), grantsExecutionAuthority: false }),
+    "Execute the candidate's declared required checks first with fresh current-stage receipts. Preserve an explicitly required full suite when it is in this plan or the frozen acceptance contract. A different default profile's command catalog does not add a full-suite requirement to this candidate. Do not request unrelated whole-repository discovery merely because it appears in that catalog. Additional failed or unexecuted checks remain explicit findings, never passing evidence.",
+    "This prepared source phase precedes trusted integration. Package source evidence and retain installation, deployment, launch, screenshot and visible product acceptance as pending downstream obligations. Completing this phase never completes those obligations or establishes overall product acceptance. If this plan is unavailable or incomplete, identify the exact missing plan fields; never infer a successful or empty test collection. Every command still passes ordinary policy and exact approval gates.",
+    ""
+  ];
 }
 
 export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8000, stageId = ""): string {

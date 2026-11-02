@@ -25,6 +25,24 @@ test("all recent command packets retain exact acceptance references across a com
 
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
 
+test('prepared candidate verification plans survive large prior artifacts without borrowing another environment catalog',()=>{
+ const focused='node --test tests/widget.test.js',broad='python3 -m unittest discover -s tests -p test_*.py -v';
+ const configured=projectConfigSchema.parse({project:{name:'Synthetic desktop'},execution:{environments:{default_profile:'python-catalog',profiles:{
+  'python-catalog':{kind:'native',platform:'linux/amd64',source_paths:['src'],readiness:[{argv:['node','--version']}],verification:[{commands:[broad],format:'unittest'}]},
+  'selected-widget':{kind:'native',platform:'darwin/arm64',source_paths:['src','tests'],readiness:[{argv:['node','--version']}],verification:[{commands:[focused],format:'node-test',expected_tests:4}]}
+ }}}});
+ const candidate={phase:'candidate',runId:'run',commit:'a'.repeat(40),sourceHash:'b'.repeat(64),recipeHash:'c'.repeat(64),environmentProfile:'selected-widget',files:['src/widget.ts','tests/widget.test.js']};
+ const input={runId:'run',taskId:'task',workflowId:'feature',workflowTask:'Add a widget and deploy it',stageId:'verify',stageGoal:'Verify the source phase',agentId:'auto-test-runner',agentName:'Verifier',agentPrompt:'Verify',compiledBrief:'',projectConfig:configured,executionPipeline:{required:true,sourceChanges:true},stagePattern:{type:'verifier',requiresVerifier:false,promotionGate:'evaluation',stopConditions:[]},priorReceipts:[],priorStageArtifacts:[{stageId:'test',agentId:'test-engineer',summary:'Test candidate',artifact:{largeEvidence:'x'.repeat(10000),repairCheckpoint:candidate}}]};
+ const before=JSON.stringify(input),prompt=buildStagePrompt(input),plan=prompt.split('Runtime candidate verification plan (')[1].split('Compiled project/workflow brief:')[0];
+ assert.ok(plan.includes(focused));assert.ok(!plan.includes(broad));assert.ok(plan.includes(candidate.commit));assert.match(plan,/"selectedProfile":"selected-widget"/);assert.match(plan,/"platform":"darwin\/arm64"/);assert.match(plan,/"expectedTests":4/);assert.match(plan,/"requiredChecksComplete":true/);assert.match(plan,/"grantsExecutionAuthority":false/);assert.match(plan,/pending downstream obligations/);assert.equal(JSON.stringify(input),before);
+ assert.ok(!buildStagePrompt({...input,executionPipeline:undefined}).includes('Runtime candidate verification plan ('));
+ assert.ok(!buildStagePrompt({...input,priorStageArtifacts:[{...input.priorStageArtifacts[0],artifact:{repairCheckpoint:{...candidate,runId:'foreign-run'}}}]}).includes('Runtime candidate verification plan ('));
+ const requiredFull=structuredClone(input);requiredFull.projectConfig.execution.environments!.profiles['selected-widget']!.verification=[{commands:[broad],format:'unittest',minimum_tests:1}];
+ assert.ok(buildStagePrompt(requiredFull).split('Runtime candidate verification plan (')[1].includes(broad),'An explicitly declared full suite is retained literally');
+ assert.match(prompt,/return that exact command here so the runtime can prepare its bounded policy-change approval/);
+ assert.match(prompt,/Explicitly blocked commands and unsafe shell syntax remain forbidden/);
+});
+
 test('bounded structured recovery suggestions survive portable normalization without becoming actions or authority',()=>{
  const paths=['src/main.ts','tests/main.test.ts'],influence={used:[{childRunId:'synthetic-child',effect:'confirmed-plan' as const,reason:'Current source confirms the observed repair boundary.'}],noInfluenceReason:''};
  const input={runId:'run',taskId:'task',projectConfig:project,workflowId:'agent-task-queue-partner',workflowTask:'Discover scope',stageId:'specialist-task',agentId:'queue-partner',agentName:'Partner',agentPrompt:'Read only',stageGoal:'Discover',compiledBrief:'',priorReceipts:[]};

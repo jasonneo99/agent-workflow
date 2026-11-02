@@ -126,3 +126,10 @@ environment before additional suites. An explicitly required full source suite
 remains required. Source verification precedes integration; deployment, launch,
 and visible runtime acceptance stay pending until separately executed evidence
 proves them. Completing source stages never establishes overall product acceptance.
+
+Providers receive a separate compact candidate plan containing the immutable
+commit, source and recipe hashes, selected environment, and exact required checks.
+This plan survives truncation of large prior artifact previews. Other environment
+catalogs do not silently add candidate requirements. Missing eligible command
+authority is expressed as an exact command proposal for the existing approval
+path; explicitly blocked commands remain blocked.

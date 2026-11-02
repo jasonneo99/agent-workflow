@@ -60,6 +60,8 @@ export interface StageExecutionInput {
   agentName: string;
   agentPrompt: string;
   stageGoal: string;
+  /** Source-phase context only; execution authority remains with runtime gates. */
+  executionPipeline?: { required: boolean; sourceChanges: boolean };
   stagePattern?: {
     type: string;
     maxIterations?: number;
