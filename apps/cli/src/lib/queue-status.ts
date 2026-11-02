@@ -56,11 +56,11 @@ export function projectQueueStatus(data:QueueStatusSnapshot,projectId?:string,no
   const lifecycle=r.currentStatus??r.runStatus;
   let status=lifecycle==='completed'?'Needs verification':lifecycle==='failed'?'Failed':lifecycle==='blocked'?'Blocked':lifecycle==='cancelled'?'Cancelled':lifecycle==='queued'?'Queued':['running','leased'].includes(lifecycle)?'Running':'Unknown';
   if(current.decision){status=decision.decision==='verified'?'Review recorded':decision.decision==='active'?'Active':decision.decision==='repair-selected'?'Repair queued':decision.decision==='verifier-selected'?'Verification queued':'Held';}
-  if(current.approvalCount>0)status='Awaiting approval';
   if(current.runningTasks>0)status='Running';
   else if(current.queuedTasks>0)status='Waiting';
   else if(['queued','leased','running'].includes(lifecycle))status='Needs reconciliation';
   else if(status==='Active')status='Needs reconciliation';
+  if(current.approvalCount>0&&current.runningTasks===0)status='Awaiting approval';
   const issue=(recordedIssue&&!/^family already active\b/iu.test(recordedIssue)?recordedIssue:clean(r.issue))||recordedIssue||(r.runStatus==='completed'?'Original run completed; related work still needs verified acceptance.':current.runningTasks>0?'Current task execution is recorded.':current.queuedTasks>0?'Work is queued but no task currently has a worker lease.':status==='Needs reconciliation'?'The run claims an active lifecycle but has no queued or worker-leased task.':'No concise blocker is recorded; inspect the run evidence.');
   const fix=recordedFix||(current.runningTasks>0?'Follow the existing work and its executed evidence; do not start a duplicate.':current.queuedTasks>0?'Keep the queued work visible and let the eligible worker claim it; investigate eligibility if the wait exceeds its budget.':r.runStatus==='completed'?'Review related attempts and the actual acceptance evidence; lifecycle completion alone is not acceptance.':proposedQueueFix(issue,current.approvalCount));
   const history=new Map<string,QueueStatusAttempt>();for(const m of members)for(const a of m.attempts??[{runId:m.runId,name:m.name,status:m.runStatus,issue:m.issue??'',recordedAt:m.recordedAt??null,dismissed:false}])if(uuid.test(a.runId)&&!history.has(a.runId))history.set(a.runId,{runId:a.runId,name:clean(a.name,240),status:clean(a.status,40),issue:clean(a.issue),recordedAt:a.recordedAt&&Number.isFinite(Date.parse(a.recordedAt))?new Date(a.recordedAt).toISOString():null,dismissed:Boolean(a.dismissed)});
@@ -95,7 +95,7 @@ export function mirrorQueueStatusReport(advisory:QueueStatusReport,source:QueueS
   const history=(item.familyAttempts??[{id:item.runId,status:item.runStatus,blocker:item.blockedReason??item.failedReason??null,approvals:[]}]);
   const currentLease=item.runningTasks>0&&Boolean(item.runningLeaseExpiresAt)&&Date.parse(item.runningLeaseExpiresAt!)>now.getTime();
   const lifecycle=queueLifecyclePresentation({...item,runningTasks:currentLease?item.runningTasks:0});
-  const approvalCount=history.find(a=>a.id===item.runId)?.approvals.filter(a=>a.status==='pending').length??0;
+  const approvalCount=item.approvalWait?.approvals.filter(a=>['pending','approved','executing'].includes(a.status)).length??history.find(a=>a.id===item.runId)?.approvals.filter(a=>a.status==='pending').length??0;
   const issue=clean(item.blockedReason??item.failedReason)||lifecycle.explanation;
   const row=projectQueueStatus({projects:[owner],managed:[{runId:item.runId,projectId:owner.id,projectName:item.projectName,familyId:owner.id+':'+familyId,name:buildQueueCardTitle(item),runStatus:item.runStatus,runningTasks:currentLease?item.runningTasks:0,queuedTasks:item.queuedTasks,approvalCount,issue}],queue:[]},undefined,now).rows[0]!;
   const attempts=history.slice(0,40).map(a=>({runId:a.id,name:metadata.get(a.id)?.name??(a.id===item.runId?clean(buildQueueCardTitle(item),240):'Workflow attempt '+a.id.slice(0,8)),status:clean(a.status,40),issue:clean(a.blocker??metadata.get(a.id)?.issue),recordedAt:metadata.get(a.id)?.recordedAt??(a.id===item.runId?item.startedAt:null),dismissed:metadata.get(a.id)?.dismissed??false}));

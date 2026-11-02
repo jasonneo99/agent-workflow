@@ -101,7 +101,7 @@ export function recordStageEvent(span: Span | undefined, name: string, attribute
   span.addEvent(name, attributes);
 }
 
-export type StageOutcome = "completed" | "blocked" | "failed";
+export type StageOutcome = "completed" | "blocked" | "failed" | "awaiting_approval";
 
 /** End a stage span, recording the outcome and any error message. */
 export function endStageSpan(span: Span | undefined, outcome: StageOutcome, errorMessage?: string): void {

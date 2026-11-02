@@ -188,7 +188,7 @@ test("actual worker verifies its local recorded postimages before execution", as
     executeAllowedFileMutation: async () => { calls.mutation++; throw new Error("Unexpected mutation"); }
   });
   await replace("./bound-executor.js", {
-    executeBoundExecutorStage: async () => { calls.executor++; }
+    executeBoundExecutorStage: async () => { calls.executor++; return "completed"; }
   });
   const { runWorkerOnce } = await import("./executor.js");
   const result = await runWorkerOnce(1, { recoverExpiredLeases: false });

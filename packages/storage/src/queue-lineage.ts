@@ -39,6 +39,25 @@ function visible(alias: string): string {
     and not exists (select 1 from action_receipts hidden
       where hidden.run_id = ${alias}.id
         and (hidden.action_type in ('failed_run_dismissed','failed_run_superseded')
+          or (hidden.action_type='workflow_run_withdrawn'
+            and ${alias}.status in ('failed','blocked','cancelled')
+            and hidden.metadata->>'authority'='direct-human'
+            and hidden.metadata->>'disposition'='withdrawn-unaccepted'
+            and hidden.metadata->>'viewOnly'='true'
+            and hidden.metadata->>'originalAcceptanceChanged'='false'
+            and hidden.metadata->>'executionAuthorityGranted'='false'
+            and hidden.metadata->>'runId'=${alias}.id::text
+            and hidden.metadata->>'projectId'=${alias}.project_id::text
+            and hidden.metadata->>'originalTask'=${alias}.task
+            and hidden.metadata->>'originatingThreadId'=${alias}.evaluation_metadata->>'codexThreadId'
+            and hidden.receipt_hash is not null
+            and not exists(select 1 from workflow_tasks withdrawal_task where withdrawal_task.run_id=${alias}.id and withdrawal_task.status in('queued','leased','running'))
+            and not exists(select 1 from action_approvals withdrawal_approval where withdrawal_approval.run_id=${alias}.id and withdrawal_approval.status in('pending','approved','executing','failed'))
+            and not exists(select 1 from queue_coordinator_assignments withdrawal_assignment
+              where (withdrawal_assignment.source_run_id=${alias}.id or withdrawal_assignment.child_run_id=${alias}.id) and withdrawal_assignment.state in('reserved','running','uncertain'))
+            and not exists(select 1 from side_effect_receipts withdrawal_effect where withdrawal_effect.project_id=${alias}.id::text and withdrawal_effect.status<>'completed')
+            and exists(select 1 from artifacts withdrawal where withdrawal.run_id=hidden.run_id
+              and withdrawal.kind='operator_run_withdrawal' and withdrawal.content=hidden.metadata))
           or (hidden.action_type='obsolete_policy_contract_retired'
             and ${alias}.status in ('failed','blocked','cancelled')
             and hidden.metadata->>'authority'='direct-human'

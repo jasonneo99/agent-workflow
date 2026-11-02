@@ -32,5 +32,14 @@ test('exact-source membership reuses queue visibility without reviving hidden hi
   assert.equal(await activeQueueSourceOnClient(c,'missing'),false);
   await activeQueueSourceOnClient(c,'source');
   assert.deepEqual((await c.query('select * from workflow_runs order by id')).rows,before);
+  await c.query('delete from action_receipts');
+  await c.query("update workflow_runs set evaluation_metadata='{\"codexThreadId\":\"synthetic-chat\"}' where id='source'");
+  const withdrawn={authority:'direct-human',disposition:'withdrawn-unaccepted',viewOnly:true,originalAcceptanceChanged:false,executionAuthorityGranted:false,runId:'source',projectId:'project',originalTask:'Synthetic outcome',originatingThreadId:'synthetic-chat'};
+  await c.query("insert into action_receipts values('source','workflow_run_withdrawn',clock_timestamp(),$1,'Synthetic direct human withdrawal','chain')",[withdrawn]);
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'Prose without its bound disposition artifact cannot hide work');
+  await c.query("insert into artifacts values('source','operator_run_withdrawal',$1)",[withdrawn]);
+  assert.equal(await activeQueueSourceOnClient(c,'source'),false,'Explicit withdrawal is not acceptance or successful replacement');
+  await c.query("insert into workflow_tasks values('source','running')");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'A newly active task cannot be concealed by historical withdrawal');
  }finally{await c.query('rollback');}
 }));

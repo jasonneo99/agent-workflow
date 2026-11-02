@@ -88,3 +88,27 @@ approval, restart a product service or complete an original acceptance gate.
 Installation-wide enforcement is enabled through
 `requirePreparedRunPipeline` with a current scoped rollout intent and direct
 human authority. Deploy the compatible runtime before enabling that fence.
+### Approval waits and explicit withdrawal
+
+An executable approval request parks the unfinished stage in a durable
+continuation checkpoint. It yields the worker lease, keeps later stages queued,
+and appears as **Awaiting approval** with the exact payload and **Approve and
+continue**, **Approve only**, and **Reject** controls. Waiting does not count as a
+failed or completed stage. Approve-only does not execute or release the stage.
+The same stage becomes eligible only after all its exact required approvals have
+successful execution receipts. Workers still recheck project policy, source,
+intent, and coordinator fences. Executed policy additions supplement the frozen
+policy only when their exact audited rules remain in current project policy;
+the original snapshot and completed effects are retained. Rejection, expiry, or
+failed execution remains an explicit blocker, never success.
+
+Scheduling eligibility timestamps are not activity. Queue ordering uses durable
+run, action, approval, and actual stage activity, so prepared or approval-held
+work cannot jump above fresh work through a future or infinite schedule.
+
+An explicit originating-chat withdrawal can remove one stopped, unsuccessful
+run from active views without accepting it or erasing its history. The exact
+project, task digest, origin, direct human instruction, and fresh scoped intent
+must match; active work, unresolved approvals, or uncertain effects prevent
+withdrawal. This disposition grants no replay or replacement authority and
+cannot conceal later active work. Verified historical archival remains separate.

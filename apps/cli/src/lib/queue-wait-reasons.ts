@@ -32,8 +32,9 @@ export function classifyQueueWait(candidate:Candidate,worker:WorkerEvidence,now=
  return result('eligible','Eligible for the next worker scheduling poll; no stored exclusion was found.',30_000);
 }
 
-export async function withQueueWaitReasons<T extends {runId:string;queuedTasks:number;runningTasks:number}>(items:T[],heartbeatPath:string):Promise<Array<T&{waitReason?:QueueWaitReason}>>{
- const waiting=items.filter(item=>item.queuedTasks>0&&item.runningTasks===0),ids=waiting.map(item=>item.runId);
+export async function withQueueWaitReasons<T extends {runId:string;queuedTasks:number;runningTasks:number;approvalWait?:{since:string}|null}>(items:T[],heartbeatPath:string):Promise<Array<T&{waitReason?:QueueWaitReason}>>{
+ items=items.map(item=>item.approvalWait?{...item,waitReason:{category:'approval',reason:'Awaiting an exact approval; progress and later stages are retained.',waitedMs:Math.max(0,Date.now()-Date.parse(item.approvalWait.since))||0,budgetMs:0,overdue:false}}:item);
+ const waiting=items.filter(item=>!item.approvalWait&&item.queuedTasks>0&&item.runningTasks===0),ids=waiting.map(item=>item.runId);
  if(!ids.length)return items;
  let worker:WorkerEvidence={status:'unknown',providerIds:[]};
  try{worker=JSON.parse(await fs.readFile(heartbeatPath,'utf8'));}catch{}

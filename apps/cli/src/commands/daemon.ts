@@ -35,6 +35,7 @@ import { applyWorkerHostRegistryPlan, buildWorkerHostRegistryPlan, type WorkerHo
 import { ingestRemoteWorkerHeartbeat, loadRemoteWorkerHeartbeatHealth } from "../lib/worker-heartbeat-ingestion.js";
 import {queueCardActivityScript,renderQueueCardActivityLine} from '../dashboard/queue-card-activity.js';
 import {queueCardRefreshScript} from '../dashboard/queue-card-refresh.js';
+import {renderApprovalWait} from '../dashboard/approval-waits.js';
 import { type DefinitionMigrationPlan, buildDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../../packages/definition-migrations/src/index.js";
 import { constructDynamicWorkflow } from "../../../../packages/dynamic-workflow/src/index.js";
 import { type FleetUsageReceipt, readFleetUsageReceipts, summarizeFleetUsage } from "../../../../packages/fleet-model-gateway/src/index.js";
@@ -1154,7 +1155,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <input type="hidden" name="decision" value="${executable ? "approve_execute" : "approved"}">
         <input type="hidden" name="actorRole" value="approver">
         <input name="note" aria-label="Approval note" placeholder="Optional note">
-        <button type="submit">${executable ? "Approve + Execute" : "Approve"}</button>
+        <button type="submit">${executable ? "Approve and continue" : "Approve"}</button>
       </form>
       ${executable ? `<form class="approval-form" method="post" action="/api/approval-action">
         <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
@@ -2781,6 +2782,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function estimateQueueItemEta(item: DashboardQueueItem, historicalRuns: DashboardRunStatus[]): RunEta {
+    if(item.approvalWait)return {state:"paused",totalTasks:item.totalTasks,completedTasks:item.completedTasks,
+      reason:"ETA paused while an exact approval is required.",estimatedCompletionAt:null,remainingMs:null,
+      projectedTotalMs:null,confidence:"none",source:"none",sampleCount:0};
     const tasks = [
       ...Array.from({ length: item.completedTasks }, () => ({ status: "completed" })),
       ...Array.from({ length: item.runningTasks }, () => ({ status: "running" })),
@@ -16433,7 +16437,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         : item.runningTasks > 0
           ? "execution unconfirmed; worker lease owner unknown"
           : "worker: none";
-      const activeLabel = item.runningStageId
+      const activeLabel = item.approvalWait ? "Awaiting approval" : item.runningStageId
         ? `Running ${item.runningStageId}`
         : item.nextStageId
           ? `Up next: ${item.nextStageId}`
@@ -16515,6 +16519,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             <div class="actions"><a class="button secondary" href="${historyHref}">${iconLabel("layers", "Open history")}</a><a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a></div>
           </div>
           ${attention}
+          ${renderApprovalWait(item.approvalWait,isExecutableApprovalAction)}
           ${waiting}
           ${latencyAlert}
           ${callbackCallout}
@@ -17124,7 +17129,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const headline = superseded
       ? "This run is read-only history"
       : openApprovals.length
-      ? `${openApprovals.length} approval${openApprovals.length === 1 ? "" : "s"} need attention`
+      ? `Awaiting approval · ${openApprovals.length} request${openApprovals.length === 1 ? "" : "s"}`
       : blocked
         ? "Workflow is blocked"
         : failedRun
@@ -17148,6 +17153,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const runPath = `/run?id=${encodeURIComponent(run.id)}`;
     const primaryActions = superseded
       ? `<a class="button" href="/run?id=${encodeURIComponent(run.replacementRunId ?? run.id)}">Open current continuation →</a>`
+      : openApprovals.length && !blocked && !failedRun
+      ? `<a class="button" href="#run-command-center">Review approval below</a>${queueRunActionForm(run.id, "cancel", "Cancel Run")}`
       : blocked
       ? `${queueRunActionForm(run.id, "resolve-blocker", "Retry After Fix")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run")}${queueRunActionForm(run.id, "resume-checkpoint", "Resume Checkpoint")}${queueRunActionForm(run.id, "replay-run", "Replay Run")}`
       : failedRun

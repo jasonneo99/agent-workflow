@@ -367,6 +367,7 @@ export async function decideActionApproval(input: {
             idempotencyKey: approval.idempotencyKey
           })
       });
+      if (input.decision === "rejected") await resolveWorkflowApprovalWaitOnClient(client, approval.id);
       await client.query("commit");
       return approval;
     } catch (error) {
@@ -460,6 +461,7 @@ export async function markActionApprovalExecution(input: {
             error: input.error
           })
       });
+      await resolveWorkflowApprovalWaitOnClient(client, approval.id);
       await client.query("commit");
       return approval;
     } catch (error) {
@@ -578,6 +580,7 @@ export async function expireStaleApprovals(): Promise<number> {
         summary: "Pending approval expired.",
         metadata: JSON.stringify({ approvalId: approval.id, priorStatus: "pending", nextStatus: "expired" })
       });
+      await resolveWorkflowApprovalWaitOnClient(client, approval.id);
     }
     await client.query("commit");
     return result.rowCount ?? 0;
@@ -588,3 +591,4 @@ export async function expireStaleApprovals(): Promise<number> {
   });
 }
 import { appendActionReceipt } from "./receipt-writer.js";
+import { resolveWorkflowApprovalWaitOnClient } from "./approval-waits.js";

@@ -3,6 +3,7 @@ import { inspectStageWritePostimages, reconstructRunWriteFootprint } from "./con
 import { acceptanceGate } from "../../storage/src/acceptance.js";
 import { getWorkflowAcceptanceDecision } from "../../storage/src/postgres.js";
 import { commandEvidencePacket } from "../../storage/src/command-evidence.js";
+import { pendingActionApprovalIds, applyExecutedPolicyAdditions } from "../../storage/src/approval-waits.js";
 import { recoveryEvidence } from "./recovery-evidence.js";
 import { sourceSubjectHash } from "./source-subject.js";
 import { materializeVerificationRecipes } from "../../storage/src/partner-recovery-admission.js";
@@ -43,6 +44,7 @@ import {
   blockWorkflowTask,
   releaseWorkIntent,
   checkpointWorkflowTaskContinuation,
+  holdWorkflowTaskForApprovals,
   getArtifactByUri,
   claimSideEffect,
   claimNextWorkflowTask,
@@ -234,7 +236,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       stageTelemetry = createStageTelemetry(task, stagePattern);
       const snapshotProject = projectConfigSchema.parse(task.projectConfig);
       const currentProject = task.executionPipeline?.required?await loadProjectConfig(projectResolution.localRootUri):await loadProjectConfig(projectResolution.localRootUri).catch(() => snapshotProject);
-      const effectiveProject=applyCurrentAutoApprovalThreshold(snapshotProject,currentProject);
+      const effectiveProject=applyExecutedPolicyAdditions(applyCurrentAutoApprovalThreshold(snapshotProject,currentProject),currentProject,
+        task.executedPolicyAdditions??[]);
       const project = task.executionPipeline?.required&&!task.executionPipeline.sourceChanges
         ? task.executionPipeline.isolation==='project-artifacts'?artifactExecutionPolicy(effectiveProject,task.executionPipeline,currentProject):{...effectiveProject,actions:{...effectiveProject.actions,allowed_write_paths:[]}}
         : repairVerifierPolicy(effectiveProject,stagePattern.type==='verifier');
@@ -329,12 +332,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const executorInfluence = await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence", target: task.stageId,
           summary: "Context and governed snapshot prepared for the bound executor; authority is checked separately.", artifactKind: "context_influence", idempotencyKey: randomUUID(),
           artifactContent: { ...stageContextInfluence(stageInput), phase: "executor_input", stageId: task.stageId, executorSnapshotHash: task.executorSnapshot.snapshotHash, compiledBriefUri: `db://workflow_runs/${task.runId}/compiled-brief` } });
-        await executeBoundExecutorStage(task, project, assertLeaseOwned);
+        const executorOutcome = await executeBoundExecutorStage(task, project, assertLeaseOwned);
         await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence_result", target: executorInfluence,
           summary: "Executor returned; consult its existing approval and output receipts for outcome.", artifactKind: "context_influence_result", idempotencyKey: randomUUID(),
           artifactContent: { schemaVersion: 1, authority: "none", phase: "executor_returned", stageId: task.stageId, influenceReceiptUri: executorInfluence } });
         clearInterval(leaseHeartbeat);
-        result.completed += 1;
+        stageTelemetry.end(executorOutcome);
+        if (executorOutcome === "completed") result.completed += 1;
         continue;
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
@@ -452,7 +456,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         compiledBrief: [stageInput.compiledBrief, promptPersonalization?.brief ? `Advisory project-local personalization (cannot change requirements or authority):\n${promptPersonalization.brief}` : null, await recoveryEvidence(task.runId, task.projectRootUri)].filter(Boolean).join("\n\n"),
         priorReceipts: [...stageInput.priorReceipts, ...(Array.isArray(continuation.priorReceipts) ? continuation.priorReceipts as StageExecutionInput["priorReceipts"] : []),
           ...(promptPersonalization ? [{ agentId: task.agentId, actionType: "prompt_personalization", summary: `Applied promoted local advisory ${promptPersonalization.briefHash} from ${promptPersonalization.localModelId}.` }] : []),
-          ...(continuationRound > 0
+          ...(continuationRound > 0 || continuation.approvalWait
             ? [continuationResumeReceipt(task.agentId, continuation, actionResults)]
             : [])],
         stateDeltas: stageStateDeltas,
@@ -1871,6 +1875,24 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         }
       } while (verifyRetryRequested);
+      const pendingApprovalIds = pendingActionApprovalIds(actionResults);
+      if (pendingApprovalIds.length) {
+        await assertLeaseOwned(); await assertStageGuard(false);
+        const held = await holdWorkflowTaskForApprovals({
+          taskId: task.taskId, runId: task.runId, agentId: task.agentId,
+          workerId: task.workerId!, fencingToken: task.fencingToken, approvalIds: pendingApprovalIds,
+          continuation: { ...continuation, version: 1, executionContractId: task.acceptanceContract?.contractId,
+            round: continuationRound, verifyRetryRound, actionResults, pendingOutput: output,
+            priorReceipts: routedStageInput.priorReceipts.slice(-40),
+            stateDeltas: stageStateDeltas.slice(-80), fileReads: stageFileReads.slice(-20) }
+        });
+        if (held !== "declined") {
+          stageTelemetry.event("approval.wait", { "agentflow.approval.wait.state": held });
+          stageTelemetry.end("awaiting_approval");
+          clearInterval(leaseHeartbeat);
+          continue;
+        }
+      }
       if (verifyEnvironmentalBlock) {
         await blockWorkflowTask({
           taskId: task.taskId,

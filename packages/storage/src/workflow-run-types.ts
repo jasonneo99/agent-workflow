@@ -53,6 +53,9 @@ export interface WorkflowQueueItem {
   startedAt: string;
   finishedAt: string | null;
   latestActivityAt: string;
+  approvalWait?: { taskId: string; stageId: string; since: string; approvals: Array<{
+    id: string; status: string; actionType: string; target: string; rationale: string; payload: Record<string, unknown>;
+  }> } | null;
   blockedReason?: string | null;
   failedReason?: string | null;
   totalTasks: number;

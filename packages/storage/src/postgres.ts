@@ -2,6 +2,7 @@ import { queueCoordinatorSchemaSql } from "./queue-coordinator-schema.js";
 import { automaticRecoveryAdmissionFenceSql, automaticRecoveryWrapperReason, automaticRepeatForbidden, noAutomaticRepeatReason } from "./no-automatic-repeat.js";
 import {assertGenericRunRecoveryAllowed} from './managed-run-recovery.js';
 import { runPipelineSchemaSql, installationRequiresRunPipeline } from './run-pipeline.js';
+import { holdWorkflowTaskForApprovalsOnClient } from './approval-waits.js';
 import { pipelineContract, preparedWorkflow, type RunPipelineContract } from '../../run-environments/src/pipeline.js';
 /** Persist unfinished stage state and yield its lease without promoting the stage. */
 export async function checkpointWorkflowTaskContinuation(input: {
@@ -41,6 +42,20 @@ export async function checkpointWorkflowTaskContinuation(input: {
 
 // Continuations use a separate artifact kind; they are never completed-stage
 // outputs and cannot satisfy downstream dependency or checkpoint promotion.
+
+export async function holdWorkflowTaskForApprovals(input: Parameters<typeof holdWorkflowTaskForApprovalsOnClient>[1]): Promise<"waiting" | "resolved" | "declined"> {
+  return withClient(async client => {
+    await client.query("begin");
+    try {
+      await assertActiveTaskFence(client, input);
+      const owner = await client.query(`select 1 from workflow_tasks where id=$1::uuid and run_id=$2::uuid and agent_id=$3`, [input.taskId, input.runId, input.agentId]);
+      if (owner.rowCount !== 1) throw new Error("Approval wait task identity mismatch.");
+      const state = await holdWorkflowTaskForApprovalsOnClient(client, input);
+      await client.query("commit");
+      return state;
+    } catch (error) { await client.query("rollback"); throw error; }
+  });
+}
 
 import type pg from "pg";
 import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
@@ -681,9 +696,23 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
            coalesce((select max(receipt.created_at) from action_receipts receipt where receipt.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at),
            coalesce((select max(approval.updated_at) from action_approvals approval where approval.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at),
            coalesce((select max(notice.created_at) from run_notifications notice where notice.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"}) and notice.event_key like 'queue-partner-code-fix:%'),wr.updated_at),
-           coalesce((select max(greatest(task_activity.available_at,coalesce(task_activity.started_at,task_activity.available_at),coalesce(task_activity.finished_at,task_activity.available_at)))
+           -- Scheduling eligibility (including an infinite approval/preparation hold) is not activity.
+           coalesce((select max(greatest(
+             case when isfinite(task_activity.started_at) then task_activity.started_at end,
+             case when isfinite(task_activity.finished_at) then task_activity.finished_at end))
              from workflow_tasks task_activity where task_activity.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at)
          )::text as "latestActivityAt",
+         (select jsonb_build_object('taskId',held.id::text,'stageId',held.stage_id,
+            'since',checkpoint.content#>>'{approvalWait,since}',
+            'approvals',(select jsonb_agg(jsonb_build_object('id',approval.id::text,'status',approval.status,
+              'actionType',approval.action_type,'target',approval.target,'rationale',approval.rationale,'payload',approval.payload) order by approval.created_at)
+              from action_approvals approval where approval.run_id=wr.id and approval.task_id=held.id
+                and (checkpoint.content#>'{approvalWait,approvalIds}') ? approval.id::text))
+          from workflow_tasks held join artifacts checkpoint on checkpoint.run_id=held.run_id and checkpoint.task_id=held.id
+            and checkpoint.kind='stage_continuation' and checkpoint.uri='db://workflow_tasks/'||held.id::text||'/continuation'
+          where held.run_id=wr.id and held.status='queued' and held.available_at='infinity'::timestamptz
+            and checkpoint.content#>>'{approvalWait,state}'='waiting'
+          order by held.id limit 1) as "approvalWait",
          null::text as "recoveryRunId",
          null::text as "recoveryRunStatus",
          null::text as "recoveryStartedAt",
@@ -714,7 +743,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          (array_agg(wt.agent_id order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningAgentId",
          (array_agg(wt.worker_id order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningWorkerId",
          (array_agg(wt.lease_expires_at::text order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningLeaseExpiresAt",
-         (min(wt.available_at) filter (where wt.status = 'queued'))::text as "oldestQueuedAt",
+         (min(wt.available_at) filter (where wt.status = 'queued' and isfinite(wt.available_at)))::text as "oldestQueuedAt",
          (min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')))::text as "oldestRunningAt"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
@@ -2407,6 +2436,7 @@ async function createWorkflowHandoffsForRun(client: pg.Client, runId: string, wo
 }
 
 export interface ClaimedWorkflowTask {
+  executedPolicyAdditions?: import('./approval-waits.js').ExecutedPolicyAddition[];
   projectId?: string;
   executionPipeline?: RunPipelineContract;
   executionIntent?: {owner:string;fencingToken:string};
@@ -2605,6 +2635,20 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            (select stage->>'runtime_operation' from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot,'{}'::jsonb),wf.definition)->'stages') stage where stage->>'id'=wt.stage_id limit 1) as "runtimeOperation",
            p.root_uri as "projectRootUri",
            coalesce(nullif(wr.policy_snapshot, '{}'::jsonb), p.config) as "projectConfig",
+           coalesce((select jsonb_agg(addition) from (
+             select change.content->>'field' as field,change.content->>'proposedRule' as rule
+             from action_approvals approval join artifacts change on change.run_id=approval.run_id and change.task_id=approval.task_id
+               and change.kind='project_policy_change' and change.content->>'approvalId'=approval.id::text
+               and change.content->>'proposedRule'=approval.payload->>'proposedRule'
+               and change.content->>'changeKind'=approval.payload->>'changeKind'
+             where approval.run_id=wr.id and approval.action_type='project_policy_change'
+               and approval.status='executed' and approval.executed_at is not null
+               and ((change.content->>'field'='allowed_commands' and approval.payload->>'changeKind'='allowed_command')
+                 or (change.content->>'field'='allowed_write_paths' and approval.payload->>'changeKind'='allowed_write_path'))
+               and exists(select 1 from action_receipts receipt where receipt.run_id=wr.id and receipt.action_type='project_policy_change'
+                 and receipt.metadata=change.content and receipt.receipt_hash is not null)
+             order by approval.created_at limit 51
+           ) addition),'[]'::jsonb) as "executedPolicyAdditions",
            wr.workflow_id as "workflowId",
            wr.task as "workflowTask",
            wt.stage_id as "stageId",
