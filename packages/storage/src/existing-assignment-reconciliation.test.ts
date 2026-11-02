@@ -216,6 +216,7 @@ test('one prospective source phase retains exhausted history and requires exact 
      expectedFence:lastFence,expectedStateVersion:String(24+ordinal),continuation:{ordinal,readonlyPaths:['dependency.py'],workerGoal:'Implement only the public source and regression; root owns private finalization.'}};
     const boundedPreview=await previewProspectiveSourcePhaseOnClient(c,bounded);
     assert.equal(boundedPreview.manifest.maxAttempts,3);
+    assert.equal(boundedPreview.snapshot.policy.execution.environments?.default_profile,'source-phase-'+input.phaseId+'-c'+ordinal);
     assert.ok(boundedPreview.snapshot.stages[0]!.goal.startsWith(bounded.continuation.workerGoal));
     assert.ok(!boundedPreview.snapshot.policy.actions.allowed_write_paths.includes('dependency.py'));
     await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...bounded,continuation:{...bounded.continuation,ordinal:4}}));

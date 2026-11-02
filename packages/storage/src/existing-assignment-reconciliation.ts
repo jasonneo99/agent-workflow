@@ -149,7 +149,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  }
  const priorContract=await reconciledExecutionContract(c,input.runId,row.evaluation_metadata);
  if(!priorContract?.sourcePaths?.length||priorContract.sourcePaths.some(p=>!input.sourcePaths.includes(p)))throw Error('Original acceptance source scope must remain retained');
- const prefix='source-phase-'+input.phaseId,profile='source-phase-'+input.phaseId;
+ const prefix='source-phase-'+input.phaseId,profile=prefix+(input.continuation?'-c'+input.continuation.ordinal:'');
  const repair=(await loadWorkflows(findAgentWorkflowRoot(import.meta.url))).find(w=>w.id==='repair-blocked-item');
  if(!repair||repair.stages.length!==3||repair.stages[0]?.agent!=='implementation-agent'||
   repair.stages[1]?.agent!=='test-engineer'||repair.stages[0].runtime_operation||repair.stages[1].runtime_operation||
