@@ -112,3 +112,11 @@ project, task digest, origin, direct human instruction, and fresh scoped intent
 must match; active work, unresolved approvals, or uncertain effects prevent
 withdrawal. This disposition grants no replay or replacement authority and
 cannot conceal later active work. Verified historical archival remains separate.
+
+Test authoring is an executor stage under the existing project write scope.
+It cannot replace the implementation executor; review-only workflows instead
+use a read-only coverage review stage. Authoring precedes the independent
+read-only verifier. Prepared workflows create the candidate at the declared
+end of each source phase, after its test authoring;
+legacy stage-name checkpoint settings cannot commit an unfinished prepared phase.
+Changing this template affects new runs only; historical snapshots remain intact.

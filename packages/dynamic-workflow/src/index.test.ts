@@ -51,6 +51,13 @@ test("implementation stages do not invent a separate plan-promotion approval", (
   assert.match(stageTemplates.implement.goal, /actual open approval/u);
 });
 
+test("test authoring has source authority and is followed by separate read-only verification",()=>{
+ const plan=constructDynamicWorkflow({goal:'Implement a desktop feature with focused regression coverage and deploy it',project,executionProfile:'adaptive'});
+ const author=plan.stages.find(stage=>stage.id==='test')!,verifier=plan.stages.find(stage=>stage.id==='verify')!;
+ assert.equal(author.agent,'test-engineer');assert.equal(author.pattern.type,'executor');assert.equal(author.pattern.requires_verifier,true);
+ assert.equal(verifier.pattern.type,'verifier');assert.ok(plan.stages.indexOf(author)<plan.stages.indexOf(verifier));
+});
+
 test("static low-risk build workflows fuse ceremony but retain implementation and verification", () => {
   const workflow = workflowHandoffSchema; // keep schema imports exercised alongside this fixture
   assert.ok(workflow);
@@ -119,11 +126,12 @@ test("reviewing a proposed repair remains read only", () => {
     for (const executionProfile of ["full", "adaptive"] as const) {
       const plan = constructDynamicWorkflow({ goal, project, executionProfile });
       assert.ok(!plan.stages.some((stage) => stage.pattern.type === "executor"), goal);
+      assert.equal(plan.stages.find((stage) => stage.id === "test-review")?.pattern.type, "verifier");
     }
   }
 });
 
-test("change requests cannot remove their last executor but may replace it", () => {
+test("test authoring cannot replace the implementation executor for a change request", () => {
   const goal = "Fix a stalled queue task";
   assert.throws(() => constructDynamicWorkflow({
     goal, project, changes: { remove: ["implement"] }

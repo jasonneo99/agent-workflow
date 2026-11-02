@@ -8,6 +8,7 @@ import { recoveryEvidence } from "./recovery-evidence.js";
 import { sourceSubjectHash } from "./source-subject.js";
 import { materializeVerificationRecipes } from "../../storage/src/partner-recovery-admission.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
+import {shouldCheckpointSourcePhase} from './phase-checkpoint.js';
 import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -293,7 +294,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         throw new Error("Invalid bounded stage continuation round.");
       }
       const actionResults: unknown[] = Array.isArray(continuation.actionResults) ? [...continuation.actionResults] : [];
-      const repairCommitSelected = (!task.executionPipeline?.required||task.executionPipeline.sourceChanges) && project.execution.repair_commits?.enabled === true && (project.execution.repair_commits.stages.includes(task.stageId)||task.checkpointAfter===true);
+      const repairCommitSelected = shouldCheckpointSourcePhase(task,project);
       let repairParent: string | null = null;
       if (repairCommitSelected) {
         const saved = actionResults.find(action => (action as { type?: string }).type === "repair_commit_baseline") as { parent?: string } | undefined;

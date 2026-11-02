@@ -28,7 +28,8 @@ export const stageTemplates: Record<string, StageTemplate> = {
   frontend: stage("frontend", "frontend-engineer", "Implement the frontend portion and interaction states.", "executor", "frontend_change", 6500, ["UI behavior matches the UX contract"], "standard"),
   backend: stage("backend", "backend-engineer", "Implement APIs, services, jobs, and integrations.", "executor", "backend_change", 6500, ["Service contracts and failure behavior are covered"], "standard"),
   integrate: stage("integrate", "implementation-agent", "Integrate parallel work-item results, reconcile overlaps, and preserve the combined acceptance contract.", "executor", "integration_summary", 6000, ["Parallel results are reconciled without dropping completed behavior", "Overlaps and residual conflicts are explicit"], "standard"),
-  test: stage("test", "test-engineer", "Add focused coverage for the changed behavior.", "verifier", "test_evidence", 4500, ["Happy path and material failure paths are tested"], "standard"),
+  test: stage("test", "test-engineer", "Add focused coverage for the changed behavior. Author tests within current project write policy, execute the focused tests, and retain their receipts. Independent read-only verification follows this authoring stage.", "executor", "test_evidence", 4500, ["Happy path and material failure paths are tested"], "standard"),
+  "test-review": stage("test-review", "test-engineer", "Review existing coverage and execute focused tests without editing source. Report missing cases for the owning author.", "verifier", "test_review", 4500, ["Existing coverage and material gaps are supported by executed evidence"], "standard"),
   verify: stage("verify", "auto-test-runner", "Run configured deterministic verification and report exact evidence.", "verifier", "verification_report", 4000, ["Required checks pass or failures are explained"], "fast"),
   docs: stage("docs", "docs-maintainer", "Update user and operator documentation for the change.", "reflexive", "documentation_update", 3500, ["Changed behavior and operating steps are documented"], "fast"),
   release: stage("release", "release-manager", "Assess release readiness, rollback, and approval evidence.", "finalizer", "release_decision", 3500, ["Go/no-go and rollback evidence are explicit"], "reasoning", true),
@@ -46,7 +47,7 @@ export const workflowArchetypes: WorkflowArchetype[] = [
   archetype("debug-failure", "Diagnose and fix a reproducible failure.", ["bug", "failure", "broken", "debug", "fix"], ["triage", "diagnose", "implement", "test", "verify", "package"]),
   archetype("security-hardening", "Review and harden a security boundary.", ["security", "vulnerability", "auth", "permission", "threat"], ["triage", "security", "architecture", "implement", "test", "verify", "security", "package"]),
   archetype("release", "Prepare and validate a release.", ["release", "ship", "deploy", "publish", "launch"], ["triage", "verify", "security", "docs", "release"]),
-  archetype("code-review", "Review a proposed code change.", ["review", "pull request", "pr", "diff", "audit"], ["triage", "architecture", "security", "test", "package"]),
+  archetype("code-review", "Review a proposed code change.", ["review", "pull request", "pr", "diff", "audit"], ["triage", "architecture", "security", "test-review", "package"]),
   archetype("documentation", "Create or maintain technical documentation.", ["documentation", "docs", "guide", "readme", "tutorial"], ["triage", "architecture", "docs", "verify", "package"]),
   archetype("model-improvement", "Improve prompts, routing, context, or evaluations.", ["model", "prompt", "routing", "eval", "fine tuning"], ["triage", "diagnose", "evaluate", "architecture", "implement", "verify", "package"]),
   archetype("maintenance", "Refactor or perform general repository maintenance.", ["refactor", "maintenance", "cleanup", "upgrade", "dependency"], ["triage", "architecture", "implement", "test", "verify", "docs", "package"]),
@@ -120,7 +121,7 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
       documentation: ["docs", "verify"],
       maintenance: ["implement", "verify"],
       "feature-delivery": ["implement", "verify"],
-      "code-review": ["architecture", "test"],
+      "code-review": ["architecture", "test-review"],
       "product-discovery": ["ux", "architecture", "security"]
     };
     const essentials = new Set(essentialsByArchetype[archetype.id] ?? ["implement", "verify"]);
@@ -369,8 +370,8 @@ export function validateDynamicWorkflow(value: unknown, project: ProjectConfig):
     if ((item.depends_on ?? []).some((dependency) => !ids.has(dependency) || dependency === item.id)) throw new Error(`Stage '${item.id}' has an invalid dependency.`);
   }
   assertAcyclic(workflow);
-  if (requestedMutationVerb(workflow.dynamic.goal) && !workflow.stages.some((item) => item.pattern.type === "executor")) {
-    throw new Error("Change requests require an executor stage.");
+  if (requestedMutationVerb(workflow.dynamic.goal) && !workflow.stages.some((item) => item.pattern.type === "executor" && item.agent !== "test-engineer")) {
+    throw new Error("Change requests require an implementation executor stage; test authoring alone cannot fulfill the implementation contract.");
   }
   if (!workflow.stages.some((item) => item.pattern.type === "verifier")) throw new Error("Dynamic workflows require a verification stage.");
   return workflow;
