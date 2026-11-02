@@ -165,7 +165,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
   const comparable=(values:any[])=>values.map((s,index)=>index===0&&input.continuation?{...s,goal:'explicitly amended worker obligation'}:s);
   if(acceptanceDigest(comparable(retained))!==acceptanceDigest(comparable(stages)))throw Error('Correction requires unchanged phase stages');
   const phaseTasks=stages.map(stage=>tasks.filter(t=>t.stage_id===stage.id));
-  if(phaseTasks.some(found=>found.length!==1)||phaseTasks[0]![0].status!=='blocked'||phaseTasks[0]![0].attempts!==(input.continuation?2+input.continuation.ordinal:input.amendedAttempt?2:1)||
+  if(phaseTasks.some(found=>found.length!==1)||!(input.continuation?['blocked','failed']:['blocked']).includes(phaseTasks[0]![0].status)||phaseTasks[0]![0].attempts!==(input.continuation?2+input.continuation.ordinal:input.amendedAttempt?2:1)||
    phaseTasks.slice(1).some(found=>found[0].status!=='cancelled'||found[0].attempts!==0))throw Error('Correction requires the single pre-write attempt');
   const failure=(await c.query(`select content from artifacts where run_id=$1 and task_id=$2 and kind='stage_output'`,[input.runId,phaseTasks[0]![0].id])).rows;
   if(!input.continuation&&(failure.length!==1||failure[0].content.phase!=='runtime-preparation'||
@@ -201,12 +201,50 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  await planRunEnvironment({cwd:row.root_uri,project:policy,context:{runId:input.runId,
   workflowId:row.workflow_id??'prospective-source',stageId:stages[0]!.id,profile}});
  const phasePaths=input.continuation?environmentPaths:input.sourcePaths;
- const sourceHash=await sourceSubjectHash(row.root_uri,phasePaths);
+ const canonicalSourceHash=await sourceSubjectHash(row.root_uri,phasePaths);
+ let sourceHash=canonicalSourceHash,retainedCandidate:Record<string,unknown>|undefined;
+ if(input.continuation){
+  const candidates=(await c.query(`select a.uri,a.content from artifacts a join action_receipts r on
+   r.run_id=a.run_id and r.metadata=a.content and r.target=a.content->>'commit' and r.agent_id=$3
+   and r.action_type in ('repair_commit_candidate','current_revision_checkpoint')
+   where a.run_id=$1 and a.task_id=$2 and a.kind='repair_commit_candidate' order by a.created_at desc limit 1`,
+   [input.runId,tasks.find(t=>t.stage_id===stages[0]!.id)!.id,stages[0]!.agent])).rows;
+  if(candidates.length){
+   const candidate=candidates[0].content;
+   if(!/^[a-f0-9]{40}$/u.test(candidate.commit)||!Array.isArray(candidate.files)||candidate.files.some((p:string)=>!input.writePaths.includes(p))||
+    typeof candidate.validationReceipt!=='string'||!candidate.validationReceipt.startsWith('.agent-workflow/runtime/run-environments/')||
+    !exactPaths([candidate.validationReceipt]))throw Error('Exact retained source candidate required');
+   const descriptor=JSON.parse(await fs.readFile(row.root_uri+'/.agent-workflow/runtime/run-workspaces/'+input.runId+'/workspace.json','utf8'));
+   const {execFileSync}=await import('node:child_process');
+   const git=(root:string,args:string[])=>execFileSync('git',['-C',root,...args],{encoding:'utf8',timeout:10000,maxBuffer:2000000}).trim();
+   if(descriptor.runId!==input.runId||descriptor.canonicalRoot!==row.root_uri||await fs.realpath(descriptor.root)!==descriptor.root||
+    git(descriptor.root,['rev-parse','--path-format=absolute','--git-common-dir'])!==git(row.root_uri,['rev-parse','--path-format=absolute','--git-common-dir'])||
+    git(descriptor.root,['rev-parse','HEAD'])!==candidate.commit||git(descriptor.root,['status','--porcelain=v1','--untracked-files=all']))
+    throw Error('Retained candidate workspace identity or source changed');
+   const receiptPath=descriptor.root+'/'+candidate.validationReceipt;
+   if(await fs.realpath(receiptPath)!==receiptPath||!(await fs.lstat(receiptPath)).isFile())throw Error('Candidate validation receipt is not owned');
+   const raw=await fs.readFile(receiptPath),validation=JSON.parse(raw.toString());
+   if(createHash('sha256').update(raw).digest('hex')!==candidate.validationReceiptHash||validation.result?.exitCode!==0||
+    validation.result?.timedOut||validation.result?.outputTruncated||validation.result?.verificationRecipe?.status!=='passed'||
+    validation.result.verificationRecipe.skipped!==0||validation.result.verificationRecipe.passed<1||
+    validation.result.environment?.runId!==input.runId||validation.result.environment.status!=='ready'||
+    validation.result.environment.cleanup!=='complete'||!Array.isArray(validation.plan?.sourceFiles)||
+    acceptanceDigest(validation.plan.sourceFiles.map((f:any)=>f.path).sort())!==acceptanceDigest([...phasePaths].sort()))
+    throw Error('Retained candidate lacks exact executed passing source evidence');
+   for(const file of validation.plan.sourceFiles){
+    const absolute=descriptor.root+'/'+file.path;
+    if(await fs.realpath(absolute)!==absolute||!(await fs.lstat(absolute)).isFile()||
+     createHash('sha256').update(await fs.readFile(absolute)).digest('hex')!==file.sha256)throw Error('Retained candidate source changed after tests');
+   }
+   sourceHash=await sourceSubjectHash(descriptor.root,phasePaths);
+   retainedCandidate={artifactUri:candidates[0].uri,commit:candidate.commit,validationReceiptHash:candidate.validationReceiptHash,sourceHash};
+  }
+ }
  const phaseContract:StructuredAcceptanceContract={version:1,contractId:prefix,projectId:row.project_key,
   originRunId:input.runId,taskHash:acceptanceDigest(row.task),sourcePaths:phasePaths,subjectHash:sourceHash,
   deliverables:[{id:'approved-source-phase',description:input.continuation?.workerGoal??input.goal,status:'pending',receipts:{},gaps:[],requiredGates:['implementation','verification','packaging','supervision']}]};
  const manifest={version:1,operation:input.continuation?'continue-existing-source-phase-bounded':input.amendedAttempt?'amend-existing-source-phase-once':input.correctedAttempt?'correct-existing-source-phase-once':'continue-existing-run-source-phase',authority:'direct-human',approvalDecision:'approved',maxAttempts:input.continuation?3:1,
-  ...input,projectId:row.project_key,taskHash:acceptanceDigest(row.task),sourceHash,currentPolicyHash:acceptanceDigest(current),
+  ...input,projectId:row.project_key,taskHash:acceptanceDigest(row.task),sourceHash,canonicalSourceHash,...(retainedCandidate?{retainedCandidate}:{}),currentPolicyHash:acceptanceDigest(current),
   priorPolicyHash:acceptanceDigest(row.policy_snapshot),policyHash:acceptanceDigest(policy),priorContractHash:acceptanceDigest(priorContract),
   taskSnapshotHash:acceptanceDigest(tasks),workflowSnapshotHash:acceptanceDigest(row.workflow_snapshot),
   phaseStagesHash:acceptanceDigest(stages),intentExpiresAt:new Date(intent.expires_at).toISOString()};
@@ -264,7 +302,7 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
  if(!updated)throw Error('Prospective run state changed');
  if(correction){
   for(const stage of stages)if((await c.query(`update workflow_tasks set status='queued',worker_id=null,lease_expires_at=null,
-   finished_at=null,available_at=clock_timestamp() where run_id=$1 and stage_id=$2 and status in ('blocked','cancelled')`,[input.runId,stage.id])).rowCount!==1)
+   finished_at=null,available_at=clock_timestamp() where run_id=$1 and stage_id=$2 and status=any($3::text[])`,[input.runId,stage.id,input.continuation?['blocked','cancelled','failed']:['blocked','cancelled']])).rowCount!==1)
    throw Error('Corrected task identity changed');
  }else{
  for(const stage of stages)await c.query(`insert into workflow_tasks(id,run_id,stage_id,agent_id,status,attempts,available_at,idempotency_key)

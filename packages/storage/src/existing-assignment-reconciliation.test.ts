@@ -214,11 +214,37 @@ test('one prospective source phase retains exhausted history and requires exact 
     await c.query("insert into work_intents values($1,$2,$3,'[\"source.py\",\"tests/test_source.py\",\"dependency.py\"]',clock_timestamp()+interval '1 hour')",[project,'bounded-'+ordinal,ordinal+4]);
     const bounded={...amendment,sourcePaths:[...input.sourcePaths,'dependency.py'],owner:'bounded-'+ordinal,intentFence:String(ordinal+4),
      expectedFence:lastFence,expectedStateVersion:String(24+ordinal),continuation:{ordinal,readonlyPaths:['dependency.py'],workerGoal:'Implement only the public source and regression; root owns private finalization.'}};
+    if(ordinal===3){
+     const {execFileSync}=await import('node:child_process');
+     const git=(cwd:string,args:string[])=>execFileSync('git',['-C',cwd,...args],{encoding:'utf8'}).trim();
+     git(root,['init','-q']);git(root,['config','user.name','Synthetic Fixture']);git(root,['config','user.email','fixture.invalid']);
+     await fs.writeFile(path.join(root,'.gitignore'),'.agent-workflow/\n');
+     git(root,['add','--','source.py','tests/test_source.py','dependency.py','.gitignore']);git(root,['commit','-qm','Synthetic baseline']);
+     const candidateRoot=root+'-candidate';git(root,['worktree','add','-qb','synthetic-candidate',candidateRoot]);
+     await fs.writeFile(path.join(candidateRoot,'source.py'),'# tested synthetic candidate\n');
+     git(candidateRoot,['add','--','source.py']);git(candidateRoot,['commit','-qm','Synthetic candidate']);
+     const commit=git(candidateRoot,['rev-parse','HEAD']);
+     const receipt='.agent-workflow/runtime/run-environments/synthetic/validation.json';
+     await fs.mkdir(path.dirname(path.join(candidateRoot,receipt)),{recursive:true});
+     const sourceFiles=await Promise.all(bounded.sourcePaths.map(async relative=>({path:relative,sha256:createHash('sha256').update(await fs.readFile(path.join(candidateRoot,relative))).digest('hex')})));
+     const raw=Buffer.from(JSON.stringify({plan:{sourceFiles},result:{exitCode:0,timedOut:false,verificationRecipe:{status:'passed',cases:1,passed:1,skipped:0},environment:{runId:run,status:'ready',cleanup:'complete'}}}));
+     await fs.writeFile(path.join(candidateRoot,receipt),raw);
+     await fs.mkdir(path.join(root,'.agent-workflow/runtime/run-workspaces',run),{recursive:true});
+     await fs.writeFile(path.join(root,'.agent-workflow/runtime/run-workspaces',run,'workspace.json'),JSON.stringify({runId:run,canonicalRoot:root,root:candidateRoot}));
+     const content={commit,files:['source.py'],validationReceipt:receipt,validationReceiptHash:createHash('sha256').update(raw).digest('hex')};
+     await c.query("insert into artifacts(run_id,task_id,kind,uri,content)values($1,$2,'repair_commit_candidate','synthetic://tested-candidate',$3)",[run,firstTask,content]);
+     await appendActionReceipt(c,{runId:run,agentId:'implementation-agent',actionType:'repair_commit_candidate',target:commit,summary:'Synthetic tested candidate',metadata:JSON.stringify(content)});
+     await c.query("update workflow_tasks set status='failed' where id=$1",[firstTask]);
+     await fs.writeFile(path.join(candidateRoot,'source.py'),'# drift\n');
+     await assert.rejects(previewProspectiveSourcePhaseOnClient(c,bounded),/candidate workspace/);
+     await fs.writeFile(path.join(candidateRoot,'source.py'),'# tested synthetic candidate\n');
+    }
     const boundedPreview=await previewProspectiveSourcePhaseOnClient(c,bounded);
     assert.equal(boundedPreview.manifest.maxAttempts,3);
     assert.equal(boundedPreview.snapshot.policy.execution.environments?.default_profile,'source-phase-'+input.phaseId+'-c'+ordinal);
     assert.ok(boundedPreview.snapshot.stages[0]!.goal.startsWith(bounded.continuation.workerGoal));
     assert.ok(!boundedPreview.snapshot.policy.actions.allowed_write_paths.includes('dependency.py'));
+    if(ordinal===3){assert.ok(boundedPreview.manifest.retainedCandidate);assert.notEqual(boundedPreview.manifest.sourceHash,boundedPreview.manifest.canonicalSourceHash);}
     await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...bounded,continuation:{...bounded.continuation,ordinal:4}}));
     if(ordinal>1)await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...bounded,continuation:{...bounded.continuation,workerGoal:'broaden this budget'}}));
     const boundedGrant=await putGrant({},'operator_prospective_source_phase_continuation_authorized',boundedPreview,'prospective_source_phase_continuation_authorization');
@@ -229,7 +255,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    }
    assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_continued'",[run])).rows[0].n,3);
   }finally{await c.query('rollback');}});
- }finally{await fs.rm(root,{recursive:true,force:true});}
+ }finally{await fs.rm(root+'-candidate',{recursive:true,force:true});await fs.rm(root,{recursive:true,force:true});}
 });
 
 test('existing queued continuation receives fresh fences and current contract without a wrapper or history rewrite',async()=>{
