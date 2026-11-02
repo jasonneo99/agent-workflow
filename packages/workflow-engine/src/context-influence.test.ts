@@ -1,3 +1,4 @@
+import { ProviderExecutionError } from "../../model-providers/src/fallback.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { providerWithInfluence, stageContextInfluence } from "./context-influence.js";
@@ -20,7 +21,7 @@ test("every provider invocation is preceded by durable attribution and returned 
 });
 test("receipt failure prevents provider invocation; provider failure retains its input receipt", async () => {
   let calls=0;const provider: ModelProvider={id:"mock",executeStage:async()=>{calls++;throw new Error("provider failed");}};
-  await assert.rejects(providerWithInfluence(provider,async()=>{throw new Error("storage unavailable");}).executeStage(input()),/Context attribution storage is unavailable/);assert.equal(calls,0);
+  await assert.rejects(providerWithInfluence(provider,async()=>{throw new Error("storage unavailable");}).executeStage(input()),(error:unknown)=>error instanceof ProviderExecutionError&&error.kind==="configuration"&&error.message.includes("provider execution stopped"));assert.equal(calls,0);
   let writes=0;await assert.rejects(providerWithInfluence(provider,async()=>{writes++;return "db://input";}).executeStage(input()),/provider failed/);assert.equal(writes,1);assert.equal(calls,1);
 });
 test("stage artifacts retain stable attribution across JSONB key ordering", () => {
