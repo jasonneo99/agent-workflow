@@ -37,6 +37,19 @@ test('read-only workflows keep their contracts and installation requirement cann
  }
  assert.equal(preparedWorkflow(repair,false,repair),repair);
 });
+test('prepared source verification retains original requirements and identifies downstream product gates',async()=>{
+ const repair=(await loadWorkflows(root)).find(w=>w.id==='repair-blocked-item')!;
+ const original=workflowSchema.parse({...repair,stages:repair.stages.map(stage=>stage.pattern.type==='verifier'?{...stage,goal:'Run the explicitly required full source suite.',acceptance_criteria:['The full source suite passes']}:stage)});
+ const before=JSON.stringify(original),prepared=preparedWorkflow(original,true,repair),verifier=prepared.stages.find(stage=>stage.pattern.type==='verifier')!;
+ assert.equal(JSON.stringify(original),before);
+ assert.match(verifier.goal,/Run the explicitly required full source suite\./);
+ assert.match(verifier.goal,/declared verification recipes in its selected environment first/);
+ assert.match(verifier.goal,/including a required full suite/);
+ assert.match(verifier.goal,/downstream required obligations/);
+ assert.match(verifier.goal,/does not establish overall product acceptance/);
+ assert.deepEqual(verifier.acceptance_criteria,['The full source suite passes']);
+ assert.deepEqual(preparedWorkflow(prepared,true,repair),prepared,'Normalization cannot duplicate or change a frozen phase notice');
+});
 test('context and roadmap maintenance retain their original stages and exact artifact-only contract',async()=>{
  const workflows=await loadWorkflows(root),repair=workflows.find(w=>w.id==='repair-blocked-item')!;
  const project=projectConfigSchema.parse({project:{name:'Portable fixture',roadmap_path:'docs/ROADMAP.md'}});

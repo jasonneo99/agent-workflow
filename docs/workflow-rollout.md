@@ -120,3 +120,9 @@ read-only verifier. Prepared workflows create the candidate at the declared
 end of each source phase, after its test authoring;
 legacy stage-name checkpoint settings cannot commit an unfinished prepared phase.
 Changing this template affects new runs only; historical snapshots remain intact.
+
+Prepared source verifiers run the candidate's declared checks in its selected
+environment before additional suites. An explicitly required full source suite
+remains required. Source verification precedes integration; deployment, launch,
+and visible runtime acceptance stay pending until separately executed evidence
+proves them. Completing source stages never establishes overall product acceptance.

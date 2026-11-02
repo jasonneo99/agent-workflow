@@ -9,6 +9,7 @@ import { sourceSubjectHash } from "./source-subject.js";
 import { materializeVerificationRecipes } from "../../storage/src/partner-recovery-admission.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
 import {shouldCheckpointSourcePhase} from './phase-checkpoint.js';
+import {verificationCommandsFirst} from './verification-command-order.js';
 import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -819,6 +820,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             actionType: "repair_verifier_commands_scheduled", target: task.stageId,
             summary: "Scheduled the declared candidate tests through ordinary command policy; independent execution remains required.",
             artifactKind: "repair_verifier_commands_scheduled", artifactContent: { commands: scheduledVerifierCommands, candidateFiles, grantsAdditionalAuthority: false } });
+        }
+        if (repairCommitSelected || stagePattern.type === 'verifier') {
+          output = { ...output, requestedCommands: verificationCommandsFirst(output.requestedCommands ?? [], declaredPipelineCommands) };
         }
         const totalRequestedActions = countRequestedActions(output);
         let reactIteration = 0;

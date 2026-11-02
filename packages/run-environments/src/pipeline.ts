@@ -1,6 +1,7 @@
 import type { ProjectConfig, WorkflowDefinition } from '../../agent-registry/src/schemas.js';
 
 export const RUN_PIPELINE_VERSION = 1;
+const sourceVerificationPrefix = 'Source-phase verification before trusted source integration.';
 export interface RunPipelineContract {
   version: 1;
   required: boolean;
@@ -66,6 +67,7 @@ export function preparedWorkflow(workflow: WorkflowDefinition, required: boolean
   if(!integration)throw Error('Prepared source execution requires the trusted integration phase');
   stages.push({...integration,depends_on:stages.map(stage=>stage.id)});
   stages=stages.map((stage,index)=>({...stage,depends_on:[...new Set([...(stage.depends_on??[]),...(index?[stages[index-1]!.id]:[])])]}));
+  stages=stages.map(stage=>stage.pattern.type==='verifier'&&!stage.goal.startsWith(sourceVerificationPrefix)?{...stage,goal:`${sourceVerificationPrefix} ${stage.goal}\nRun the committed candidate's declared verification recipes in its selected environment first. Preserve every explicit source acceptance requirement, including a required full suite. Do not substitute an unrelated default-profile suite for the candidate's declared checks. Installation, deployment, launch and visible runtime acceptance are downstream required obligations: record them as pending, never as passed source evidence. Source-phase completion does not establish overall product acceptance.`}:stage);
   return { ...workflow, execution: {kind:'source-change'}, stages };
 }
 export function pipelineContract(project: ProjectConfig, workflow: WorkflowDefinition, installationRequired: boolean, preparedOnly = false): RunPipelineContract {
