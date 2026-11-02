@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "algorithm": "ed25519",
   "bundleId": "agent-workflow-core",
-  "bundleVersion": "0.4.7",
+  "bundleVersion": "0.4.8",
   "manifestChecksum": "d790edefc63aa8b8cc6b524699ae39e9c4b34d77d3dd1817bad327096889f425",
-  "signedAt": "2026-10-21T21:09:49.901Z",
+  "signedAt": "2026-10-21T21:49:47.072Z",
   "signer": {
     "id": "agent-workflow-release",
     "keyFingerprint": "045a466ce5d9a8f6cbcd43b9a7af68dbd238c6ca4061f83479a46970fdc344c0",
     "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAWAtCD8bZEpMwfRDKB21zmO5vDKbBxxZpOS9dPRRGvZ8=\n-----END PUBLIC KEY-----\n"
   },
-  "signature": "9gsBQj5BZbGpCbjk48+ssxIGUhNG6rLIhcIs+OsQ10J61P+aYwSE/IS7lgdHvVvgfuXqIDWvMoGvxX6RvtC1Cw=="
+  "signature": "fB6GgTt8mqtI6Gc6tpg07D+CPLtirXUUaRS6kWsAzhlU7+VmVQeAKPEicpbwOXHLUJcusSARVRY66qyRw+QEAg=="
 }
