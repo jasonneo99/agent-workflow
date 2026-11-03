@@ -53,13 +53,17 @@ function resolvedContinuation(continuation: Record<string, unknown>, approvals: 
     }) };
 }
 
-/** Caller has validated the current worker/coordinator fence and owns the transaction.
+/** Caller has validated the current worker/coordinator fence, locked the run,
+ * and supplies its authoritative run epoch separately from the stage generation.
  * Waiting is unfinished work, never a failed output or authority to replay effects.
  */
 export async function holdWorkflowTaskForApprovalsOnClient(client: pg.Client, input: {
   runId: string; taskId: string; agentId: string; workerId: string; fencingToken: string;
   approvalIds: string[]; continuation: Record<string, unknown>;
-}): Promise<"waiting" | "resolved" | "declined"> {
+}, runLeaseEpoch: string): Promise<"waiting" | "resolved" | "declined"> {
+  if (typeof runLeaseEpoch !== "string" || !/^(?:0|[1-9]\d*)$/u.test(runLeaseEpoch)) {
+    throw new Error("Approval wait requires the locked workflow run lease epoch.");
+  }
   const ids = [...new Set(input.approvalIds)];
   if (!ids.length || ids.length > 50 || ids.some(id => !uuid.test(id))) throw new Error("Invalid bounded approval wait.");
   const approvals = await approvalsForTask(client, input.runId, input.taskId, ids);
@@ -81,7 +85,7 @@ export async function holdWorkflowTaskForApprovalsOnClient(client: pg.Client, in
   await client.query(`update workflow_runs set lease_owner=null,lease_expires_at=null
     where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint
       and not exists(select 1 from workflow_tasks where run_id=$1::uuid and status in('leased','running'))`,
-  [input.runId, input.workerId, input.fencingToken]);
+  [input.runId, input.workerId, runLeaseEpoch]);
   await appendActionReceipt(client, { runId: input.runId, agentId: input.agentId,
     actionType: resolved ? "stage_approval_resumed" : "stage_approval_held", target: input.taskId,
     summary: resolved ? "Approval execution already recorded; same unfinished stage queued for continuation."

@@ -185,7 +185,7 @@ test("worker provider capabilities flow into durable queue claims", () => {
 
 test("workers release tasks for unavailable host checkouts and stop reclaiming them", () => {
   const source = ["./executor.ts", "./worker-watch.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
-  assert.match(source, /projectResolution\.localPathExists[\s\S]+unavailableProjectRootUris\?\.add[\s\S]+requeueRunningWorkflowTasks[\s\S]+worker_project_unavailable/u);
+  assert.match(source, /projectResolution\.localPathExists[\s\S]+unavailableProjectRootUris\?\.add[\s\S]+requeueClaimedWorkflowTask\(\{taskId: task\.taskId, runId: task\.runId,[\s\S]+workerId: task\.workerId!, fencingToken: task\.fencingToken\}\)[\s\S]+if \(!released\) continue;[\s\S]+worker_project_unavailable/u);
   assert.match(source, /const unavailableProjectRootUris = new Set<string>\(\)[\s\S]+unavailableProjectRootUris/u);
 });
 

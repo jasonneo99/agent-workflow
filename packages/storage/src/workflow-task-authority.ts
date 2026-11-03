@@ -18,13 +18,13 @@ export async function checkpointWorkflowTaskContinuation(input: {
   await withClient(async (client) => {
     await client.query("begin");
     try {
-      await assertActiveTaskFence(client, input);
+      const claim = await assertActiveTaskFence(client, input);
       const owner = await client.query(`select 1 from workflow_tasks where id=$1::uuid and run_id=$2::uuid and agent_id=$3`, [input.taskId, input.runId, input.agentId]);
       if (owner.rowCount !== 1) throw new Error("Continuation task identity mismatch.");
       const uri = `db://workflow_tasks/${input.taskId}/continuation`;
       await client.query(`insert into artifacts (run_id, task_id, kind, uri, content) values ($1::uuid,$2::uuid,'stage_continuation',$3,$4::jsonb) on conflict (uri) do update set content=excluded.content`, [input.runId, input.taskId, uri, content]);
       await client.query(`update workflow_tasks set status='queued', started_at=null, finished_at=null, worker_id=null, lease_expires_at=null, available_at=now()+($3::int * interval '1 second') where id=$1::uuid and run_id=$2::uuid`, [input.taskId, input.runId, input.delaySeconds]);
-      await client.query(`update workflow_runs set lease_owner=null, lease_expires_at=null where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint and not exists (select 1 from workflow_tasks where run_id=$1::uuid and status in ('leased','running'))`, [input.runId, input.workerId, input.fencingToken]);
+      await client.query(`update workflow_runs set lease_owner=null, lease_expires_at=null where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint and not exists (select 1 from workflow_tasks where run_id=$1::uuid and status in ('leased','running'))`, [input.runId, input.workerId, claim.runLeaseEpoch]);
       await appendActionReceipt(client, {
         runId: input.runId,
         agentId: input.agentId,
@@ -48,10 +48,10 @@ export async function holdWorkflowTaskForApprovals(input: Parameters<typeof hold
   return withClient(async client => {
     await client.query("begin");
     try {
-      await assertActiveTaskFence(client, input);
+      const claim = await assertActiveTaskFence(client, input);
       const owner = await client.query(`select 1 from workflow_tasks where id=$1::uuid and run_id=$2::uuid and agent_id=$3`, [input.taskId, input.runId, input.agentId]);
       if (owner.rowCount !== 1) throw new Error("Approval wait task identity mismatch.");
-      const state = await holdWorkflowTaskForApprovalsOnClient(client, input);
+      const state = await holdWorkflowTaskForApprovalsOnClient(client, input, claim.runLeaseEpoch);
       await client.query("commit");
       return state;
     } catch (error) { await client.query("rollback"); throw error; }
@@ -114,6 +114,61 @@ export async function acquireWorkflowRunLease(client: pg.Client, input: {
   return leaseEpoch;
 }
 
+export interface LockedWorkflowTaskClaim { agentId: string; runId: string; runLeaseEpoch: string }
+
+/** Stage generations and run epochs are independent; lock both current owners. */
+async function lockWorkflowTaskClaim(client: pg.Client, input: {
+  taskId: string; runId?: string; workerId: string; fencingToken: string;
+}, statuses: Array<'leased' | 'running'>): Promise<LockedWorkflowTaskClaim | null> {
+  const coordinatorFence = await coordinatorWorkerFencePredicate(client, "$3");
+  const owned = await client.query<LockedWorkflowTaskClaim>(
+    `select wt.agent_id as "agentId",wt.run_id::text as "runId",wr.lease_epoch::text as "runLeaseEpoch"
+     from workflow_tasks wt join workflow_runs wr on wr.id=wt.run_id
+     where wt.id=$1::uuid and ($2::uuid is null or wt.run_id=$2::uuid)
+       and wt.status=any($5::text[]) and wt.worker_id=$3
+       and wt.lease_generation=$4::bigint and wt.lease_expires_at>now()
+       and wr.status in ('leased','running') and wr.lease_owner=$3 and wr.lease_expires_at>now()
+       and ${coordinatorFence}
+     for update of wt, wr`, [input.taskId, input.runId ?? null, input.workerId, input.fencingToken, statuses]);
+  return owned.rows[0] ?? null;
+}
+
+/** Relinquish one still-owned claim; a stale worker cannot release its successor. */
+export async function requeueClaimedWorkflowTask(input: {
+  taskId: string; runId: string; workerId: string; fencingToken: string;
+}): Promise<boolean> {
+  return withClient(async client => {
+    await client.query("begin");
+    try {
+      const claim = await lockWorkflowTaskClaim(client, input, ['leased', 'running']);
+      if (!claim) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query(
+        `update workflow_tasks set status='queued',started_at=null,finished_at=null,
+           worker_id=null,lease_expires_at=null,available_at=now()
+         where id=$1::uuid and run_id=$2::uuid`, [input.taskId, input.runId]);
+      await client.query(
+        `update workflow_runs set lease_owner=null,lease_expires_at=null
+         where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint
+           and not exists(select 1 from workflow_tasks sibling
+             where sibling.run_id=$1::uuid and sibling.status in ('leased','running'))`,
+        [input.runId, input.workerId, claim.runLeaseEpoch]);
+      await appendActionReceipt(client, {runId: input.runId, agentId: claim.agentId,
+        actionType: "stage_requeued", target: input.taskId,
+        summary: "Worker relinquished its current task claim.",
+        metadata: JSON.stringify({nextStatus: "queued", workerId: input.workerId,
+          fencingToken: input.fencingToken, releaseScope: "claimed-task"})});
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 export async function requeueRunningWorkflowTasks(runId: string): Promise<number> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -158,17 +213,22 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      // Serialize parent lease changes before inspecting children. A claimer
+      // holding a task may wait for its run; skip its locked task below.
+      const runs = await client.query<{ id: string }>(
+        `select wr.id::text from workflow_runs wr join projects p on p.id=wr.project_id
+         where wr.status in ('leased','running')
+           and ($1::uuid is null or wr.id=$1::uuid) and ($2::text is null or p.root_uri=$2)
+           and exists(select 1 from workflow_tasks wt where wt.run_id=wr.id
+             and wt.status in ('leased','running') and wt.lease_expires_at<now())
+         order by wr.id for update of wr skip locked`, [input.runId ?? null, input.projectRootUri ?? null]);
       const result = await client.query<{ runId: string; taskId: string; agentId: string; workerId: string | null; leaseExpiresAt: string | null }>(
         `with expired as (
            select wt.id, wt.run_id, wt.worker_id, wt.lease_expires_at
            from workflow_tasks wt
-           join workflow_runs wr on wr.id = wt.run_id
-           join projects p on p.id = wr.project_id
-           where wt.status in ('leased','running')
+           where wt.run_id=any($1::uuid[]) and wt.status in ('leased','running')
              and wt.lease_expires_at is not null
              and wt.lease_expires_at < now()
-             and ($1::uuid is null or wt.run_id = $1::uuid)
-             and ($2::text is null or p.root_uri = $2)
            for update of wt skip locked
          )
          update workflow_tasks wt
@@ -185,16 +245,19 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
                    wt.agent_id as "agentId",
                    expired.worker_id as "workerId",
                    expired.lease_expires_at::text as "leaseExpiresAt"`,
-        [input.runId ?? null, input.projectRootUri ?? null]
+        [runs.rows.map(run => run.id)]
       );
       const runIds = [...new Set(result.rows.map((row) => row.runId))].sort();
       if (runIds.length) {
         await client.query(
-          `update workflow_runs
+          `update workflow_runs wr
            set lease_owner = null,
                lease_expires_at = null
            where id = any($1::uuid[])
-             and status in ('leased','running')`,
+             and status in ('leased','running')
+             and (lease_expires_at is null or lease_expires_at<=now())
+             and not exists(select 1 from workflow_tasks sibling
+               where sibling.run_id=wr.id and sibling.status in ('leased','running'))`,
           [runIds]
         );
         for (const runId of runIds) {
@@ -254,6 +317,8 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
     await client.query("begin");
     try {
       await client.query("select set_config('agentflow.execution_pipeline','1',true)");
+      const claim = await lockWorkflowTaskClaim(client, input, ['leased']);
+      if (!claim) throw new Error("Stale workflow fencing token or expired task lease.");
       const result = await client.query(`update workflow_tasks set status='running',started_at=coalesce(started_at,now()) where id=$1 and run_id=$2 and status='leased' and worker_id=$3 and lease_generation=$4::bigint and lease_expires_at>now()`, [input.taskId,input.runId,input.workerId,input.fencingToken]);
       if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
       await transitionWorkflowRun(client, {
@@ -262,7 +327,7 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
         actor: input.workerId,
         reason: "Leased worker started task execution.",
         idempotencyKey: `run-started:${input.taskId}:${input.fencingToken}`,
-        expectedLeaseEpoch: input.fencingToken,
+        expectedLeaseEpoch: claim.runLeaseEpoch,
         expectedLeaseOwner: input.workerId,
         metadata: { taskId: input.taskId }
       });
@@ -282,20 +347,10 @@ export async function assertWorkflowTaskLease(input: {
   await withClient(async (client) => assertActiveTaskFence(client, input));
 }
 
-export async function assertActiveTaskFence(client: pg.Client, input: { taskId: string; workerId: string; fencingToken: string }): Promise<void> {
-  const coordinatorFence = await coordinatorWorkerFencePredicate(client, "$2");
-  const result = await client.query(
-    `select 1
-     from workflow_tasks wt
-     join workflow_runs wr on wr.id = wt.run_id
-     where wt.id=$1 and wt.status='running' and wt.worker_id=$2
-       and wt.lease_generation=$3::bigint and wt.lease_expires_at>now()
-       and wr.status in ('leased','running')
-       and ${coordinatorFence}
-     for update of wt, wr`,
-    [input.taskId, input.workerId, input.fencingToken]
-  );
-  if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
+export async function assertActiveTaskFence(client: pg.Client, input: { taskId: string; runId?: string; workerId: string; fencingToken: string }): Promise<LockedWorkflowTaskClaim> {
+  const claim = await lockWorkflowTaskClaim(client, input, ['running']);
+  if (!claim) throw new Error("Stale workflow fencing token or expired task lease.");
+  return claim;
 }
 
 export async function renewWorkflowTaskLease(input: {
@@ -309,6 +364,8 @@ export async function renewWorkflowTaskLease(input: {
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      const claim = await lockWorkflowTaskClaim(client, input, ['running']);
+      if (!claim) { await client.query("rollback"); return false; }
       const task = await client.query(
         `update workflow_tasks
          set lease_expires_at = now() + ($5::int * interval '1 second')
@@ -321,21 +378,15 @@ export async function renewWorkflowTaskLease(input: {
         await client.query("rollback");
         return false;
       }
-      await client.query(
+      const run = await client.query(
         `update workflow_runs
          set lease_expires_at = now() + ($4::int * interval '1 second')
          where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint
            and status in ('leased','running') and lease_expires_at > now()
          returning id`,
-        [input.runId, input.workerId, input.fencingToken, leaseSeconds]
+        [input.runId, input.workerId, claim.runLeaseEpoch, leaseSeconds]
       );
-      const activeRun = await client.query(
-        `select 1 from workflow_runs
-         where id = $1::uuid and status in ('leased','running')
-         for update`,
-        [input.runId]
-      );
-      if (activeRun.rowCount !== 1) {
+      if (run.rowCount !== 1) {
         await client.query("rollback");
         return false;
       }

@@ -39,7 +39,7 @@ export async function completeWorkflowTask(input: {
   await withClient(async (client) => {
     await client.query("begin");
     try {
-      await assertActiveTaskFence(client, input);
+      const claim = await assertActiveTaskFence(client, input);
       const identity = await client.query<{ stageId: string }>(
         `select stage_id as "stageId" from workflow_tasks where id=$1 and run_id=$2`, [input.taskId, input.runId]
       );
@@ -146,7 +146,7 @@ export async function completeWorkflowTask(input: {
                  and sibling.id <> $4::uuid
                  and sibling.status in ('leased', 'running')
              )`,
-          [input.runId, input.workerId, input.fencingToken, input.taskId]
+          [input.runId, input.workerId, claim.runLeaseEpoch, input.taskId]
         );
       }
 

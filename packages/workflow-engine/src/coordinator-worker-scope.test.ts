@@ -42,9 +42,10 @@ test("coordinator children require exact claim, matching worker and live assignm
   assert.ok(claim.includes("or $9::uuid=wr.id)"));
   assert.ok(claim.includes('coordinatorWorkerFencePredicate(client, "$1")'));
   assert.ok(claim.includes("and ${coordinatorFence}"));
-  const effect = storageFunction("workflow-task-authority.ts", "assertActiveTaskFence");
-  assert.ok(effect.includes('coordinatorWorkerFencePredicate(client, "$2")'));
+  const effect = storageFunction("workflow-task-authority.ts", "lockWorkflowTaskClaim");
+  assert.ok(effect.includes('coordinatorWorkerFencePredicate(client, "$3")'));
   assert.ok(effect.includes("and ${coordinatorFence}"));
+  assert.match(storageFunction("workflow-task-authority.ts", "assertActiveTaskFence"), /lockWorkflowTaskClaim\(client, input, \['running'\]\)/u);
 });
 
 test("strict provider authorization covers every execution and disables environment chains", () => {

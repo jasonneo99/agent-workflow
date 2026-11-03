@@ -1,6 +1,7 @@
 import { acquireWorkflowRunLease, coordinatorWorkerFencePredicate } from "./workflow-task-authority.js";
 export {
   checkpointWorkflowTaskContinuation, holdWorkflowTaskForApprovals, workflowRunLeaseTransitionKey,
+  requeueClaimedWorkflowTask,
   requeueRunningWorkflowTasks, requeueExpiredWorkflowTaskLeases, startWorkflowTask,
   assertWorkflowTaskLease, renewWorkflowTaskLease
 } from "./workflow-task-authority.js";
@@ -2358,6 +2359,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
          update workflow_tasks wt
          set status = 'leased',
              attempts = wt.attempts + 1,
+             lease_generation = wt.lease_generation + 1,
              worker_id = $1,
              lease_expires_at = now() + ($2::int * interval '1 second'),
              started_at = null
@@ -2420,7 +2422,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            ), 'default')) as "providerOverride",
            wt.worker_id as "workerId",
            wt.lease_expires_at::text as "leaseExpiresAt",
-           '0'::text as "fencingToken",
+           wt.lease_generation::text as "fencingToken",
            nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
            coalesce(wr.model_tier_override, (
              select stage->'routing'->>'model_tier'
@@ -2442,16 +2444,11 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
         leaseSeconds,
         taskId: result.rows[0].taskId
       });
-      await client.query(
-        `update workflow_tasks set lease_generation = $2::bigint where id = $1::uuid`,
-        [result.rows[0].taskId, leaseEpoch]
-      );
-      result.rows[0].fencingToken = leaseEpoch;
       await appendActionReceipt(client, {
         runId: result.rows[0].runId, agentId: result.rows[0].agentId,
         actionType: "stage_leased", target: result.rows[0].taskId,
         summary: "Stage leased to a worker.",
-        metadata: JSON.stringify({ nextStatus: "leased", leaseEpoch })
+        metadata: JSON.stringify({ nextStatus: "leased", leaseEpoch, fencingToken: result.rows[0].fencingToken })
       });
 
       const acceptedHandoffs = await client.query<{ id: string }>(

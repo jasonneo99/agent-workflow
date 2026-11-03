@@ -12,10 +12,10 @@ async function fixture(run: (state: { client: import("pg").Client; runId: string
     try {
       const schema = `approval_wait_${randomUUID().replaceAll("-", "")}`;
       await client.query(`create schema ${schema}; set local search_path to ${schema},public;
-        create table workflow_runs(id uuid primary key,status text,lease_owner text,lease_epoch bigint default 1,lease_expires_at timestamptz,
+        create table workflow_runs(id uuid primary key,status text,lease_owner text,lease_epoch bigint default 23,lease_expires_at timestamptz,
           finished_at timestamptz,state_version bigint default 1,evaluation_metadata jsonb default '{}',requester_channel text);
         create table workflow_tasks(id uuid primary key,run_id uuid,agent_id text,status text,available_at timestamptz default now(),
-          started_at timestamptz,finished_at timestamptz,worker_id text,lease_expires_at timestamptz);
+          started_at timestamptz,finished_at timestamptz,worker_id text,lease_expires_at timestamptz,lease_generation bigint default 7);
         create table action_approvals(id uuid primary key,run_id uuid,task_id uuid,status text,action_type text,target text,executed_at timestamptz);
         create table artifacts(run_id uuid,task_id uuid,kind text,uri text unique,content jsonb);
         create table action_receipts(run_id uuid,agent_id text,action_type text,target text,summary text,metadata jsonb,prev_hash text,receipt_hash text,created_at timestamptz,metadata_serialization_version int);
@@ -26,8 +26,8 @@ async function fixture(run: (state: { client: import("pg").Client; runId: string
       await client.query("insert into workflow_runs(id,status,lease_owner,lease_expires_at) values($1,'running','worker',now()+interval '1 minute')", [runId]);
       await client.query("insert into workflow_tasks(id,run_id,agent_id,status,started_at,worker_id,lease_expires_at) values($1,$2,'implementation-agent','running',now(),'worker',now()+interval '1 minute'),($3,$2,'test-engineer','queued',null,null,null)", [taskId,runId,nextId]);
       for (const id of ids) await client.query("insert into action_approvals values($1,$2,$3,'pending','local_command','synthetic-test',null)", [id,runId,taskId]);
-      const hold = () => holdWorkflowTaskForApprovalsOnClient(client,{runId,taskId,agentId:"implementation-agent",workerId:"worker",fencingToken:"1",approvalIds:ids,
-        continuation:{version:1,round:2,verifyRetryRound:1,actionResults:[{type:"file_write",path:"source.ts",nextHash:"postimage"},...ids.map(approvalId=>({type:"local_command_approval_pending",approvalId}))],pendingOutput:{summary:"Unfinished"}}});
+      const hold = () => holdWorkflowTaskForApprovalsOnClient(client,{runId,taskId,agentId:"implementation-agent",workerId:"worker",fencingToken:"7",approvalIds:ids,
+        continuation:{version:1,round:2,verifyRetryRound:1,actionResults:[{type:"file_write",path:"source.ts",nextHash:"postimage"},...ids.map(approvalId=>({type:"local_command_approval_pending",approvalId}))],pendingOutput:{summary:"Unfinished"}}},"23");
       await run({client,runId,taskId,nextId,ids,hold});
     } finally { await client.query("rollback"); }
   });
@@ -64,6 +64,35 @@ test("approval execution racing before checkpoint publication queues observation
   assert.equal(checkpoint.approvalWait.state,"resolved");
   assert.equal(checkpoint.actionResults.filter((a:any)=>a.type==='file_write').length,1);
 }));
+
+test("approval wait releases the locked run epoch while retaining the independent stage generation", async () => fixture(async ({client,runId,taskId,hold}) => {
+  assert.equal(await hold(), "waiting");
+  const run = (await client.query("select lease_owner,lease_expires_at,lease_epoch::text from workflow_runs where id=$1", [runId])).rows[0];
+  assert.equal(run.lease_epoch, "23"); assert.equal(run.lease_owner, null); assert.equal(run.lease_expires_at, null);
+  const task = (await client.query("select status,lease_generation::text from workflow_tasks where id=$1", [taskId])).rows[0];
+  assert.equal(task.status, "queued"); assert.equal(task.lease_generation, "7");
+  const receipt = (await client.query("select metadata from action_receipts where action_type='stage_approval_held'")).rows[0];
+  assert.equal(receipt.metadata.fencingToken, "7", "The receipt retains stage identity, not the run epoch");
+}));
+
+test("approval wait leaves the run lease and an active sibling intact despite different stage and run counters", async () => fixture(async ({client,runId,nextId,hold}) => {
+  await client.query("update workflow_tasks set status='running',worker_id='worker',lease_expires_at=now()+interval '1 minute' where id=$1", [nextId]);
+  const runBefore = (await client.query("select to_jsonb(r) value from workflow_runs r where id=$1", [runId])).rows[0].value;
+  const siblingBefore = (await client.query("select to_jsonb(t) value from workflow_tasks t where id=$1", [nextId])).rows[0].value;
+  assert.equal(await hold(), "waiting");
+  assert.deepEqual((await client.query("select to_jsonb(r) value from workflow_runs r where id=$1", [runId])).rows[0].value, runBefore);
+  assert.deepEqual((await client.query("select to_jsonb(t) value from workflow_tasks t where id=$1", [nextId])).rows[0].value, siblingBefore);
+}));
+
+test("approval wait cannot infer a missing internal run epoch from the stage token", async () => {
+  let queries = 0;
+  const client = { query: async () => { queries++; throw new Error("No query is permitted without the locked run epoch"); } } as unknown as import("pg").Client;
+  await assert.rejects(holdWorkflowTaskForApprovalsOnClient(client, {
+    runId: randomUUID(), taskId: randomUUID(), agentId: "implementation-agent", workerId: "synthetic-worker",
+    fencingToken: "7", approvalIds: [randomUUID()], continuation: {}
+  }, undefined as unknown as string), /locked workflow run lease epoch/);
+  assert.equal(queries, 0);
+});
 
 test("rejection is a real blocked decision, while merely waiting is not a failure",async()=>fixture(async({client,runId,taskId,nextId,ids,hold})=>{
   await hold();await client.query("update action_approvals set status='rejected' where id=$1",[ids[0]]);

@@ -59,7 +59,7 @@ import {
   finalizeSideEffect,
   recordRunAction,
   requeueExpiredWorkflowTaskLeases,
-  requeueRunningWorkflowTasks,
+  requeueClaimedWorkflowTask,
   renewWorkflowTaskLease,
   assertWorkflowTaskLease,
   requestActionApproval,
@@ -165,7 +165,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const projectResolution = await resolveLocalProjectPath(task.projectRootUri);
       if (!projectResolution.localPathExists) {
         options?.unavailableProjectRootUris?.add(task.projectRootUri);
-        await requeueRunningWorkflowTasks(task.runId);
+        const released = await requeueClaimedWorkflowTask({taskId: task.taskId, runId: task.runId,
+          workerId: task.workerId!, fencingToken: task.fencingToken});
+        if (!released) continue;
         await recordRunAction({
           runId: task.runId,
           agentId: "workflow-orchestrator",
@@ -173,8 +175,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           target: task.projectRootUri,
           summary: `Worker ${task.workerId ?? "unknown"} released the task because this project checkout is unavailable on that host.`,
           artifactKind: "worker_capability",
-          artifactContent: { workerId: task.workerId, storageRootUri: task.projectRootUri, localPathExists: false },
-          idempotencyKey: `worker-project-unavailable-${task.taskId}-${task.workerId ?? "unknown"}`
+          artifactContent: { taskId: task.taskId, workerId: task.workerId, fencingToken: task.fencingToken,
+            storageRootUri: task.projectRootUri, localPathExists: false },
+          idempotencyKey: `worker-project-unavailable-${task.taskId}-${task.workerId ?? "unknown"}-${task.fencingToken}`
         });
         continue;
       }
