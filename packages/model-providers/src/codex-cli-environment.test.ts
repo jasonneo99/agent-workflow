@@ -47,7 +47,7 @@ async function withEnv(values: Record<string,string|undefined>, action: () => Pr
 async function fixture(body: (dir:string) => string) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'codex-child-env-'));
   const binary = path.join(dir,'fake-codex.mjs');
-  await fs.writeFile(binary,'#!/usr/bin/env node\n'+body(dir)+'\n',{mode:0o700});
+  await fs.writeFile(binary,'#!/usr/bin/env node\nif(process.argv[2]==="--version"){console.log("codex-cli 0.160.0");process.exit(0);}\n'+body(dir)+'\n',{mode:0o700});
   await fs.mkdir(path.join(dir,'home'));await fs.mkdir(path.join(dir,'codex-home'));
   await fs.writeFile(path.join(dir,'codex-home','synthetic-auth-location.json'),'{}');
   const env:Record<string,string|undefined>={CODEX_CLI_BIN:binary,AGENTFLOW_CODEX_SESSION_REUSE:'0',

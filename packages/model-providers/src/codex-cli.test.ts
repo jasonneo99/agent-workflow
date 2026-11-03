@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -72,11 +72,11 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.equal(result.artifact.model, "codex-test-model");
     assert.equal(calls[0]?.model, "codex-test-model");
     assert.equal(calls[0]?.reasoningEffort, "low");
-    assert.equal(calls[0]?.sessionKey, "task-codex-cli");
-    assert.match(calls[0]?.prompt ?? "", /supplied stage context and prior artifacts as primary/i);
-    assert.match(calls[0]?.prompt ?? "", /Avoid broad repository scans/i);
-    assert.match(calls[0]?.prompt ?? "", /Resolve named commits with bounded git show\/diff/);
-    assert.equal(calls[0]?.workingDirectory, "/tmp/synthetic-project");
+    assert.equal(calls[0]?.sessionKey, undefined);
+    assert.match(calls[0]?.prompt ?? "", /Direct repository inspection is disabled/i);
+    assert.match(calls[0]?.prompt ?? "", /request exact additional files through requestedFileReads/i);
+    assert.match(calls[0]?.prompt ?? "", /Request policy-governed commands and file writes in the structured output/i);
+    assert.equal(calls[0]?.workingDirectory, undefined);
     const schema = calls[0]?.schema as { properties?: Record<string, unknown>; required?: string[] };
     assert.ok(schema.properties?.requestedFileReads);
     assert.ok(schema.required?.includes("requestedFileReads"));
@@ -88,13 +88,13 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
   }
 });
 
-test("Codex CLI direct repository inspection is opt-in", () => {
+test("Codex CLI direct repository inspection remains disabled under the deprecated setting", () => {
   const previous = process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
   try {
     delete process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
     assert.equal(configuredCodexCliDirectRepoInspection(), false);
     process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = "true";
-    assert.equal(configuredCodexCliDirectRepoInspection(), true);
+    assert.equal(configuredCodexCliDirectRepoInspection(), false);
   } finally {
     if (previous === undefined) delete process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
     else process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = previous;
@@ -153,12 +153,12 @@ test("Codex CLI JSONL usage is normalized for route accounting", () => {
   ].join("\n")), { inputTokens: 120, cachedInputTokens: 20, reasoningTokens: undefined, outputTokens: 30, totalTokens: 150 });
 });
 
-test("Codex CLI session reuse defaults on, can be disabled, and captures thread ids", () => {
+test("Codex CLI session reuse remains disabled under the deprecated setting and captures thread ids", () => {
   const previous = process.env.AGENTFLOW_CODEX_SESSION_REUSE;
   try {
     delete process.env.AGENTFLOW_CODEX_SESSION_REUSE;
-    assert.equal(configuredCodexCliSessionReuse(), true);
-    process.env.AGENTFLOW_CODEX_SESSION_REUSE = "off";
+    assert.equal(configuredCodexCliSessionReuse(), false);
+    process.env.AGENTFLOW_CODEX_SESSION_REUSE = "1";
     assert.equal(configuredCodexCliSessionReuse(), false);
     assert.equal(parseCodexCliThreadId(JSON.stringify({ type: "thread.started", thread_id: "cf815d03-6423-4520-bf3c-5d486203260b" })), "cf815d03-6423-4520-bf3c-5d486203260b");
   } finally {
@@ -252,13 +252,13 @@ async function withTempEnv(vars: Record<string, string | undefined>, fn: () => P
 
 async function writeStubScript(dir: string, body: string): Promise<string> {
   const bin = path.join(dir, `codex-stub-${process.pid}-${Date.now()}`);
-  await writeFile(bin, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  await writeFile(bin, `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo 'codex-cli 0.160.0'\n  exit 0\nfi\n${body}\n`, { mode: 0o755 });
   return bin;
 }
 
 function shellQuote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
 
-/** Mirror of the private codexCliSessionPath() so tests can pre-seed sessions. */
+/** Historical pointer location, used only to prove legacy sessions stay untouched. */
 function stubSessionFile(sessionKey: string): { dir: string; file: string } {
   const uid = typeof process.getuid === "function" ? process.getuid() : "user";
   const dir = path.join(os.tmpdir(), `agentflow-codex-sessions-${uid}`);
@@ -372,76 +372,51 @@ test("Codex CLI runner reports spawn_unavailable when the binary is missing", as
   }
 });
 
-test("Codex CLI runner falls back to a fresh exec when resume fails", async () => {
+test("Codex CLI runner ignores legacy session pointers and starts every call fresh", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "codex-test-"));
-  const sessionKey = `test-fallback-${Date.now()}`;
+  const sessionKey = `test-fresh-${Date.now()}`;
   try {
-    await withTempEnv({ AGENTFLOW_CODEX_SESSION_REUSE: "1", CODEX_CLI_MAX_RESUMES: undefined, CODEX_CLI_BIN: undefined, AGENTFLOW_EGRESS_LOG_DIR: dir }, async () => {
-      // Pre-seed a session so the first attempt uses `exec resume`.
+    await withTempEnv({ AGENTFLOW_CODEX_SESSION_REUSE: "1", CODEX_CLI_MAX_RESUMES: "3", CODEX_CLI_BIN: undefined, AGENTFLOW_EGRESS_LOG_DIR: dir }, async () => {
+      assert.equal(configuredCodexCliSessionReuse(), false);
+      assert.equal(configuredCodexCliMaxResumes(), 0);
       const { dir: sessDir, file: sessFile } = stubSessionFile(sessionKey);
-      await mkdir(sessDir, { recursive: true });
-      await writeFile(sessFile, JSON.stringify({ threadId: stubThreadId, resumeCount: 0, createdAt: Date.now() }));
+      assert.equal(path.dirname(sessDir), dir, "legacy fixture stays in its owned temporary directory");
+      await mkdir(sessDir, { recursive: true, mode: 0o700 });
+      const legacyPointer = JSON.stringify({ threadId: stubThreadId, resumeCount: 0, createdAt: Date.now() });
+      await writeFile(sessFile, legacyPointer, { mode: 0o600 });
+      const initialPointers = await readdir(sessDir);
       const countFile = path.join(dir, "count");
       const argsFile = path.join(dir, "args");
       const bin = await writeStubScript(dir, `
+[ "$1" = "exec" ] || exit 9
 count_file=${shellQuote(countFile)}
 args_file=${shellQuote(argsFile)}
 count=$(cat "$count_file" 2>/dev/null || echo 0)
 count=$((count + 1))
 echo "$count" > "$count_file"
-echo "$*" > "$args_file.$count"
+printf '%s\\n' "$@" > "$args_file.$count"
 out=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
   prev="$a"
 done
-if [ "$count" -eq 1 ]; then
-  echo "resume failed: thread state corrupt" >&2
-  exit 2
-fi
-echo '{"type":"thread.started","thread_id":"${stubThreadId}"}'
-echo '{"type":"turn.completed"}'
-printf '{"summary":"recovered"}' > "$out"
-exit 0`.trim());
-      process.env.CODEX_CLI_BIN = bin;
-      const runner = createCodexCliRunner();
-      const result = await runner.execute({ prompt: "hi", schema: { type: "object" }, sessionKey });
-      assert.equal(result.output, '{"summary":"recovered"}');
-      assert.equal((await readFile(countFile, "utf8")).trim(), "2");
-      assert.match(await readFile(`${argsFile}.1`, "utf8"), /\bresume\b/);
-      assert.doesNotMatch(await readFile(`${argsFile}.2`, "utf8"), /\bresume\b/);
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("Codex CLI runner starts a fresh thread when the resume chain hits the cap", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-test-"));
-  const sessionKey = `test-cap-${Date.now()}`;
-  try {
-    await withTempEnv({ AGENTFLOW_CODEX_SESSION_REUSE: "1", CODEX_CLI_MAX_RESUMES: undefined, CODEX_CLI_BIN: undefined, AGENTFLOW_EGRESS_LOG_DIR: dir }, async () => {
-      assert.equal(configuredCodexCliMaxResumes(), 3);
-      const { dir: sessDir, file: sessFile } = stubSessionFile(sessionKey);
-      await mkdir(sessDir, { recursive: true });
-      await writeFile(sessFile, JSON.stringify({ threadId: stubThreadId, resumeCount: 3, createdAt: Date.now() }));
-      const argsFile = path.join(dir, "args");
-      const bin = await writeStubScript(dir, `
-echo "$*" > ${shellQuote(argsFile)}
-out=""; prev=""
-for a in "$@"; do
-  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
-  prev="$a"
-done
-echo '{"type":"thread.started","thread_id":"${stubThreadId}"}'
+echo '{"type":"thread.started","thread_id":"abcdefab-abcd-abcd-abcd-abcdefabcdef"}'
 echo '{"type":"turn.completed"}'
 printf '{"summary":"fresh"}' > "$out"
 exit 0`.trim());
       process.env.CODEX_CLI_BIN = bin;
       const runner = createCodexCliRunner();
-      const result = await runner.execute({ prompt: "hi", schema: { type: "object" }, sessionKey });
-      assert.equal(result.output, '{"summary":"fresh"}');
-      assert.doesNotMatch(await readFile(argsFile, "utf8"), /\bresume\b/);
+      for (let call = 1; call <= 2; call += 1) {
+        const result = await runner.execute({ prompt: "hi", schema: { type: "object" }, sessionKey });
+        assert.equal(result.output, '{"summary":"fresh"}');
+        const args = (await readFile(`${argsFile}.${call}`, "utf8")).trimEnd().split("\n");
+        assert.equal(args[0], "exec");
+        assert.ok(args.includes("--ephemeral"));
+        assert.ok(!args.includes("resume"));
+        assert.equal(await readFile(sessFile, "utf8"), legacyPointer);
+        assert.deepEqual(await readdir(sessDir), initialPointers, "no session pointer is created");
+      }
+      assert.equal((await readFile(countFile, "utf8")).trim(), "2");
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
