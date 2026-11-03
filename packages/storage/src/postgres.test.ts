@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
+
+function storageFunction(file: string, name: string): string {
+  const source = readFileSync(new URL(file, import.meta.url), "utf8");
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration, `${file} must declare ${name}`);
+  return source.slice(declaration.getStart(parsed), declaration.end);
+}
+
+test("storage facade preserves task authority and outcome export identities", async () => {
+  const api = await import("./postgres.js"), authority = await import("./workflow-task-authority.js"), outcomes = await import("./workflow-task-outcomes.js");
+  for (const name of ["checkpointWorkflowTaskContinuation", "holdWorkflowTaskForApprovals", "workflowRunLeaseTransitionKey",
+    "requeueRunningWorkflowTasks", "requeueExpiredWorkflowTaskLeases", "startWorkflowTask", "assertWorkflowTaskLease", "renewWorkflowTaskLease"] as const) {
+    assert.equal(api[name], authority[name], name);
+  }
+  for (const name of ["cancelWorkflowRun", "completeWorkflowTask", "blockWorkflowTask", "failWorkflowTask"] as const) {
+    assert.equal(api[name], outcomes[name], name);
+  }
+});
 
 test('production blocked-stage persistence seals the actual JSON-normalized output without completing it',async()=>{
  const {withClient}=await import('./client.js'),api=await import('./postgres.js');
@@ -45,20 +65,22 @@ test("automatic broad wrapper rejection precedes filesystem registration and eve
 });
 
 test("storage SQL does not reuse one parameter with conflicting casts", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const queryPattern = /client\.query(?:<[^>]+>)?\(\s*`([\s\S]*?)`/gu;
   const failures: string[] = [];
 
-  for (const match of source.matchAll(queryPattern)) {
-    const sql = match[1];
-    const parameterNumbers = new Set([...sql.matchAll(/\$(\d+)/gu)].map((item) => item[1]));
-    for (const parameterNumber of parameterNumbers) {
-      const casts = new Set(
-        [...sql.matchAll(new RegExp(`\\$${parameterNumber}::([a-zA-Z_][a-zA-Z0-9_\\[\\]]*)`, "gu"))]
-          .map((item) => item[1])
-      );
-      if (casts.size > 1) {
-        failures.push(`$${parameterNumber} is cast as ${[...casts].join(", ")} in ${compactSql(sql)}`);
+  for (const file of ["./postgres.ts", "./workflow-task-authority.ts", "./workflow-task-outcomes.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    for (const match of source.matchAll(queryPattern)) {
+      const sql = match[1];
+      const parameterNumbers = new Set([...sql.matchAll(/\$(\d+)/gu)].map((item) => item[1]));
+      for (const parameterNumber of parameterNumbers) {
+        const casts = new Set(
+          [...sql.matchAll(new RegExp(`\\$${parameterNumber}::([a-zA-Z_][a-zA-Z0-9_\\[\\]]*)`, "gu"))]
+            .map((item) => item[1])
+        );
+        if (casts.size > 1) {
+          failures.push(`${file}: $${parameterNumber} is cast as ${[...casts].join(", ")} in ${compactSql(sql)}`);
+        }
       }
     }
   }
@@ -83,9 +105,10 @@ test("project alias consolidation is transactional and preserves durable run his
 
 test("queue action receipt inserts use separate uuid and text parameters", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const authority = readFileSync(new URL("./workflow-task-authority.ts", import.meta.url), "utf8");
   const writer = readFileSync(new URL("./receipt-writer.ts", import.meta.url), "utf8");
   for (const action of ["expired_worker_lease_requeued", "checkpoint_resume_requested", "failed_run_dismissed"]) {
-    assert.match(source, new RegExp(`appendActionReceipt\\(client, \\{[^}]+actionType: "${action}"[^}]+target:`));
+    assert.match(action === "expired_worker_lease_requeued" ? authority : source, new RegExp(`appendActionReceipt\\(client, \\{[^}]+actionType: "${action}"[^}]+target:`));
   }
   // UUID identity and text target are independently bound by the shared writer.
   assert.match(writer, /values \(\$1::uuid, \$2, \$3, \$4, \$5, \$6::jsonb/u);
@@ -136,15 +159,14 @@ test("workers can exclude project checkouts unavailable on their host", () => {
 });
 
 test("global workers enforce fair bounded project concurrency while preserving run order", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  const claim = source.slice(source.indexOf("export async function claimNextWorkflowTask"), source.indexOf("export async function startWorkflowTask"));
+  const claim = storageFunction("./postgres.ts", "claimNextWorkflowTask");
   assert.match(claim, /pg_advisory_xact_lock\(hashtext\('agentflow:workflow-task-scheduler'\)\)/u);
   assert.match(claim, /project_active\.status in \('leased', 'running'\)[\s\S]+< \$6::int/u);
   assert.match(claim, /order by[\s\S]+count\(\*\)[\s\S]+wt\.available_at asc/u);
   assert.match(claim, /not exists \([\s\S]+active\.run_id = wt\.run_id[\s\S]+active\.status in \('leased', 'running'\)/u);
   assert.match(claim, /active\.worker_id is distinct from \$1[\s\S]+parallel_group[\s\S]+active_stage->>'parallel_group'/u);
   assert.match(claim, /prior\.status <> 'completed'/u);
-  assert.match(source, /intent\.project_id=assignment\.project_id::text/u);
+  assert.match(storageFunction("./workflow-task-authority.ts", "coordinatorWorkerFencePredicate"), /intent\.project_id=assignment\.project_id::text/u);
 });
 
 test("dismissed terminal runs remain immutable history but leave the actionable queue", () => {
@@ -162,14 +184,12 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
 });
 
 test("project queue scopes lineage before recursive family expansion", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  const queue = storageFunction("./postgres.ts", "listWorkflowQueue");
   assert.match(queue, /queuePresentationSql\(identityFamilies, "\$2"\)/u);
 });
 
 test("queue cards sort by the latest durable family activity", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  const queue = storageFunction("./postgres.ts", "listWorkflowQueue");
   assert.match(queue, /max\(receipt\.created_at\)[\s\S]+max\(approval\.updated_at\)[\s\S]+task_activity\.finished_at/u);
   assert.match(queue, /"latestActivityAt" desc,[\s\S]+wr\.id desc/u);
   assert.doesNotMatch(queue, /case wr\.status when 'running' then 0/u);
@@ -184,8 +204,7 @@ test("superseded terminal runs are explicit history and leave the actionable que
 });
 
 test("queue items expose replay and repair recovery relationships without rewriting lifecycle state", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  const queue = storageFunction("./postgres.ts", "listWorkflowQueue");
   assert.match(queue, /join workflow_runs child on child\.id = source\.replacement_run_id/u);
   assert.match(queue, /source\.id = any\(\$1::uuid\[\]\)/u);
   assert.match(queue, /for \(let depth = 0; depth < 20/u);
@@ -195,8 +214,7 @@ test("queue items expose replay and repair recovery relationships without rewrit
 });
 
 test("queue items carry durable project identity and frozen source revision for worker eligibility",()=>{
- const source=readFileSync(new URL("./postgres.ts",import.meta.url),"utf8");
- const queue=source.slice(source.indexOf("export async function listWorkflowQueue"),source.indexOf("export async function cancelWorkflowRun"));
+ const queue=storageFunction("./postgres.ts","listWorkflowQueue");
  assert.match(queue,/project_identity_locations where project_id=p\.id/);
  assert.match(queue,/as "projectIdentityId"/);
  assert.match(queue,/as "projectIdentityGeneration"/);
@@ -256,7 +274,7 @@ test("evaluation failures remain evidence instead of actionable queue items", ()
 });
 
 test("completed retried tasks can finalize runs with cancelled downstream tasks", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./workflow-task-outcomes.ts", import.meta.url), "utf8");
 
   assert.match(
     source,
@@ -265,7 +283,7 @@ test("completed retried tasks can finalize runs with cancelled downstream tasks"
 });
 
 test("blocked stage output terminates the run without reporting success", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./workflow-task-outcomes.ts", import.meta.url), "utf8");
 
   assert.match(source, /export async function blockWorkflowTask/u);
   assert.match(source, /update workflow_tasks set status = 'blocked'/u);
@@ -456,12 +474,12 @@ test("stale terminal run reconciliation only repairs terminal child-task runs", 
 });
 
 test("task leases use a distinct leased state and fenced terminal writes", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./workflow-task-authority.ts", import.meta.url), "utf8");
   assert.match(source, /acquireWorkflowRunLease[\s\S]+lease_epoch = lease_epoch \+ 1/u);
-  assert.match(source, /update workflow_tasks set lease_generation = \$2::bigint/u);
+  assert.match(storageFunction("./postgres.ts", "claimNextWorkflowTask"), /update workflow_tasks set lease_generation = \$2::bigint/u);
   assert.match(source, /export async function startWorkflowTask[\s\S]+status='leased'[\s\S]+lease_generation=\$4::bigint/u);
   assert.match(source, /assertActiveTaskFence[\s\S]+wt\.status='running'[\s\S]+wt\.lease_generation=\$3::bigint[\s\S]+wr\.status in \('leased','running'\)/u);
-  assert.match(source, /export async function completeWorkflowTask[\s\S]+await assertActiveTaskFence\(client, input\)/u);
+  assert.match(storageFunction("./workflow-task-outcomes.ts", "completeWorkflowTask"), /export async function completeWorkflowTask[\s\S]+await assertActiveTaskFence\(client, input\)/u);
   assert.match(source, /export async function renewWorkflowTaskLease[\s\S]+lease_generation = \$4::bigint[\s\S]+lease_expires_at > now\(\)/u);
 });
 
@@ -494,8 +512,9 @@ test("side effects are reserved before dispatch and uncertain claims are not rep
   assert.match(reliabilitySource, /export async function claimSideEffect[\s\S]+status='uncertain'/u);
   assert.match(reliabilitySource, /export async function finalizeSideEffect[\s\S]+status='pending'[\s\S]+claim_token=\$3::uuid/u);
   const executorSource = readFileSync(new URL("../../workflow-engine/src/executor.ts", import.meta.url), "utf8");
+  const fileActionsSource = readFileSync(new URL("../../workflow-engine/src/stage-file-actions.ts", import.meta.url), "utf8");
   assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedCommand/u);
-  assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedFileMutation/u);
+  assert.match(fileActionsSource, /claimSideEffect[\s\S]+executeAllowedFileMutation/u);
   assert.match(executorSource, /type\.includes\("_side_effect_"\)/u);
 });
 
@@ -515,11 +534,11 @@ test("all run lifecycle writes route through the authoritative transition helper
 });
 
 test("concurrent parallel-group claims share one worker fence while other claims advance it", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./workflow-task-authority.ts", import.meta.url), "utf8");
   assert.match(source, /select status, lease_epoch::text as "leaseEpoch", lease_owner as "leaseOwner" from workflow_runs where id = \$1::uuid for update/u);
   assert.match(source, /run\.leaseOwner === input\.workerId[\s\S]+set lease_expires_at = now\(\)/u);
   assert.match(source, /lease_epoch = lease_epoch \+ 1/u);
-  assert.match(source, /sibling\.id <> \$4::uuid[\s\S]+sibling\.status in \('leased', 'running'\)/u);
+  assert.match(storageFunction("./workflow-task-outcomes.ts", "completeWorkflowTask"), /sibling\.id <> \$4::uuid[\s\S]+sibling\.status in \('leased', 'running'\)/u);
   assert.match(source, /assertActiveTaskFence[\s\S]+wt\.lease_generation=\$3::bigint[\s\S]+wr\.status in \('leased','running'\)/u);
   assert.match(source, /renewWorkflowTaskLease[\s\S]+update workflow_tasks[\s\S]+lease_generation = \$4::bigint[\s\S]+select 1 from workflow_runs[\s\S]+status in \('leased','running'\)/u);
   assert.doesNotMatch(source, /assertActiveTaskFence[\s\S]{0,500}wr\.lease_epoch=\$3::bigint/u);

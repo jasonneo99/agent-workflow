@@ -1,5 +1,27 @@
 # Agent Workflow Roadmap
 
+## V1 stabilization (2026-11-02)
+
+The active repair scope is recorded in [V1 stabilization](v1-stabilization.md).
+Preserve existing source, Studio, services, storage and immutable history while
+qualifying the existing Codex CLI coding path. Component checks and a clean Git
+baseline do not establish live task delivery.
+
+- [x] Preserve pending source work, reconcile local branch history, and establish
+  a clean local source baseline without publishing or restarting services.
+- [x] Retain the exact candidate/environment/check plan outside truncated
+  provider history and refresh the bundled engine with unchanged dependencies.
+- [ ] Clear the four inherited file-size regressions through behavior-preserving
+  module extractions; retain every existing size ceiling.
+- [ ] Reproduce and fix stale worker release without disturbing a newer owner
+  or a parallel stage; qualify command-result continuation and interruption.
+- [ ] Establish loaded runtime identity and verify the selected coding path.
+- [ ] Complete one bounded Codex task, then the fixed five-case development
+  suite and ten additional bounded coding tasks without outside machinery repair
+  or false completion.
+- [ ] Reconcile eligible obsolete active views through the existing exact
+  authorization and acceptance gates, preserving historical statuses and receipts.
+
 ## Historical rejection and obsolete-policy reconciliation (2026-10-27)
 
 - [x] Require every exact policy-family member's full receipt chain before retirement; preserve legacy coverage gaps without backfilling hashes.

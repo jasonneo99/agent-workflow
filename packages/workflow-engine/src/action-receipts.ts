@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { recordRunAction, type ClaimedWorkflowTask } from "../../storage/src/postgres.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
 
 type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
@@ -27,3 +28,38 @@ export function buildBoundedReactLoopReceiptContent(input: {
 }
 
 function normalize(value: string): string { return value.trim().replace(/\s+/g, " "); }
+
+export async function recordBoundedReactLoopReceipt(input: {
+  task: Pick<ClaimedWorkflowTask, "runId" | "taskId" | "workflowId" | "workflowTask" | "stageId" | "stageGoal" | "agentId">;
+  stagePattern: StagePattern;
+  iteration: number;
+  totalRequestedActions: number;
+  actionType: "local_command" | "file_write" | "file_read";
+  target: string;
+  payloadHash: string;
+  policyDecision: Record<string, unknown>;
+  resultReceipt: Record<string, unknown>;
+}): Promise<void> {
+  if (input.stagePattern.type !== "react") return;
+
+  const receipt = buildBoundedReactLoopReceiptContent(input);
+
+  await recordRunAction({
+    runId: input.task.runId,
+    taskId: input.task.taskId,
+    agentId: input.task.agentId,
+    actionType: "react_loop_step",
+    target: `${receipt.workflowId}/${receipt.stageId}#${receipt.iteration}`,
+    summary: `ReAct step ${receipt.iteration}/${receipt.maxIterations}: ${input.actionType} ${input.target} -> ${String(input.resultReceipt.status ?? "recorded")}; stop=${receipt.stopReason}.`,
+    artifactKind: "react_loop_receipt",
+    artifactContent: receipt
+  });
+}
+
+export function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function normalizeActionText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}

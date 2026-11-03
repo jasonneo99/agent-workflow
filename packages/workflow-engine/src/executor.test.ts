@@ -165,8 +165,9 @@ test("stopping workers do not claim the remainder of an active batch", () => {
 
 test("workers serialize only writes to the same project-relative file resource", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
-  assert.match(source, /withProjectExecutionLock\([\s\S]+resource: `file:\$\{fileWrite\.path\.replace/u);
-  assert.match(source, /executeAllowedFileMutation\([\s\S]+expectedHash/u);
+  const fileActions = readFileSync(new URL("./stage-file-actions.ts", import.meta.url), "utf8");
+  assert.match(fileActions, /withProjectExecutionLock\([\s\S]+resource: `file:\$\{fileWrite\.path\.replace/u);
+  assert.match(fileActions, /executeAllowedFileMutation\([\s\S]+expectedHash/u);
   assert.match(source, /commandSerializationResource\(commandLine, localProjectRootUri\)/u);
 });
 
@@ -539,8 +540,9 @@ test("verify-stage command failures re-enter the action loop with a retry budget
 
 test("recoverable patch conflicts refresh the file and retry inside the same stage", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const fileActions = readFileSync(new URL("./stage-file-actions.ts", import.meta.url), "utf8");
   const retrySource = readFileSync(new URL("./file-mutation-retry.ts", import.meta.url), "utf8");
-  assert.match(source, /isRecoverableFileMutationFailure\(rejectionMessage\)/u);
+  assert.match(fileActions, /isRecoverableFileMutationFailure\(rejectionMessage\)/u);
   assert.match(retrySource, /file_write_retry_scheduled/u);
   assert.match(retrySource, /Regenerate only this patch against the refreshed file content/u);
   assert.match(source, /fileWriteRejectionRecovered\(actionResults, action\)/u);
@@ -785,14 +787,15 @@ test("both early completion gates include authoritative restored action results"
 
 test("out-of-policy commands and writes become exact actionable policy approvals", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const fileActions = readFileSync(new URL("./stage-file-actions.ts", import.meta.url), "utf8");
   assert.match(source, /actionType: "project_policy_change"/u);
   assert.match(source, /changeKind: "allowed_command", proposedRule: normalizeActionText\(commandLine\)/u);
-  assert.match(source, /changeKind: "allowed_write_path", proposedRule: fileWrite\.path/u);
+  assert.match(fileActions, /changeKind: "allowed_write_path", proposedRule: fileWrite\.path/u);
   assert.match(source, /type: "project_policy_change_approval_pending"/u);
   assert.match(source, /status: "approval_pending"/u);
 });
 test('oversized allowed replacements reroute inside bounded mutation budget without path widening',()=>{
-  const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  const source=readFileSync(new URL('./stage-file-actions.ts',import.meta.url),'utf8');
   const start=source.indexOf('const patchHint = !isPatch');
   const end=source.indexOf('const approval = await requestActionApproval',start);
   const branch=source.slice(start,end);
@@ -802,7 +805,9 @@ test('oversized allowed replacements reroute inside bounded mutation budget with
   assert.match(branch,/file_write_patch_reroute/);
   assert.match(branch,/previousHash:fresh.sha256/);
   assert.match(branch,/await assertLeaseOwned\(\);await assertStageGuard\(false\)/);
-  assert.match(branch,/continue verifyActionRounds/);
+  assert.match(branch,/return result\(true\)/);
+  const worker=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  assert.match(worker,/if \(fileDispatch.retryRequested\) \{\s*verifyRetryRequested = true;\s*continue verifyActionRounds;/);
   assert.doesNotMatch(branch,/requestActionApproval|allowed_write_paths\s*=|max_write_bytes\s*=/);
 });
 
@@ -811,7 +816,8 @@ test('live action starts are observed only inside governed command and write exe
  const command=source.slice(source.indexOf('const commandSideEffect = await claimSideEffect'),source.indexOf('commandResult = serializationResource'));
  assert.ok(command.indexOf('await assertLeaseOwned()')<command.indexOf("actionType:'execution_progress'"));
  assert.ok(command.indexOf("actionType:'execution_progress'")<command.indexOf('return executeAllowedCommand'));
- const write=source.slice(source.indexOf('const fileSideEffect = await claimSideEffect'),source.indexOf('const rejectionMessage',source.indexOf('const fileSideEffect = await claimSideEffect')));
+ const fileActions=readFileSync(new URL('./stage-file-actions.ts',import.meta.url),'utf8');
+ const write=fileActions.slice(fileActions.indexOf('const fileSideEffect = await claimSideEffect'),fileActions.indexOf('const rejectionMessage',fileActions.indexOf('const fileSideEffect = await claimSideEffect')));
  assert.ok(write.indexOf('await assertLeaseOwned()')<write.indexOf("actionType:'execution_progress'"));
  assert.ok(write.indexOf("actionType:'execution_progress'")<write.indexOf('return executeAllowedFileMutation'));
  assert.match(write,/no successful write or acceptance is claimed/);

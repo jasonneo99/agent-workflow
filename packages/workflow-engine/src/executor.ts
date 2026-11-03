@@ -1,3 +1,7 @@
+import { createStageFileReader, executeStageFileWrites } from "./stage-file-actions.js";
+export { isInternalWorkflowReceiptWrite } from "./stage-file-actions.js";
+import { boundedProjectFileSearchResult } from "./project-file-search.js";
+export { boundedProjectFileSearch, boundedProjectFileSearchResult } from "./project-file-search.js";
 import path from "node:path";
 import { inspectStageWritePostimages, reconstructRunWriteFootprint } from "./continuation-ownership.js";
 import { acceptanceGate } from "../../storage/src/acceptance.js";
@@ -12,15 +16,13 @@ import {shouldCheckpointSourcePhase} from './phase-checkpoint.js';
 import {verificationCommandsFirst} from './verification-command-order.js';
 import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
 import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
 import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,type PreparedTaskExecution} from './run-preparation.js';
 import {integratePreparedSource} from './source-integration.js';
-import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
-import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation, oversizedReplacementPatchHint } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { commandDelta, commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
@@ -34,8 +36,8 @@ import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { providerWithInfluence, stageContextInfluence } from "./context-influence.js";
 import { promptPersonalizationRequirementsHash, selectPromptPersonalization } from "../../learning-loop/src/runtime.js";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
-import { fileWriteRejectionRecovered, isRecoverableFileMutationFailure, prepareRejectedPatchRetry } from "./file-mutation-retry.js";
+import { actionIdempotencyKey, hashText, normalizeActionText, recordBoundedReactLoopReceipt } from "./action-receipts.js";
+import { fileWriteRejectionRecovered } from "./file-mutation-retry.js";
 export { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
@@ -112,47 +114,11 @@ function isStaleLeaseError(error: unknown): boolean {
   return error instanceof Error && /stale workflow fencing token|expired task lease/iu.test(error.message);
 }
 
-export function isInternalWorkflowReceiptWrite(relativePath: string): boolean {
-  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
-  return /^\.agent-workflow\/receipts\/[a-zA-Z0-9._/-]+\.(?:md|json)$/u.test(normalized)
-    && !normalized.split("/").includes("..");
-}
 
-export async function boundedProjectFileSearch(projectRootUri: string, query: string): Promise<string[]> {
-  return (await boundedProjectFileSearchResult(projectRootUri, query)).matches;
-}
 
-export async function boundedProjectFileSearchResult(projectRootUri: string, query: string): Promise<{ matches: string[]; truncated: boolean; inspected: number }> {
-  const terms = query.toLowerCase().split(/[^a-z0-9._-]+/u).filter((term) => term.length >= 2).slice(0, 6);
-  if (!terms.length) return { matches: [], truncated: false, inspected: 0 };
-  const matches: string[] = [];
-  let inspected = 0;
-  let truncated = false;
-  const walk = async (directory: string, depth: number): Promise<void> => {
-    if (depth > 8 || inspected >= 2500 || matches.length >= 40) { truncated = true; return; }
-    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
-    // Runtime receipts must not consume the source-discovery budget before source.
-    entries.sort((a, b) => Number(a.name === ".agent-workflow") - Number(b.name === ".agent-workflow") || a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      if (inspected >= 2500 || matches.length >= 40) { truncated = true; break; }
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "DerivedData" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage") continue;
-      if (entry.name.startsWith(".") && entry.name !== ".agent-workflow") continue;
-      const absolute = path.join(directory, entry.name);
-      const relative = path.relative(projectRootUri, absolute).replace(/\\/g, "/");
-      inspected += 1;
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        await walk(absolute, depth + 1);
-        continue;
-      }
-      if (/\.(?:env|pem|key|p12|mobileprovision)$/iu.test(entry.name)) continue;
-      const haystack = relative.toLowerCase();
-      if (terms.every((term) => haystack.includes(term))) matches.push(relative);
-    }
-  };
-  await walk(projectRootUri, 0);
-  return { matches: matches.sort((left, right) => left.length - right.length || left.localeCompare(right)), truncated, inspected };
-}
+
+
+
 
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
   const safeLimit = Math.max(0, Math.floor(limit));
@@ -353,100 +319,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       });
       const stageFileReads = (Array.isArray(continuation.fileReads) ? [...continuation.fileReads] : []) as NonNullable<StageExecutionInput["fileReads"]>;
       const stageStateDeltas = (Array.isArray(continuation.stateDeltas) ? [...continuation.stateDeltas] : []) as StateDelta[];
-      const seenReadPaths = new Set<string>();
-      let fileReadIteration = 0;
-      const fulfillFileReadRequests = async (readPaths: string[], totalRequestedActions: number): Promise<number> => {
-        const pendingReads = readPaths.filter((readPath) => {
-          const key = readPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-          if (!key || seenReadPaths.has(key)) return false;
-          seenReadPaths.add(key);
-          return true;
-        });
-        for (const readPath of pendingReads) {
-          await assertLeaseOwned();
-          fileReadIteration += 1;
-          const fileReadIdempotencyKey = actionIdempotencyKey({
-            taskId: task.taskId,
-            stageId: task.stageId,
-            agentId: task.agentId,
-            actionType: "file_read",
-            target: readPath,
-            payload: readPath,
-            normalizePayload: true
-          });
-          const readReceiptBase = {
-            task,
-            stagePattern,
-            iteration: fileReadIteration,
-            totalRequestedActions,
-            actionType: "file_read" as const,
-            target: readPath,
-            payloadHash: hashText(normalizeActionText(readPath))
-          };
-          try {
-            const readResult = await executeAllowedFileRead({ relativePath: readPath, cwd: localProjectRootUri, project });
-            const readArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_read",
-              target: readResult.relativePath,
-              summary: `Read ${readResult.bytesRead} bytes from \`${readResult.relativePath}\`${readResult.truncated ? " (truncated at policy max)" : ""}.`,
-              artifactKind: "file_read",
-              artifactContent: {
-                actionType: "file_read",
-                path: readResult.relativePath,
-                bytesRead: readResult.bytesRead,
-                truncated: readResult.truncated,
-                sha256: readResult.sha256,
-                lineRange: readResult.lineRange,
-                contentPreview: readResult.content.slice(0, 20000),
-                requestedByTaskId: task.taskId,
-                requestedByStageId: task.stageId
-              },
-              idempotencyKey: fileReadIdempotencyKey
-            });
-            stageFileReads.push({ path: readPath, content: readResult.content, truncated: readResult.truncated, sha256: readResult.sha256 });
-            stageStateDeltas.push(fileReadDelta({
-              path: readResult.relativePath,
-              bytesRead: readResult.bytesRead,
-              truncated: readResult.truncated,
-              sha256: readResult.sha256,
-              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read", taskId: task.taskId, artifactUri: readArtifactUri }
-            }));
-            actionResults.push({ type: "file_read", path: readResult.relativePath, artifactUri: readArtifactUri,
-              bytesRead: readResult.bytesRead, truncated: readResult.truncated });
-            await recordBoundedReactLoopReceipt({
-              ...readReceiptBase,
-              policyDecision: { status: "allowed", approvalRequired: false, allowedByPolicy: true, policyProfile: project.execution.policy_profile },
-              resultReceipt: { status: "completed", artifactUri: readArtifactUri, bytesRead: readResult.bytesRead, truncated: readResult.truncated }
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const denialArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_read_rejected",
-              target: readPath,
-              summary: message,
-              artifactKind: "action_rejection",
-              artifactContent: { actionType: "file_read", target: readPath, error: message,
-                requestedByTaskId: task.taskId, requestedByStageId: task.stageId }
-            });
-            stageFileReads.push({ path: readPath, content: "", truncated: false, error: message });
-            stageStateDeltas.push(fileReadDelta({ path: readPath, error: message,
-              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read_rejected", taskId: task.taskId, artifactUri: denialArtifactUri } }));
-            actionResults.push({ type: "file_read_rejected", path: readPath, artifactUri: denialArtifactUri, error: message });
-            await recordBoundedReactLoopReceipt({
-              ...readReceiptBase,
-              policyDecision: { status: "rejected", approvalRequired: false, allowedByPolicy: false, policyProfile: project.execution.policy_profile },
-              resultReceipt: { status: "rejected", artifactUri: denialArtifactUri }
-            });
-          }
-        }
-        return pendingReads.length;
-      };
+      const { seenReadPaths, fulfillFileReadRequests } = createStageFileReader({
+        task, project, stagePattern, localProjectRootUri, actionResults,
+        stageFileReads, stageStateDeltas, assertLeaseOwned
+      });
       const checkpointedReadRequests = continuationRequestedFileReads(continuation);
       if (checkpointedReadRequests.length > 0) {
         await fulfillFileReadRequests(checkpointedReadRequests, checkpointedReadRequests.length);
@@ -1387,393 +1263,19 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             throw new Error(`Requested command failed: ${commandLine}\n${failureEvidence}`);
           }
         }
-        for (const fileWrite of output.requestedFileWrites ?? []) {
-          await assertLeaseOwned();
-          reactIteration += 1;
-          const mutation = normalizeRequestedFileMutation(fileWrite);
-          if (!mutation) continue;
-          const { isPatch, payload: filePayload, expectedHash, bytes: actionBytes } = mutation;
-          const fileWriteIdempotencyKey = actionIdempotencyKey({
-            taskId: task.taskId,
-            stageId: task.stageId,
-            agentId: task.agentId,
-            actionType: "file_write",
-            target: fileWrite.path,
-            payload: mutation.idempotencyPayload
-          });
-          const previousWrite = await findRunActionByIdempotencyKey({
-            runId: task.runId,
-            artifactKind: "file_write",
-            idempotencyKey: fileWriteIdempotencyKey
-          });
-          if (previousWrite) {
-            const reuseArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_write_reused",
-              target: fileWrite.path,
-              summary: `Skipped duplicate file write; reused receipt ${previousWrite.uri}.`,
-              artifactKind: "action_reuse",
-              artifactContent: {
-                actionType: "file_write",
-                target: fileWrite.path,
-                originalArtifactUri: previousWrite.uri,
-                requestedByTaskId: task.taskId,
-                requestedByStageId: task.stageId
-              }
-            });
-            actionResults.push({
-              type: "file_write_reused",
-              path: fileWrite.path,
-              nextHash: typeof previousWrite.content.nextHash === "string" ? previousWrite.content.nextHash : undefined,
-              artifactUri: previousWrite.uri,
-              reuseArtifactUri
-            });
-            await recordBoundedReactLoopReceipt({
-              task,
-              stagePattern,
-              iteration: reactIteration,
-              totalRequestedActions,
-              actionType: "file_write",
-              target: fileWrite.path,
-              payloadHash: hashText(filePayload),
-              policyDecision: {
-                status: "reused",
-                approvalRequired: false,
-                allowedByPolicy: true,
-                policyProfile: project.execution.policy_profile
-              },
-              resultReceipt: {
-                status: "reused",
-                artifactUri: reuseArtifactUri,
-                originalArtifactUri: previousWrite.uri
-              }
-            });
-            continue;
-          }
-
-          let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
-          if (!isInternalWorkflowReceiptWrite(fileWrite.path)) {
-            try {
-              if (isPatch) assertFilePatchAllowed(fileWrite.path, filePayload, expectedHash!, project);
-              else assertFileWriteAllowed(fileWrite.path, filePayload, project);
-            } catch (error) {
-              const policyError = error instanceof Error ? error.message : String(error);
-              const rejectionArtifactUri = await recordRunAction({
-                runId: task.runId,
-                taskId: task.taskId,
-                agentId: task.agentId,
-                actionType: "file_write_rejected",
-                target: fileWrite.path,
-                summary: policyError,
-                artifactKind: "action_rejection",
-                artifactContent: {
-                  actionType: "file_write",
-                  target: fileWrite.path,
-                  error: policyError,
-                  requestedByTaskId: task.taskId,
-                  requestedByStageId: task.stageId
-                }
-              });
-              const patchHint = !isPatch ? oversizedReplacementPatchHint(fileWrite.path,filePayload,project) : null;
-              if(patchHint){
-                actionResults.push({type:'file_write_rejected',path:fileWrite.path,error:policyError,recoveryHint:patchHint,artifactUri:rejectionArtifactUri});
-                stageStateDeltas.push({op:'update',key:`file:${fileWrite.path}`,fact:patchHint,
-                  provenance:{stageId:task.stageId,agentId:task.agentId,actionType:'file_write',taskId:task.taskId,artifactUri:rejectionArtifactUri},assertedAt:new Date().toISOString()});
-                if(mutationRetriesRemaining>0){
-                  mutationRetriesRemaining-=1;
-                  const boundedPath=`${fileWrite.path}#L1-L100`;
-                  const fresh=await executeAllowedFileRead({relativePath:boundedPath,cwd:localProjectRootUri,project});
-                  stageFileReads.push({path:boundedPath,content:fresh.content,truncated:fresh.truncated,sha256:fresh.sha256});
-                  await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'file_write_patch_reroute',target:fileWrite.path,
-                    summary:'Oversized replacement refused; returning bounded context and full preimage hash for a policy-allowed surgical patch.',artifactKind:'file_write_retry',
-                    artifactContent:{rejectionArtifactUri,previousHash:fresh.sha256,readPath:boundedPath,retriesRemaining:mutationRetriesRemaining,policyUnchanged:true}});
-                  await assertLeaseOwned();await assertStageGuard(false);
-                  const rerouteStartedAt=Date.now();
-                  const reroute=await executeWithProviderFallback({providerId:route.providerId,stageInput:{...routedStageInput,fileReads:stageFileReads,stateDeltas:stageStateDeltas},policy:{...fallbackPolicy,chains:{},maxRetries:0},providerFactory:guardedProviderFactory});
-                  await recordDirectProviderUsage({stage:routedStageInput,attempts:reroute.attempts,output:reroute.output,latencyMs:Date.now()-rerouteStartedAt}).catch(()=>0);
-                  fallbackAttempts=[...fallbackAttempts,...reroute.attempts];output=reroute.output;quality=scoreOutput(output);actualProviderId=reroute.actualProvider;actualModel=reroute.actualModel;
-                  verifyRetryRequested=true;
-                  continue verifyActionRounds;
-                }
-                continue;
-              }
-              const approval = await requestActionApproval({
-                runId: task.runId,
-                taskId: task.taskId,
-                stageId: task.stageId,
-                agentId: task.agentId,
-                actionType: "project_policy_change",
-                target: `actions.allowed_write_paths:${fileWrite.path}`,
-                rationale: `The requested file is outside the project write allowlist. Approve this exact policy addition to continue ${task.stageId}.`,
-                policyDecision: { approvalRequired: true, allowedByPolicy: false, policyProfile: project.execution.policy_profile },
-                payload: { changeKind: "allowed_write_path", proposedRule: fileWrite.path, requestedActionType: "file_write", requestedTarget: fileWrite.path, policyError, rejectionArtifactUri },
-                idempotencyKey: `policy-change-${fileWriteIdempotencyKey}`
-              });
-              actionResults.push({
-                type: "project_policy_change_approval_pending",
-                path: fileWrite.path,
-                approvalId: approval.approvalId,
-                artifactUri: rejectionArtifactUri,
-                approvalArtifactUri: approval.artifactUri,
-                error: policyError
-              });
-              await recordBoundedReactLoopReceipt({
-                task,
-                stagePattern,
-                iteration: reactIteration,
-                totalRequestedActions,
-                actionType: "file_write",
-                target: fileWrite.path,
-                payloadHash: hashText(filePayload),
-                policyDecision: {
-                  status: "approval_required",
-                  approvalRequired: true,
-                  allowedByPolicy: false,
-                  policyProfile: project.execution.policy_profile
-                },
-                resultReceipt: {
-                  status: "approval_pending",
-                  approvalId: approval.approvalId,
-                  artifactUri: rejectionArtifactUri,
-                  error: policyError
-                }
-              });
-              continue;
-            }
-          }
-          if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
-            fileWriteApprovalRule = evaluateActionApprovalRule({
-              project,
-              actionType: "file_write",
-              target: fileWrite.path,
-              bytes: actionBytes
-            }) ?? evaluateActionRiskAutoApproval({
-              project,
-              actionType: "file_write",
-              target: fileWrite.path,
-              bytes: actionBytes
-            });
-            if (!fileWriteApprovalRule) {
-              const approval = await requestActionApproval({
-                runId: task.runId,
-                taskId: task.taskId,
-                stageId: task.stageId,
-                agentId: task.agentId,
-                actionType: "file_write",
-                target: fileWrite.path,
-                rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
-                policyDecision: {
-                  approvalRequired: true,
-                  allowedByPolicy: true,
-                  policyProfile: project.execution.policy_profile
-                },
-                payload: {
-                  relativePath: fileWrite.path,
-                  bytes: actionBytes,
-                  payloadHash: hashText(filePayload),
-                  mode: isPatch ? "patch" : "replace",
-                  expectedHash,
-                  canonicalProjectRoot: await fs.realpath(localProjectRootUri),
-                  projectRootHash: hashText(await fs.realpath(localProjectRootUri))
-                },
-                idempotencyKey: fileWriteIdempotencyKey
-              });
-              actionResults.push({
-                type: "file_write_approval_pending",
-                path: fileWrite.path,
-                approvalId: approval.approvalId,
-                artifactUri: approval.artifactUri,
-                status: approval.status
-              });
-              await recordBoundedReactLoopReceipt({
-                task,
-                stagePattern,
-                iteration: reactIteration,
-                totalRequestedActions,
-                actionType: "file_write",
-                target: fileWrite.path,
-                payloadHash: hashText(filePayload),
-                policyDecision: {
-                  status: "approval_required",
-                  approvalRequired: true,
-                  allowedByPolicy: true,
-                  policyProfile: project.execution.policy_profile
-                },
-                resultReceipt: {
-                  status: "approval_pending",
-                  approvalId: approval.approvalId,
-                  artifactUri: approval.artifactUri
-                }
-              });
-              continue;
-            }
-          }
-
-          await assertStageGuard(true);
-          await preparation?.beforeWrite(fileWrite.path);
-          const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
-          if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
-            actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });
-            continue;
-          }
-          await assertLeaseOwned();
-          let writeResult;
-          try {
-            writeResult = await withProjectExecutionLock(
-              { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
-              async () => {
-                await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'execution_progress',target:fileWrite.path,summary:'Starting the governed file change; no successful write or acceptance is claimed.',artifactKind:'execution_progress',artifactContent:{operation:'file_write',status:'started',requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
-                return executeAllowedFileMutation({ request: fileWrite, payload: filePayload, isPatch, expectedHash, cwd: localProjectRootUri, project });
-              }
-            );
-          } catch (error) {
-            const rejectionMessage = error instanceof Error ? error.message : String(error);
-            const rejectionArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_write_rejected",
-              target: fileWrite.path,
-              summary: rejectionMessage,
-              artifactKind: "action_rejection",
-              artifactContent: {
-                actionType: "file_write",
-                target: fileWrite.path,
-                error: rejectionMessage,
-                requestedByTaskId: task.taskId,
-                requestedByStageId: task.stageId
-              }
-            });
-            actionResults.push({
-              type: "file_write_rejected",
-              path: fileWrite.path,
-              artifactUri: rejectionArtifactUri,
-              error: rejectionMessage
-            });
-            await recordBoundedReactLoopReceipt({
-              task,
-              stagePattern,
-              iteration: reactIteration,
-              totalRequestedActions,
-              actionType: "file_write",
-              target: fileWrite.path,
-              payloadHash: hashText(filePayload),
-              policyDecision: {
-                status: "rejected",
-                approvalRequired: false,
-                allowedByPolicy: false,
-                policyProfile: project.execution.policy_profile,
-                approvalRule: fileWriteApprovalRule ?? undefined
-              },
-              resultReceipt: {
-                status: "rejected",
-                artifactUri: rejectionArtifactUri,
-                error: rejectionMessage
-              }
-            });
-            if (isPatch && mutationRetriesRemaining > 0 && isRecoverableFileMutationFailure(rejectionMessage)) {
-              mutationRetriesRemaining -= 1;
-              await prepareRejectedPatchRetry({ path: fileWrite.path, cwd: localProjectRootUri, project, rejectionMessage, rejectedPatch: filePayload, rejectionArtifactUri, runId: task.runId, stageId: task.stageId, agentId: task.agentId, taskId: task.taskId, retriesRemaining: mutationRetriesRemaining, reads: stageFileReads, deltas: stageStateDeltas });
-              await assertLeaseOwned();
-              await assertStageGuard(false);
-              const retryStartedAt = Date.now();
-              const retry = await executeWithProviderFallback({
-                providerId: route.providerId,
-                stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
-                policy: { ...fallbackPolicy, chains: {}, maxRetries: 0 },
-                providerFactory: guardedProviderFactory
-              });
-              await recordDirectProviderUsage({ stage: routedStageInput, attempts: retry.attempts, output: retry.output, latencyMs: Date.now() - retryStartedAt }).catch(() => 0);
-              fallbackAttempts = [...fallbackAttempts, ...retry.attempts];
-              output = retry.output;
-              quality = scoreOutput(output);
-              actualProviderId = retry.actualProvider;
-              actualModel = retry.actualModel;
-              const replacementWriteRequested = (output.requestedFileWrites ?? []).some((candidate) => candidate.path === fileWrite.path);
-              if (output.outcome !== "blocked" && !replacementWriteRequested) {
-                const supersededArtifactUri = await recordRunAction({
-                  runId: task.runId,
-                  taskId: task.taskId,
-                  agentId: task.agentId,
-                  actionType: "file_write_retry_superseded",
-                  target: fileWrite.path,
-                  summary: "The refreshed provider response no longer requested the rejected patch; the stale mutation was superseded without changing the file.",
-                  artifactKind: "file_write_retry",
-                  artifactContent: {
-                    rejectionArtifactUri,
-                    rejectionMessage,
-                    refreshedOutcome: output.outcome,
-                    requestedByTaskId: task.taskId,
-                    requestedByStageId: task.stageId
-                  }
-                });
-                actionResults.push({
-                  type: "file_write_retry_superseded",
-                  path: fileWrite.path,
-                  artifactUri: supersededArtifactUri,
-                  rejectionArtifactUri
-                });
-              }
-              verifyRetryRequested = true;
-              continue verifyActionRounds;
-            }
-            continue;
-          }
-          const summary = summarizeFileMutation(writeResult, isPatch);
-          const artifactUri = await recordRunAction({
-            runId: task.runId,
-            taskId: task.taskId,
-            agentId: task.agentId,
-            actionType: "file_write",
-            target: writeResult.relativePath,
-            summary,
-            artifactKind: "file_write",
-            artifactContent: {
-              ...writeResult,
-              approvalRule: fileWriteApprovalRule ?? undefined,
-              mode: isPatch ? "patch" : "replace",
-              requestedByTaskId: task.taskId,
-              requestedByStageId: task.stageId
-            },
-            idempotencyKey: fileWriteIdempotencyKey
-          });
-          const fileWriteFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, claimToken: fileSideEffect.claimToken, receipt: { artifactUri, path: writeResult.relativePath, nextHash: writeResult.nextHash } });
-          if (!fileWriteFinalized) throw new Error(`File-write side-effect claim could not be finalized for ${fileWrite.path}.`);
-          await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "file_write", target: fileWrite.path, actor: task.workerId! });
-          actionResults.push({
-            type: "file_write",
-            path: writeResult.relativePath,
-            artifactUri,
-            bytesWritten: writeResult.bytesWritten,
-            previousHash: isPatch ? fileWrite.expectedHash : undefined,
-            nextHash: writeResult.nextHash,
-            approvalRule: fileWriteApprovalRule ?? undefined
-          });
-          await recordBoundedReactLoopReceipt({
-            task,
-            stagePattern,
-            iteration: reactIteration,
-            totalRequestedActions,
-            actionType: "file_write",
-            target: writeResult.relativePath,
-            payloadHash: hashText(filePayload),
-            policyDecision: {
-              status: fileWriteApprovalRule ? "auto_approved_by_rule" : "allowed",
-              approvalRequired: false,
-              allowedByPolicy: true,
-              policyProfile: project.execution.policy_profile,
-              approvalRule: fileWriteApprovalRule ?? undefined
-            },
-            resultReceipt: {
-              status: "completed",
-              artifactUri,
-              bytesWritten: writeResult.bytesWritten,
-              previousHash: writeResult.previousHash,
-              nextHash: writeResult.nextHash
-            }
-          });
+        const fileDispatch = await executeStageFileWrites({
+          task, project, stagePattern, localProjectRootUri, actionResults,
+          stageFileReads, stageStateDeltas, assertLeaseOwned, totalRequestedActions,
+          route, routedStageInput, fallbackPolicy, guardedProviderFactory,
+          assertStageGuard, preparation, scoreOutput,
+          state: { output, quality, fallbackAttempts, actualProviderId, actualModel,
+            mutationRetriesRemaining, reactIteration }
+        });
+        ({ output, quality, fallbackAttempts, actualProviderId, actualModel,
+          mutationRetriesRemaining, reactIteration } = fileDispatch.state);
+        if (fileDispatch.retryRequested) {
+          verifyRetryRequested = true;
+          continue verifyActionRounds;
         }
         if (deferredCommands.length) {
           const writesSucceeded = (output.requestedFileWrites ?? []).every((write) =>
@@ -2223,40 +1725,11 @@ function normalizeStagePattern(value: unknown): StagePattern {
   };
 }
 
-async function recordBoundedReactLoopReceipt(input: {
-  task: Pick<ClaimedWorkflowTask, "runId" | "taskId" | "workflowId" | "workflowTask" | "stageId" | "stageGoal" | "agentId">;
-  stagePattern: StagePattern;
-  iteration: number;
-  totalRequestedActions: number;
-  actionType: "local_command" | "file_write" | "file_read";
-  target: string;
-  payloadHash: string;
-  policyDecision: Record<string, unknown>;
-  resultReceipt: Record<string, unknown>;
-}): Promise<void> {
-  if (input.stagePattern.type !== "react") return;
 
-  const receipt = buildBoundedReactLoopReceiptContent(input);
 
-  await recordRunAction({
-    runId: input.task.runId,
-    taskId: input.task.taskId,
-    agentId: input.task.agentId,
-    actionType: "react_loop_step",
-    target: `${receipt.workflowId}/${receipt.stageId}#${receipt.iteration}`,
-    summary: `ReAct step ${receipt.iteration}/${receipt.maxIterations}: ${input.actionType} ${input.target} -> ${String(input.resultReceipt.status ?? "recorded")}; stop=${receipt.stopReason}.`,
-    artifactKind: "react_loop_receipt",
-    artifactContent: receipt
-  });
-}
 
-function normalizeActionText(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
-}
 
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
+
 
 function finiteTelemetryNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;

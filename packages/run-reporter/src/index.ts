@@ -6,7 +6,7 @@ import type {
 } from "../../storage/src/postgres.js";
 import { buildAcceptedWorkflowOutcome, type AcceptedWorkflowOutcome } from "./outcome-metrics.js";
 import { buildOutcomeAccuracyGroupMetrics, buildOutcomeAccuracyReport, type OutcomeAccuracyGroupMetrics, type OutcomeAccuracyReport } from "./outcome-accuracy.js";
-import { countBy, round } from "./report-utils.js";
+import { averageNullable, countBy, groupBy, maxNumber, round } from "./report-utils.js";
 export * from "./outcome-metrics.js";
 export * from "./outcome-accuracy.js";
 export * from "./tuning-history.js";
@@ -2467,29 +2467,8 @@ function stringValue(value: unknown, fallback: string): string {
   return fallback;
 }
 
-function groupBy<T>(items: T[], selectKey: (item: T) => string): Map<string, T[]> {
-  const groups = new Map<string, T[]>();
-  for (const item of items) {
-    const key = selectKey(item);
-    groups.set(key, [...(groups.get(key) ?? []), item]);
-  }
-  return groups;
-}
-
 function safeId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
-}
-
-function maxNumber(values: number[]): number {
-  return values.length ? Math.max(...values) : 0;
-}
-
-function averageNullable(values: Array<number | null | undefined>): number | null {
-  const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!numbers.length) {
-    return null;
-  }
-  return round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
 }
 
 function priorityRank(priority: "high" | "medium" | "low"): number {
