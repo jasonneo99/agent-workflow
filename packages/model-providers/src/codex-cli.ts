@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash , randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { logEgress } from "./egress-log.js";
 import { codexCliChildEnvironment } from "./codex-cli-environment.js";
+import { assertCodexCliVersion, codexCliPermissionArgs } from "./codex-cli-permissions.js";
 import { acceptanceContractSchema, acceptanceContractShapeError } from "./acceptance-schema.js";
 import {
   buildFileSummaryPrompt,
@@ -34,8 +35,6 @@ export interface CodexCliDiagnostic {
   stderrExcerpt?: string;
 }
 type CodexCliProcessError = Error & { code?: string; retryable?: boolean; diagnostic?: CodexCliDiagnostic };
-type CodexCliSessionRecord = { threadId: string; resumeCount: number; createdAt: number };
-const codexCliSessions = new Map<string, CodexCliSessionRecord>();
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
   execute(input: CodexCliRunInput): Promise<CodexCliRunResult>;
@@ -110,7 +109,10 @@ export class CodexCliProvider implements ModelProvider {
           ? [`Codex CLI is authenticated with ${authMode === "any" ? "an allowed method" : authMode}.`]
           : [`Codex CLI authentication does not satisfy CODEX_CLI_AUTH_MODE=${authMode}.`]
       };
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code === "CODEX_CLI_UNQUALIFIED_VERSION") {
+        return { ready: false, details: [(error as Error).message] };
+      }
       return { ready: false, details: ["Codex CLI is unavailable or not authenticated."] };
     }
   }
@@ -119,13 +121,10 @@ export class CodexCliProvider implements ModelProvider {
     await this.requireReady();
     const model = configuredModelForTier(input.modelTier, input.modelOverride);
     const reasoningEffort = input.modelTier === "reasoning" ? "medium" : "low";
-    const workingDirectory = configuredCodexCliDirectRepoInspection() ? input.projectRootUri : undefined;
     const call: CodexCliRunInput = {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
-        workingDirectory
-          ? "Treat the supplied stage context and prior artifacts as primary. Avoid broad repository scans and repeated orientation. Inspect only a small, task-relevant path when the supplied evidence is insufficient; otherwise request exact additional files through requestedFileReads. Resolve named commits with bounded git show/diff when required. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
-          : "Direct repository inspection is disabled for this stage. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
+        "Direct repository inspection is disabled. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Request policy-governed commands and file writes in the structured output. Do not use native tools or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
       schema: input.acceptanceContract ? {
@@ -135,11 +134,7 @@ export class CodexCliProvider implements ModelProvider {
       } : stageSchema,
       model,
       reasoningEffort,
-      workingDirectory,
-      // Preserve a stage's bounded read/retry context without replaying the
-      // entire workflow history into every later stage.
-      sessionKey: input.taskId
-      ,abortSignal:input.abortSignal
+      abortSignal: input.abortSignal
     };
     let result = await this.runner.execute(call);
     let decoded = extractJsonObject(result.output) as StageJsonArtifact;
@@ -220,65 +215,43 @@ function configuredAuthMode(): "chatgpt" | "access-token" | "any" {
 
 export function createCodexCliRunner(): CodexCliRunner {
   const binary = resolveCodexCliBinary();
+  const requireCompatible = async (cwd: string, abortSignal?: AbortSignal): Promise<void> => {
+    const version = await runProcess(binary, ["--version"], undefined, cwd, abortSignal);
+    assertCodexCliVersion(version.stdout);
+  };
   return {
     authStatus: async () => {
-      const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
-      return `${result.stdout}\n${result.stderr}`.trim();
+      const temporaryDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-status-")));
+      try {
+        await requireCompatible(temporaryDir);
+        const result = await runProcess(binary, ["login", "status"], undefined, temporaryDir);
+        return `${result.stdout}\n${result.stderr}`.trim();
+      } finally {
+        await fs.rm(temporaryDir, { recursive: true, force: true });
+      }
     },
-    execute: async ({ prompt, schema, model, reasoningEffort, workingDirectory, sessionKey,abortSignal }) => {
+    execute: async ({ prompt, schema, model, reasoningEffort, abortSignal }) => {
       return withCodexCliProcessLock(async () => {
-        if(abortSignal?.aborted)throw new Error('Codex CLI execution aborted before process start.');
-        const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
+        if (abortSignal?.aborted) throw new Error("Codex CLI execution aborted before process start.");
+        const temporaryDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-")));
         const schemaPath = path.join(temporaryDir, "output-schema.json");
         const outputPath = path.join(temporaryDir, "last-message.json");
         try {
+          await requireCompatible(temporaryDir, abortSignal);
+          const resolvedBinary = await fs.realpath(binary);
           await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
-          const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
-          const resumeRecord = configuredCodexCliSessionReuse() && sessionKey ? await loadCodexCliSession(sessionKey) : undefined;
-          // Cap the resume chain: beyond a few resumes the thread's rollout grows
-          // large enough that `exec resume` itself becomes the failure mode
-          // (observed 2026-10-01 on 400k-800k token threads). Start fresh instead.
-          const resumeAttempt = resumeRecord && resumeRecord.resumeCount < configuredCodexCliMaxResumes() ? resumeRecord : undefined;
-          const buildArgs = (resumeThreadId: string | undefined): string[] => resumeThreadId
-            ? [
-              "exec", "resume", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
-              "--output-schema", schemaPath, "--output-last-message", outputPath,
-              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
-              ...(model ? ["--model", model] : []), resumeThreadId, "-"
-            ]
-            : [
-              "exec", ...(configuredCodexCliSessionReuse() && sessionKey ? [] : ["--ephemeral"]),
-              "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
-              "--sandbox", "read-only", "--cd", executionDirectory,
-              "--output-schema", schemaPath, "--output-last-message", outputPath,
-              "--color", "never",
-              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
-              ...(model ? ["--model", model] : []), "-"
-            ];
-          let processResult: { stdout: string; stderr: string };
-          let resumed = false;
-          try {
-            processResult = await runProcess(binary, buildArgs(resumeAttempt?.threadId), prompt, executionDirectory,abortSignal);
-            resumed = Boolean(resumeAttempt);
-          } catch (error) {
-            if(abortSignal?.aborted)throw error;
-            if (!resumeAttempt || !sessionKey) throw error;
-            // A failed `exec resume` must never fail the stage: the executor
-            // already passes full context via priorReceipts, so resume is a
-            // pure optimization. Forget the poisoned thread and retry once fresh.
-            await forgetCodexCliSession(sessionKey);
-            processResult = await runProcess(binary, buildArgs(undefined), prompt, executionDirectory,abortSignal);
-          }
+          // Always fresh: legacy session pointers and repository cwd inputs are
+          // ignored. Every structured action remains subject to controller policy.
+          const args = [
+            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+            "--cd", temporaryDir, ...codexCliPermissionArgs(temporaryDir, resolvedBinary),
+            "--output-schema", schemaPath, "--output-last-message", outputPath, "--color", "never",
+            ...(reasoningEffort ? ["--config", `model_reasoning_effort="${reasoningEffort}"`] : []),
+            ...(model ? ["--model", model] : []), "-"
+          ];
+          const processResult = await runProcess(resolvedBinary, args, prompt, temporaryDir, abortSignal);
           assertCodexCliTurnSucceeded(processResult.stdout);
           const output = await readCodexCliOutputFile(outputPath);
-          if (sessionKey) {
-            if (resumed) {
-              await bumpCodexCliResumeCount(sessionKey);
-            } else {
-              const threadId = parseCodexCliThreadId(processResult.stdout);
-              if (threadId) await rememberCodexCliSession(sessionKey, threadId);
-            }
-          }
           return { output, model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
         } finally {
           await fs.rm(temporaryDir, { recursive: true, force: true });
@@ -288,13 +261,11 @@ export function createCodexCliRunner(): CodexCliRunner {
   };
 }
 
-export function configuredCodexCliSessionReuse(): boolean {
-  return !/^(?:0|false|off|no)$/iu.test(process.env.AGENTFLOW_CODEX_SESSION_REUSE?.trim() ?? "");
-}
+/** @deprecated Restricted executions are always fresh; legacy environment settings are ignored. */
+export function configuredCodexCliSessionReuse(): boolean { return false; }
 
-export function configuredCodexCliDirectRepoInspection(): boolean {
-  return /^(?:1|true|on|yes)$/iu.test(process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION?.trim() ?? "");
-}
+/** @deprecated Files enter the model context only through controller-owned reads. */
+export function configuredCodexCliDirectRepoInspection(): boolean { return false; }
 
 export function parseCodexCliThreadId(jsonl: string): string | undefined {
   for (const line of jsonl.split(/\r?\n/u)) {
@@ -308,60 +279,8 @@ export function parseCodexCliThreadId(jsonl: string): string | undefined {
   return undefined;
 }
 
-async function loadCodexCliSession(sessionKey: string): Promise<CodexCliSessionRecord | undefined> {
-  const cached = codexCliSessions.get(sessionKey);
-  if (cached) return cached;
-  try {
-    const record = JSON.parse(await fs.readFile(codexCliSessionPath(sessionKey), "utf8")) as { threadId?: unknown; resumeCount?: unknown; createdAt?: unknown };
-    if (typeof record.threadId !== "string" || !/^[0-9a-f-]{36}$/iu.test(record.threadId)) return undefined;
-    if (typeof record.createdAt !== "number" || Date.now() - record.createdAt > 24 * 60 * 60 * 1000) return undefined;
-    const entry: CodexCliSessionRecord = {
-      threadId: record.threadId,
-      resumeCount: typeof record.resumeCount === "number" && record.resumeCount >= 0 ? Math.trunc(record.resumeCount) : 0,
-      createdAt: record.createdAt
-    };
-    codexCliSessions.set(sessionKey, entry);
-    return entry;
-  } catch {
-    return undefined;
-  }
-}
-
-async function rememberCodexCliSession(sessionKey: string, threadId: string): Promise<void> {
-  const record: CodexCliSessionRecord = { threadId, resumeCount: 0, createdAt: Date.now() };
-  codexCliSessions.set(sessionKey, record);
-  while (codexCliSessions.size > 128) codexCliSessions.delete(codexCliSessions.keys().next().value!);
-  const directory = codexCliSessionDirectory();
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(record)}\n`, { mode: 0o600 });
-}
-
-async function bumpCodexCliResumeCount(sessionKey: string): Promise<void> {
-  const record = codexCliSessions.get(sessionKey) ?? await loadCodexCliSession(sessionKey);
-  if (!record) return;
-  const updated: CodexCliSessionRecord = { ...record, resumeCount: record.resumeCount + 1 };
-  codexCliSessions.set(sessionKey, updated);
-  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(updated)}\n`, { mode: 0o600 }).catch(() => undefined);
-}
-
-async function forgetCodexCliSession(sessionKey: string): Promise<void> {
-  codexCliSessions.delete(sessionKey);
-  await fs.unlink(codexCliSessionPath(sessionKey)).catch(() => undefined);
-}
-
-/** Max `exec resume` calls before starting a fresh thread (default 3). 0 disables resume. */
-export function configuredCodexCliMaxResumes(): number {
-  const parsed = Number.parseInt(process.env.CODEX_CLI_MAX_RESUMES ?? "", 10);
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, 32)) : 3;
-}
-
-function codexCliSessionDirectory(): string {
-  return path.join(os.tmpdir(), `agentflow-codex-sessions-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
-}
-
-function codexCliSessionPath(sessionKey: string): string {
-  return path.join(codexCliSessionDirectory(), `${createHash("sha256").update(sessionKey).digest("hex")}.json`);
-}
+/** @deprecated No native session resumes are permitted. */
+export function configuredCodexCliMaxResumes(): number { return 0; }
 
 export function parseCodexCliUsage(jsonl: string): StageExecutionOutput["usage"] {
   let measured: StageExecutionOutput["usage"];
@@ -399,13 +318,15 @@ function finiteUsageNumber(value: unknown): number | undefined {
 }
 
 function resolveCodexCliBinary(): string {
-  const configured = process.env.CODEX_CLI_BIN?.trim();
-  if (configured) return configured;
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(directory, "codex");
-    if (existsSync(candidate)) return candidate;
+  const command = process.env.CODEX_CLI_BIN?.trim() || "codex";
+  if (path.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+    return existsSync(command) ? realpathSync(command) : command;
   }
-  return "codex";
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return realpathSync(candidate);
+  }
+  return command;
 }
 
 async function withCodexCliProcessLock<T>(operation: () => Promise<T>): Promise<T> {
