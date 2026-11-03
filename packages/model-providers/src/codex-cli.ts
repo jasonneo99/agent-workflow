@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { logEgress } from "./egress-log.js";
+import { codexCliChildEnvironment } from "./codex-cli-environment.js";
 import { acceptanceContractSchema, acceptanceContractShapeError } from "./acceptance-schema.js";
 import {
   buildFileSummaryPrompt,
@@ -513,9 +514,7 @@ async function runProcess(binary: string, args: string[], input: string | undefi
   const startedAt = Date.now();
   const timeoutMs = configuredCodexCliTimeoutMs();
   const maxBytes = configuredCodexCliOutputMaxBytes();
-  const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-  delete environment.OPENAI_API_KEY;
-  delete environment.OPENAI_ADMIN_KEY;
+  const environment = codexCliChildEnvironment();
   const logSpawn = (outcome: { statusCode?: number; error?: string }): void => {
     const subcommand = args[0] === "exec" && args[1] === "resume" ? "exec resume" : args[0] === "exec" ? "exec" : args.slice(0, 2).join(" ");
     logEgress({
