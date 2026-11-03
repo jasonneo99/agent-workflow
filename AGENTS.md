@@ -2,6 +2,16 @@
 
 This repository is the shared Portable Agent Workflows kit. It defines reusable agents, automatic agents, workflows, policies, and project templates that can be used from Codex, Claude Code, Cursor, Aider, or any other agent-aware tool.
 
+## Active development direction
+
+The owner's 2026-11-03 decision makes this existing v1 platform the active
+development line. V2 is a retired learning experiment. Strengthen and improve
+v1 through bounded changes under its existing controls; consult
+[the improvement plan](docs/v1-improvement-plan.md) before choosing new work.
+Carry forward reviewed lessons and the approved long-term goals without
+automatically adopting v2's runtime, storage, dependencies or proposed UI.
+This direction does not widen any current task, policy or execution grant.
+
 ## Project Context
 
 - Reusable agent cards live in `agents/**/*.yaml`.

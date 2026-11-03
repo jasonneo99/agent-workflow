@@ -1,5 +1,18 @@
 # Agent Workflow Roadmap
 
+## Active direction — strengthen v1 (2026-11-03)
+
+The owner ended the v2 rewrite as an active delivery line and retained it as a
+learning experiment. Development effort now goes into strengthening and
+improving this existing v1 platform. The [v1 improvement plan](v1-improvement-plan.md)
+records the goals, immediate priorities and evidence required to advance.
+
+Reliable bounded task execution and independent acceptance remain first.
+Preserve existing projects, interfaces, services, data and historical evidence;
+use reviewed lessons to make small, tested changes. V2 architecture and pilot
+proposals are not automatic v1 commitments. Historical status and checkboxes
+below retain their original scope and evidence limits.
+
 ## V1 stabilization (2026-11-02)
 
 The active repair scope is recorded in [V1 stabilization](v1-stabilization.md).

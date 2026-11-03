@@ -6,6 +6,11 @@
 
 Portable, model-agnostic agent workflows for any codebase. Define reusable AI agent teams and multi-stage workflows, plug in any model provider, and run structured automation across your projects.
 
+Active development focuses on strengthening this existing v1 platform. The v2
+rewrite is retired as a learning experiment. Reliable bounded task execution,
+independent acceptance and predictable recovery come first; see the
+[v1 improvement plan](docs/v1-improvement-plan.md).
+
 ## What it does
 
 - **25 specialist agents** — architecture, frontend, backend, security, UX, testing, model improvement, docs, and more

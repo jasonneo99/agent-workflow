@@ -3,7 +3,9 @@
 The objective is verified completion of bounded coding tasks through the existing
 pipeline without a separate chat repairing its machinery. Codex CLI is the
 preferred executor for this qualification; provider-neutral contracts remain.
-V2 implementation stays paused. This work preserves Studio, existing services,
+V2 is retired from active development and retained as a learning experiment.
+The [v1 improvement plan](v1-improvement-plan.md) records the current direction.
+This work preserves Studio, existing services,
 operational data, unrelated source work and immutable run history.
 
 ## Starting evidence

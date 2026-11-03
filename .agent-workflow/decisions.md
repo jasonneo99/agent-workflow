@@ -74,3 +74,20 @@ they do not claim causal model reasoning or grant authority. Preserve historical
 hashes on replay, leave unknown provenance explicit, and stop provider invocation
 when required attribution cannot be recorded. Native graph acceptance and the
 first influence slice now have local macOS evidence in the context-center guide.
+
+## 2026-11-03 — Strengthen v1; retain v2 as a learning experiment
+
+The owner ended active v2 development and directed future effort toward
+strengthening and improving v1. Retain the experiment and its evidence without
+completing its abandoned milestones or importing its architecture wholesale.
+The seven long-term goals, reliable execution objective, provider independence,
+current Codex CLI preference, UI model onboarding and open-source/security
+requirements carry forward as product direction.
+
+Use the existing runtime, queue, management interface and Studio contracts.
+Prioritize executable task admission, exact candidate verification, independent
+acceptance and bounded recovery. Changes require current scoped authority and
+evidence; the direction change grants no blanket execution, deployment,
+history-rewrite or credential authority. V2 storage, executor-loop, isolation,
+UI and numerical pilot proposals remain separate implementation decisions.
+See [the current improvement plan](../docs/v1-improvement-plan.md).
