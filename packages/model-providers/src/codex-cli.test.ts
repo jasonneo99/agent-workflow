@@ -256,6 +256,8 @@ async function writeStubScript(dir: string, body: string): Promise<string> {
   return bin;
 }
 
+function shellQuote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
+
 /** Mirror of the private codexCliSessionPath() so tests can pre-seed sessions. */
 function stubSessionFile(sessionKey: string): { dir: string; file: string } {
   const uid = typeof process.getuid === "function" ? process.getuid() : "user";
@@ -381,13 +383,13 @@ test("Codex CLI runner falls back to a fresh exec when resume fails", async () =
       await writeFile(sessFile, JSON.stringify({ threadId: stubThreadId, resumeCount: 0, createdAt: Date.now() }));
       const countFile = path.join(dir, "count");
       const argsFile = path.join(dir, "args");
-      process.env.CODEX_STUB_COUNT_FILE = countFile;
-      process.env.CODEX_STUB_ARGS_FILE = argsFile;
       const bin = await writeStubScript(dir, `
-count=$(cat "$CODEX_STUB_COUNT_FILE" 2>/dev/null || echo 0)
+count_file=${shellQuote(countFile)}
+args_file=${shellQuote(argsFile)}
+count=$(cat "$count_file" 2>/dev/null || echo 0)
 count=$((count + 1))
-echo "$count" > "$CODEX_STUB_COUNT_FILE"
-echo "$*" > "$CODEX_STUB_ARGS_FILE.$count"
+echo "$count" > "$count_file"
+echo "$*" > "$args_file.$count"
 out=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
@@ -410,8 +412,6 @@ exit 0`.trim());
       assert.doesNotMatch(await readFile(`${argsFile}.2`, "utf8"), /\bresume\b/);
     });
   } finally {
-    delete process.env.CODEX_STUB_COUNT_FILE;
-    delete process.env.CODEX_STUB_ARGS_FILE;
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -426,9 +426,8 @@ test("Codex CLI runner starts a fresh thread when the resume chain hits the cap"
       await mkdir(sessDir, { recursive: true });
       await writeFile(sessFile, JSON.stringify({ threadId: stubThreadId, resumeCount: 3, createdAt: Date.now() }));
       const argsFile = path.join(dir, "args");
-      process.env.CODEX_STUB_ARGS_FILE = argsFile;
       const bin = await writeStubScript(dir, `
-echo "$*" > "$CODEX_STUB_ARGS_FILE"
+echo "$*" > ${shellQuote(argsFile)}
 out=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
@@ -445,7 +444,6 @@ exit 0`.trim());
       assert.doesNotMatch(await readFile(argsFile, "utf8"), /\bresume\b/);
     });
   } finally {
-    delete process.env.CODEX_STUB_ARGS_FILE;
     await rm(dir, { recursive: true, force: true });
   }
 });
