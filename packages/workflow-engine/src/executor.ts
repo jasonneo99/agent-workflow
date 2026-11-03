@@ -773,6 +773,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               artifactUri: previousCommand.uri,
               exitCode: previousCommand.content.exitCode,
               timedOut: previousCommand.content.timedOut,
+              verificationRecipe: previousCommand.content.verificationRecipe,
+              environment: previousCommand.content.environment,
+              outputTruncated: previousCommand.content.outputTruncated,
               outputPreview: truncateCommandOutputForError(commandOutputEvidence(String(previousCommand.content.stdout ?? ""), String(previousCommand.content.stderr ?? "")), 80, 4000),
               reuseArtifactUri
             });

@@ -54,6 +54,11 @@ from both process streams, so a warning cannot conceal the failure. Regression
 controls cover failed preparation without task execution; an owned real build
 timeout separately verifies automatic intermediate-container removal.
 
+Reused command results retain the original declared collection, environment
+binding and truncation facts. Duplicate suppression must not discard passing
+verification evidence or convert failed, missing or truncated evidence into a
+pass. The original command receipt and source-sensitive identity stay authoritative.
+
 ## Repair order
 
 1. Extract cohesive modules to clear the inherited source-size failures. Preserve

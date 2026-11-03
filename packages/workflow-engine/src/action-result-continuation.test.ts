@@ -16,7 +16,8 @@ test('repaired execution ignores historical cached reads and resumes only its ow
 
 test("real worker checkpoints and resumes final command results without executing them twice", async (t) => {
   if (!process.env.AGENTFLOW_CONTINUATION_TEST_CHILD) {
-    for (const mode of ["command", "read", "checkpoint-read", "checkpoint-missing", "read-command", "read-withdrawal"]) {
+    for (const mode of ["command", "read", "checkpoint-read", "checkpoint-missing", "read-command", "read-withdrawal",
+      "verification-reuse", "verification-failed", "verification-missing", "verification-truncated"]) {
     // This synthetic fixture owns its provider route. A configured runtime
     // fallback may legitimately add a provider turn before source reads;
     // never let that ambient setting alter these exact command-count cases.
@@ -42,6 +43,7 @@ test("real worker checkpoints and resumes final command results without executin
     t.mock.module(url, { namedExports: { ...defaults, ...overrides } });
   };
   const mode = process.env.AGENTFLOW_CONTINUATION_TEST_MODE;
+  const verificationReuse = mode?.startsWith("verification-") === true;
   const mixedRequests = mode === "read-command" || mode === "read-withdrawal";
   const checkpointSeeded = mode === "checkpoint-read" || mode === "checkpoint-missing";
   const checkpointPath = mode === "checkpoint-missing" ? "missing-continuation-source.txt" : "package.json";
@@ -54,6 +56,7 @@ test("real worker checkpoints and resumes final command results without executin
     pendingOutput: { requestedFileReads: [checkpointPath], requestedFileSearches: [] }
   } : undefined;
   let completed: Record<string, any> | undefined;
+  let blocked: Record<string, any> | undefined;
   let executions = 0;
   let providerCalls = 0;
   let resumed = checkpointSeeded;
@@ -68,6 +71,11 @@ test("real worker checkpoints and resumes final command results without executin
     projectConfig: { project: { name: "fixture" }, policies: { require_approval_for_external_actions: false }, actions: { allowed_commands: ["node *"], require_approval_for: [] } },
     stagePattern: { type: "react", maxIterations: 3, requiresVerifier: false, promotionGate: "none", stopConditions: [] }
   };
+  const collection = { status: mode === "verification-failed" ? "failed" : "passed", cases: 1,
+    passed: mode === "verification-failed" ? 0 : 1, skipped: 0, reason: mode === "verification-failed" ? "Required fixture failed" : null };
+  const environment = { schemaVersion: 1, authority: "execution-evidence-only", runId: task.runId, taskId: task.taskId,
+    status: "ready", cleanup: "complete", recipeHash: "frozen-recipe", sourceHash: "exact-candidate-source",
+    receiptPath: "/synthetic/owned-environment-receipt.json" };
   await replace("../../storage/src/client.js", {
     withClient: async (operation: (client: any) => unknown) => operation({
       query: async (sql: string, args: unknown[]) => {
@@ -84,18 +92,29 @@ test("real worker checkpoints and resumes final command results without executin
     getArtifactByUri: async (uri: string) => uri.endsWith("/continuation")
       ? checkpoint && { runId: task.runId, taskId: task.taskId, content: checkpoint } : artifacts.get(uri),
     recordRunAction: async (action: any) => {
-      const uri = `db://synthetic/${artifacts.size}`;
-      artifacts.set(uri, { content: action.artifactContent });
-      if (action.idempotencyKey) receipts.set(action.idempotencyKey, { uri, content: action.artifactContent });
+      const uri = action.idempotencyKey ? `db://workflow_runs/${task.runId}/${action.artifactKind}/${action.idempotencyKey}` : `db://synthetic/${artifacts.size}`;
+      const content = { ...action.artifactContent, ...(action.idempotencyKey ? { idempotencyKey: action.idempotencyKey } : {}) };
+      const row = { uri, runId: task.runId, taskId: task.taskId, kind: action.artifactKind, createdAt: new Date().toISOString(), content };
+      artifacts.set(uri, row);
+      if (action.idempotencyKey) receipts.set(action.idempotencyKey, row);
       return uri;
     },
-    findRunActionByIdempotencyKey: async (input: any) => receipts.get(input.idempotencyKey) ?? null,
+    findRunActionByIdempotencyKey: async (input: any) => {
+      assert.equal(input.runId, task.runId); assert.equal(input.artifactKind, "command_output");
+      const row = receipts.get(input.idempotencyKey);
+      if (!row) return null;
+      assert.equal(row.content.idempotencyKey, input.idempotencyKey);
+      assert.equal(row.content.requestedByTaskId, task.taskId); assert.equal(row.content.requestedByStageId, task.stageId);
+      if (mode !== "verification-missing") return row;
+      const content = { ...row.content }; delete content.verificationRecipe;
+      return { ...row, content };
+    },
     claimSideEffect: async () => ({ status: "claimed", claimToken: "fixture-claim" }),
     finalizeSideEffect: async () => true, dismissSupersededActionApprovals: async () => {},
     requestActionApproval: async () => { throw new Error("Unexpected approval boundary"); },
     checkpointWorkflowTaskContinuation: async (input: any) => { checkpoint = JSON.parse(JSON.stringify(input.continuation)); },
     completeWorkflowTask: async (input: any) => { completed = input; },
-    blockWorkflowTask: async (input: any) => { throw new Error(`Unexpected block: ${input.reason}`); },
+    blockWorkflowTask: async (input: any) => { if (verificationReuse) blocked = input; else throw new Error(`Unexpected block: ${input.reason}`); },
     failWorkflowTask: async (input: any) => { throw new Error(`Unexpected failure: ${JSON.stringify(input)}`); }
   });
   await replace("./stage-authority.js", { createRenewingStageAuthority: async () => async () => {} });
@@ -109,7 +128,8 @@ test("real worker checkpoints and resumes final command results without executin
     assertCommandAllowed: () => {}, commandSerializationResource: () => null,
     executeAllowedCommand: async ({ commandLine }: any) => {
       executions++;
-      return { commandLine, cwd: process.cwd(), exitCode: 0, stdout: "retained-final-evidence", stderr: "", timedOut: false, signal: null, durationMs: 1 };
+      return { commandLine, cwd: process.cwd(), exitCode: 0, stdout: "retained-final-evidence", stderr: "", timedOut: false, signal: null, durationMs: 1,
+        ...(verificationReuse ? { verificationRecipe: collection, environment, outputTruncated: mode === "verification-truncated" } : {}) };
     }
   });
   await replace("../../local-tools/src/file-reader.js", {
@@ -121,6 +141,13 @@ test("real worker checkpoints and resumes final command results without executin
   await replace("../../model-providers/src/index.js", {
     executeWithProviderFallback: async ({ stageInput }: any) => {
       providerCalls++;
+      if (verificationReuse) {
+        if (providerCalls > 1) assert.equal(executions, 1, "Repeating the same observed verification cannot execute it twice");
+        const command = "node --test tests/frozen.test.mjs";
+        return { output: { summary: "Actual fixture verification evidence reviewed.", artifact: { findings: ["Fixture check observed"] },
+          requestedCommands: mode === "verification-failed" ? (providerCalls === 1 ? [command, command] : []) : providerCalls < 3 ? [command] : [] },
+          attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
+      }
       if (mixedRequests) {
         if (providerCalls === 1) return { output: {summary:"Inspect before selecting the command.",artifact:{},requestedFileReads:["package.json"],requestedCommands:["node --version observation-readable"]},attempts:[],actualProvider:"mock",actualModel:"mock",fallbackUsed:false};
         if (providerCalls === 2) {
@@ -163,6 +190,22 @@ test("real worker checkpoints and resumes final command results without executin
   });
   const { runWorkerOnce } = await import("./executor.js");
   const first = await runWorkerOnce(1, { recoverExpiredLeases: false });
+  if (verificationReuse) {
+    assert.equal(executions, 1); assert.equal(providerCalls, mode === "verification-failed" ? 2 : 3);
+    assert.equal(checkpoint, undefined, "Complete reused observations need no extra continuation");
+    const successful = mode === "verification-reuse";
+    assert.equal(first.completed, successful ? 1 : 0);
+    assert.equal(Boolean(completed), successful); assert.equal(Boolean(blocked), !successful);
+    const final = (completed ?? blocked)!;
+    const reused = final.artifact.actionResults.filter((action: any) => action.type === "local_command_reused");
+    assert.equal(reused.length, 1);
+    assert.deepEqual(reused[0].environment, environment, "Retain the exact source-bound environment observation");
+    assert.deepEqual(reused[0].verificationRecipe, mode === "verification-missing" ? undefined : collection);
+    assert.equal(reused[0].outputTruncated, mode === "verification-truncated");
+    assert.ok(artifacts.get(reused[0].artifactUri), "Reuse refers to the stored original command receipt");
+    if (!successful) assert.match(blocked!.reason, mode === "verification-truncated" ? /truncated output/u : /declared test collection is incomplete or failed/u);
+    console.log("CONTINUATION_WORKER_ASSERTIONS_PASSED");return;
+  }
   if(mixedRequests){
     assert.equal(first.completed,1);assert.equal(executions,mode==='read-withdrawal'?0:1);
     assert.equal(checkpoint,undefined,"Request-state clarification consumes no retry or extra continuation");
