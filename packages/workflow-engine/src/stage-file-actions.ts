@@ -168,6 +168,23 @@ export async function executeStageFileWrites(input: StageFileContext & {
   const result = (retryRequested: boolean): StageFileWriteResult => ({ retryRequested,
     state: { output, quality, fallbackAttempts, actualProviderId, actualModel,
       mutationRetriesRemaining, reactIteration } });
+  // Publish each finalized/reused postimage before another action can retry or
+  // return to a provider. The caller may defer commands and bypass its next turn.
+  const refreshWriteObservation = async (write: { path: string; artifactUri: string; nextHash?: string }): Promise<void> => {
+    routedStageInput.priorReceipts.push({ agentId: task.agentId, actionType: "file_write",
+      summary: `Write committed or reused for ${write.path}. Evidence: ${write.artifactUri}. Recorded postimage: ${write.nextHash ?? "unknown"}. Do not repeat this write; inspect the refreshed current contents.` });
+    for (let index = stageFileReads.length - 1; index >= 0; index--) {
+      if (stageFileReads[index]!.path.replace(/#L\d+-L\d+$/u, "") === write.path) stageFileReads.splice(index, 1);
+    }
+    try {
+      const fresh = await executeAllowedFileRead({ relativePath: write.path, cwd: localProjectRootUri, project });
+      stageFileReads.push({ path: write.path, content: fresh.content, truncated: fresh.truncated, sha256: fresh.sha256 });
+      stageStateDeltas.push(fileReadDelta({ path: write.path, bytesRead: fresh.bytesRead, truncated: fresh.truncated,
+        sha256: fresh.sha256, provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_write", taskId: task.taskId, artifactUri: write.artifactUri } }));
+    } catch (error) {
+      stageFileReads.push({ path: write.path, content: "", truncated: false, error: `Post-write refresh unavailable: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
   for (const fileWrite of output.requestedFileWrites ?? []) {
     await assertLeaseOwned();
     reactIteration += 1;
@@ -211,6 +228,8 @@ export async function executeStageFileWrites(input: StageFileContext & {
         artifactUri: previousWrite.uri,
         reuseArtifactUri
       });
+      await refreshWriteObservation({ path: fileWrite.path, artifactUri: previousWrite.uri,
+        nextHash: typeof previousWrite.content.nextHash === "string" ? previousWrite.content.nextHash : undefined });
       await recordBoundedReactLoopReceipt({
         task,
         stagePattern,
@@ -530,6 +549,7 @@ export async function executeStageFileWrites(input: StageFileContext & {
       nextHash: writeResult.nextHash,
       approvalRule: fileWriteApprovalRule ?? undefined
     });
+    await refreshWriteObservation({ path: writeResult.relativePath, artifactUri, nextHash: writeResult.nextHash });
     await recordBoundedReactLoopReceipt({
       task,
       stagePattern,

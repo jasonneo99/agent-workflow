@@ -66,6 +66,12 @@ missing or mismatched receipts hold the task without repeating the command.
 Crash-window controls distinguish output saved before finalization from a
 finalized observation recovered before its stage checkpoint.
 
+Each successful governed write refreshes its cached source observation before
+another command, mutation retry or provider turn can bypass that refresh.
+Combined write-and-check requests must expose the applied postimage and executed
+check together. Completion still requires consuming new results, current-source
+checks, the candidate checkpoint and fresh independent verification.
+
 ## Repair order
 
 1. Extract cohesive modules to clear the inherited source-size failures. Preserve

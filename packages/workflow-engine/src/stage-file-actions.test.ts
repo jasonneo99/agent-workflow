@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { StageFileWriteState } from "./stage-file-actions.js";
 
-const scenarios = ["write-and-reuse", "approval-boundaries", "lost-authority", "patch-retry", "replacement-reroute", "reader-observations"];
+const scenarios = ["write-and-reuse", "approval-boundaries", "lost-authority", "patch-retry", "partial-write-retry", "replacement-reroute", "reader-observations"];
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 test("stage file actions preserve governed effects and caller-owned retry state", async t => {
@@ -85,6 +85,13 @@ test("stage file actions preserve governed effects and caller-owned retry state"
   await replaceBoundary("../../model-providers/src/index.js", {
     executeWithProviderFallback: async (input: any) => {
       providerCalls.push(input); events.push("provider");
+      if (scenario === "partial-write-retry") {
+        const read = input.stageInput.fileReads.find((item: any) => item.path === target);
+        assert.equal(read?.content, after, "The internal retry must observe the first finalized write");
+        assert.equal(read?.sha256, digest(after));
+        assert.ok(input.stageInput.priorReceipts.some((receipt: any) => receipt.actionType === "file_write" && receipt.summary.includes(target)));
+        assert.equal(finalized.length, 1, "The first effect is finalized before the second write retries");
+      }
       assert.ok(providerResult, "No provider call is permitted outside a prepared correction");
       return providerResult;
     }
@@ -124,7 +131,7 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     totalRequestedActions: 2, route: { providerId: "codex-cli" }, routedStageInput, fallbackPolicy, guardedProviderFactory,
     assertLeaseOwned: async () => { leaseCalls++; events.push("lease"); if (loseLease) throw new Error("synthetic lease lost"); },
     assertStageGuard: async (sideEffect: boolean) => { events.push("guard:" + sideEffect); if (loseGuard) throw new Error("synthetic authority lost"); },
-    preparation: { beforeWrite: async (relative: string) => { assert.equal(relative, target); events.push("before-write"); } } as any,
+    preparation: { beforeWrite: async (relative: string) => { assert.ok(relative === target || (scenario === "partial-write-retry" && relative === "src/second.txt")); events.push("before-write"); } } as any,
     scoreOutput: (next: any) => { const quality = scoreStageOutput(routedStageInput, next); scoredOutputs.push({ next, quality }); return quality; }
   };
   const assertRetained = (next: StageFileWriteState, iteration: number) => {
@@ -170,6 +177,9 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     assert.equal(written.artifactContent.previousHash, digest(before)); assert.equal(written.artifactContent.nextHash, digest(after));
     assert.equal(written.artifactContent.requestedByTaskId, task.taskId);
     assert.equal(actionResults[0].nextHash, digest(after));
+    assert.equal(stageFileReads[0].content, after); assert.equal(stageFileReads[0].sha256, digest(after));
+    stageFileReads[0] = { path: target, content: before, truncated: false, sha256: digest(before) };
+    stageFileReads.push({ path: target + "#L1-L2", content: before, truncated: false });
     const stat = await fs.stat(path.join(root, target), { bigint: true });
     const second = await executeStageFileWrites({ ...input, state: first.state });
     assert.equal(second.retryRequested, false); assertRetained(second.state, 5);
@@ -177,6 +187,8 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     assert.equal((await fs.stat(path.join(root, target), { bigint: true })).mtimeNs, stat.mtimeNs);
     assert.equal(actionResults[1].type, "file_write_reused"); assert.equal(actionResults[1].artifactUri, written.uri);
     assert.equal(actionResults[1].nextHash, digest(after));
+    assert.equal(stageFileReads.length, 1, "Reuse must replace both whole-file and range preimages");
+    assert.equal(stageFileReads[0].content, after); assert.equal(stageFileReads[0].sha256, digest(after));
     assert.deepEqual(records.filter(record => record.actionType === "react_loop_step").map(record => record.artifactContent.iteration), [4, 5]);
   } else if (scenario === "approval-boundaries") {
     state.output = output([{ path: "outside/denied.txt", content: after }, { path: target, content: after }]);
@@ -219,6 +231,20 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     assert.equal(exhausted.retryRequested, false); assert.equal(exhausted.state.mutationRetriesRemaining, 0);
     assert.equal(providerCalls.length, 1, "Exhausted mutation budget cannot invoke the provider again");
     assert.equal(await fs.readFile(path.join(root, target), "utf8"), before);
+  } else if (scenario === "partial-write-retry") {
+    const second = "src/second.txt";
+    await fs.writeFile(path.join(root, second), before);
+    stageFileReads.push({ path: target, content: before, truncated: false, sha256: digest(before) });
+    state.output = output([{ path: target, content: after },
+      { path: second, content: null, patch: "@@ -1 +1 @@\n-not-the-preimage\n+after\n", expectedHash: digest(before) }]);
+    prepareProviderResult(output([]));
+    const result = await executeStageFileWrites(input);
+    assert.equal(result.retryRequested, true); assert.equal(result.state.reactIteration, 5);
+    assert.equal(result.state.mutationRetriesRemaining, 0); assert.equal(providerCalls.length, 1);
+    assert.equal(await fs.readFile(path.join(root, target), "utf8"), after);
+    assert.equal(await fs.readFile(path.join(root, second), "utf8"), before);
+    assert.equal(claims.length, 2); assert.equal(finalized.length, 1);
+    assert.equal(stageFileReads.find(read => read.path === target).content, after);
   } else if (scenario === "replacement-reroute") {
     state.output = output([{ path: target, content: "x".repeat(200) }, { path: "src/stale.txt", content: "must not run" }]);
     prepareProviderResult(output([{ path: target, content: null, patch: "@@ -1 +1 @@\n-before\n+after\n", expectedHash: digest(before) }]));

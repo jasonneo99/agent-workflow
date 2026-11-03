@@ -23,8 +23,7 @@ import { assertCommandAllowed, commandSerializationResource, executeAllowedComma
 import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
 import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,type PreparedTaskExecution} from './run-preparation.js';
 import {integratePreparedSource} from './source-integration.js';
-import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
-import { commandDelta, commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
+import { commandDelta, commandFailureDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { retainedVerificationEvidence, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, type RuntimeCompletionEvidence } from "../../model-providers/src/quality.js";
 import {legacyNoChangeSourceBinding,verifyLegacyNoChangeRecovery} from './legacy-no-change-proof.js';
@@ -1332,25 +1331,6 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           return result.type === "file_write" && Boolean(result.artifactUri);
         }).length;
         const successfulActionsThisRound = successfulCommandsThisRound + successfulWritesThisRound;
-        // A follow-up call alone is not observation: carry committed writes and
-        // replace stale preimages before either inference or checkpointing.
-        for (const action of actionResults.slice(writeActionStart)) {
-          const write = action as { type?: string; path?: string; artifactUri?: string; nextHash?: string };
-          if (!write.path || !write.artifactUri || !["file_write", "file_write_reused"].includes(write.type ?? "")) continue;
-          routedStageInput.priorReceipts.push({ agentId: task.agentId, actionType: "file_write",
-            summary: `Write committed or reused for ${write.path}. Evidence: ${write.artifactUri}. Recorded postimage: ${write.nextHash ?? "unknown"}. Do not repeat this write; inspect the refreshed current contents.` });
-          for (let index = stageFileReads.length - 1; index >= 0; index--) {
-            if (stageFileReads[index]!.path.replace(/#L\d+-L\d+$/u, "") === write.path) stageFileReads.splice(index, 1);
-          }
-          try {
-            const fresh = await executeAllowedFileRead({ relativePath: write.path, cwd: localProjectRootUri, project });
-            stageFileReads.push({ path: write.path, content: fresh.content, truncated: fresh.truncated, sha256: fresh.sha256 });
-            stageStateDeltas.push(fileReadDelta({ path: write.path, bytesRead: fresh.bytesRead, truncated: fresh.truncated,
-              sha256: fresh.sha256, provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_write", taskId: task.taskId, artifactUri: write.artifactUri } }));
-          } catch (error) {
-            stageFileReads.push({ path: write.path, content: "", truncated: false, error: `Post-write refresh unavailable: ${error instanceof Error ? error.message : String(error)}` });
-          }
-        }
         if (successfulActionsThisRound > 0 && successfulFollowupsRemaining > 0) {
           successfulFollowupsRemaining -= 1;
           // Successful observation must not change a command's execution identity.
