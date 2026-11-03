@@ -48,6 +48,12 @@ turn a forced stop into success. This establishes neither general descendant
 cleanup nor qualification on every operating system. Runtime adoption and live
 workflow delivery remain separate milestones.
 
+Timed-out environment builds request removal of intermediate containers.
+Preparation failures retain the underlying timeout, signal and bounded output
+from both process streams, so a warning cannot conceal the failure. Regression
+controls cover failed preparation without task execution; an owned real build
+timeout separately verifies automatic intermediate-container removal.
+
 ## Repair order
 
 1. Extract cohesive modules to clear the inherited source-size failures. Preserve

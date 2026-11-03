@@ -231,6 +231,10 @@ function emptyResult(reason: string): ProcessResult {
   return { exitCode: 126, signal: null, stdout: "", stderr: reason, timedOut: false, durationMs: 0 };
 }
 
+class EnvironmentProcessError extends Error {
+  constructor(message: string, readonly observation: ProcessResult) { super(message); }
+}
+
 /** The supervisor owns Docker; containers receive no host bind mounts, socket, credentials or inherited host environment. */
 export async function runEnvironmentCommand(input: {
   cwd: string; project: ProjectConfig; context: EnvironmentContext; commandLine: string; argv: string[];
@@ -267,7 +271,11 @@ export async function runEnvironmentCommand(input: {
       maxOutputChars: Math.min(plan.spec.limits.max_output_chars, input.project.actions.max_output_chars) });
   };
   const successful = (value: ProcessResult, message: string) => {
-    if (value.exitCode !== 0 || value.timedOut || value.outputTruncated) throw Error(`${message}: ${value.stderr || value.stdout || `exit ${value.exitCode}`}`);
+    if (value.exitCode !== 0 || value.timedOut || value.outputTruncated) {
+      const status = `exitCode=${value.exitCode}, signal=${value.signal}, timedOut=${value.timedOut}, outputTruncated=${Boolean(value.outputTruncated)}`;
+      const excerpt = (stream: string, output: string) => output ? `\n${stream}${output.length > 1500 ? " (last 1500 characters)" : ""}:\n${output.slice(-1500)}` : "";
+      throw new EnvironmentProcessError(`${message}: ${status}${excerpt("stdout", value.stdout)}${excerpt("stderr", value.stderr)}`, value);
+    }
   };
   const probeUntilReady = async (probe: EnvironmentProfile["readiness"][number], observe: () => Promise<ProcessResult>, message: string) => {
     for (let attempt = 0; attempt < probe.attempts; attempt++) {
@@ -342,7 +350,7 @@ export async function runEnvironmentCommand(input: {
           }
         }
         await fs.writeFile(path.join(scratch, "Dockerfile"), dockerfileFor(plan), { flag: "wx" });
-        const built = await invoke(["build", "--platform", plan.platform, "--network", plan.spec.build_network, "--pull=false",
+        const built = await invoke(["build", "--force-rm", "--platform", plan.platform, "--network", plan.spec.build_network, "--pull=false",
           "--label", `io.agentflow.recipe=${plan.recipeHash}`, "--label", `io.agentflow.source=${plan.sourceHash}`, "--tag", plan.imageTag!, scratch], "build");
         successful(built, "Environment image build failed");
         const inspected = await invoke(["image", "inspect", "--format", "{{json .}}", plan.imageTag!], "build");
@@ -378,6 +386,11 @@ export async function runEnvironmentCommand(input: {
     evidence.status = "blocked";
     evidence.reason = (error instanceof Error ? error.message : String(error)).slice(0, 4000);
     result = emptyResult(evidence.reason);
+    if (error instanceof EnvironmentProcessError) {
+      // Exit 126 denotes failed preparation; retain the underlying process facts.
+      result = { ...result, stdout: error.observation.stdout, signal: error.observation.signal,
+        timedOut: error.observation.timedOut, ...(error.observation.outputTruncated ? { outputTruncated: true } : {}) };
+    }
   } finally {
     const cleanupErrors: string[] = [];
     for (const id of [...containers].reverse()) {

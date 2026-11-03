@@ -148,6 +148,11 @@ test("fresh containers run dependency readiness before tests, retain evidence an
     assert.equal(result.environment.status, "ready"); assert.equal(result.environment.imageId, imageId);
     assert.equal(result.environment.phase, "command"); assert.equal(result.verificationRecipe?.passed, 2);
     assert.equal(result.environment.cleanup, "complete");
+    const build = mock.calls.find(args => args[3] === "build")!;
+    assert.ok(build.includes("--force-rm"));
+    assert.equal(build[build.indexOf("--platform") + 1], plan.platform);
+    assert.equal(build[build.indexOf("--network") + 1], plan.spec.build_network);
+    assert.ok(build.includes("--pull=false"));
     const creates = mock.calls.filter(args => args[3] === "create"); assert.equal(creates.length, 2);
     assert.ok(creates[0]!.includes("--version")); assert.ok(creates[1]!.includes("--test"));
     for (const args of creates) {
@@ -164,6 +169,46 @@ test("fresh containers run dependency readiness before tests, retain evidence an
       commandLine, argv: ["node", "--test", "tests/index.test.js"], runner: dockerMock(plan, { cached: true }).runner });
     assert.equal(verifier.environment.recipeHash, result.environment.recipeHash);
     assert.equal(verifier.environment.imageId, imageId); assert.notEqual(verifier.environment.attemptId, result.environment.attemptId);
+  } finally { await f.cleanup(); }
+});
+
+for (const failure of [
+  { name: "timeout", result: ok("Step 8/9 : USER 10001:10001\nowned-build-progress", { exitCode: null, signal: "SIGTERM", timedOut: true, stderr: "DEPRECATED: The legacy builder is deprecated" }) },
+  { name: "truncated output", result: ok("x".repeat(1800) + "stdout-tail", { outputTruncated: true, stderr: "y".repeat(1800) + "stderr-tail" }) },
+  { name: "nonzero exit", result: ok("owned-build-progress", { exitCode: 23, stderr: "build failed after warning" }) }
+]) test(`build ${failure.name} retains bounded process diagnostics and never starts task containers`, async () => {
+  const f = await fixture(); try {
+    let buildDirectory = "";
+    const calls: string[][] = [];
+    const runner: ProcessRunner = async args => {
+      calls.push(args);
+      if (args[3] === "image") return ok("", { exitCode: 1 });
+      assert.equal(args[3], "build");
+      assert.ok(args.includes("--force-rm"));
+      buildDirectory = args.at(-1)!;
+      return failure.result;
+    };
+    const result = await runEnvironmentCommand({ ...f, context: { runId: "failed-build" },
+      commandLine: "node --test tests/index.test.js", argv: ["node", "--test", "tests/index.test.js"], runner });
+    assert.equal(result.environment.status, "blocked");
+    assert.equal(result.environment.phase, "build");
+    assert.equal(result.exitCode, 126);
+    assert.equal(result.timedOut, failure.result.timedOut);
+    assert.equal(result.signal, failure.result.signal);
+    assert.equal(Boolean(result.outputTruncated), Boolean(failure.result.outputTruncated));
+    assert.equal(result.stdout, failure.result.stdout);
+    const reason = result.environment.reason!;
+    assert.ok(reason.length <= 4000);
+    assert.ok(reason.includes(`exitCode=${failure.result.exitCode}`));
+    assert.ok(reason.includes(`timedOut=${failure.result.timedOut}`));
+    assert.ok(reason.includes(`outputTruncated=${Boolean(failure.result.outputTruncated)}`));
+    assert.ok(reason.includes(failure.result.stdout.slice(-100)));
+    assert.ok(reason.includes(failure.result.stderr.slice(-100)));
+    assert.deepEqual(calls.map(args => args[3]), ["image", "build"]);
+    await assert.rejects(fs.stat(buildDirectory), { code: "ENOENT" });
+    const receipt = JSON.parse(await fs.readFile(result.environment.receiptPath!, "utf8"));
+    assert.equal(receipt.result.timedOut, failure.result.timedOut);
+    assert.equal(receipt.result.environment.reason, reason);
   } finally { await f.cleanup(); }
 });
 
