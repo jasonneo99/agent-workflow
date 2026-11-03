@@ -43,14 +43,18 @@ export function testEvidence(
     skipped = Number(/(?:^|[, ])skipped=(\d+)/u.exec(outcomes[0]![1] ?? "")?.[1] ?? 0);
     passed = cases - skipped;
   } else {
-    const summaries = [...text.matchAll(/^(?:=+\s*)?((?:\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?|deselected)(?:, )?)+) in [^\r\n]+?(?:\s*=+)?$/gmu)];
+    const status='(?:passed|failed|skipped|xfailed|xpassed|errors?|deselected)';
+    const token=`\\d+ (?:${status}|warnings?|subtests ${status})`;
+    const summaries = [...text.matchAll(new RegExp(`^(?:=+\\s*)?(${token}(?:, ${token})*) in [^\\r\\n]+?(?:\\s*=+)?$`,'gmu'))];
     if (summaries.length !== 1) return fail("Expected one complete pytest result summary.");
-    const counts = [...summaries[0]![1]!.matchAll(/(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected)/gu)];
-    if (new Set(counts.map(item => item[2])).size !== counts.length) return fail("Ambiguous pytest collection summary.");
-    passed = Number(counts.find(item => item[2] === "passed")?.[1] ?? 0);
-    skipped = Number(counts.find(item => item[2] === "skipped")?.[1] ?? 0);
-    cases = counts.reduce((sum, item) => sum + Number(item[1]), 0);
-    if (counts.some(item => !["passed", "skipped"].includes(item[2]!) && Number(item[1]) > 0)) return fail("Failed, deselected, or unverified pytest cases remain.", cases, passed, skipped);
+    const counts = [...summaries[0]![1]!.matchAll(new RegExp(`(\\d+) (subtests ${status}|${status}|warnings?)`,'gu'))]
+      .map(item=>({count:Number(item[1]),kind:item[2]!.replace(/errors$/u,'error').replace(/warnings$/u,'warning')}));
+    if (new Set(counts.map(item => item.kind)).size !== counts.length) return fail("Ambiguous pytest collection summary.");
+    passed = counts.find(item => item.kind === "passed")?.count ?? 0;
+    skipped = counts.find(item => item.kind === "skipped")?.count ?? 0;
+    // Warnings and successful subtests never inflate primary test collection.
+    cases = counts.filter(item=>item.kind!=='warning'&&!item.kind.startsWith('subtests ')).reduce((sum, item) => sum + item.count, 0);
+    if (counts.some(item => !['passed','subtests passed','warning'].includes(item.kind) && item.count > 0)) return fail("Failed, skipped, deselected, or unverified pytest cases remain.", cases, passed, skipped);
   }
   if (cases < declaration.minimum_tests || passed !== cases || skipped !== 0 ||
       (declaration.expected_tests !== undefined && cases !== declaration.expected_tests)) {

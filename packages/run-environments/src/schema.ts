@@ -62,6 +62,8 @@ export const environmentProfileSchema = z.object({
 export const runEnvironmentsSchema = z.object({
   docker_context: name.default("default"),
   default_profile: name.optional(),
+  // Source preparation only; never a fallback for an unmatched command.
+  baseline_profile: name.optional(),
   profiles: z.record(name, environmentProfileSchema),
   selectors: z.array(z.object({
     profile: name,
@@ -71,7 +73,7 @@ export const runEnvironmentsSchema = z.object({
     command: z.string().min(1).max(4096).optional()
   }).strict()).max(128).default([])
 }).strict().superRefine((config, context) => {
-  for (const selected of [config.default_profile, ...config.selectors.map(selector => selector.profile)]) {
+  for (const selected of [config.default_profile, config.baseline_profile, ...config.selectors.map(selector => selector.profile)]) {
     if (selected && !config.profiles[selected]) context.addIssue({ code: "custom", message: `Unknown environment profile: ${selected}` });
   }
 });

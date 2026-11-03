@@ -1,4 +1,8 @@
 import type {ProjectConfig} from '../../agent-registry/src/schemas.js';
+import {testEvidence} from '../../run-environments/src/evidence.js';
+
+/** Taken from the selected trusted profile, never an observed result's counts. */
+export type DeclaredVerificationRule=Parameters<typeof testEvidence>[1];
 
 export interface VerificationRecipeEvidence {
  status:'passed'|'failed';cases:number|null;passed:number|null;skipped:number|null;reason:string|null;
@@ -6,12 +10,16 @@ export interface VerificationRecipeEvidence {
 /** A process exit is not proof that tests executed. Recompute this from the
  * actual retained output, including when validating an older artifact that
  * predates this metadata. Unknown/truncated formats remain unverified. */
-export function verificationRecipeEvidence(input:{commandLine:string;stdout:string;stderr:string;exitCode:number|null;timedOut:boolean;outputTruncated?:boolean},recipes:ProjectConfig['actions']['verification_recipes']):VerificationRecipeEvidence|undefined {
+export function verificationRecipeEvidence(input:{commandLine:string;stdout:string;stderr:string;exitCode:number|null;timedOut:boolean;outputTruncated?:boolean},recipes:ProjectConfig['actions']['verification_recipes'],declaration?:DeclaredVerificationRule):VerificationRecipeEvidence|undefined {
  if(!recipes?.some(r=>r.commands.includes(input.commandLine)))return undefined;
  const text=(input.stdout+'\n'+input.stderr).replaceAll('\r\n','\n').replace(/\u001b\[[0-9;]*m/gu,'');
  const failed=(reason:string,cases:number|null=null,passed:number|null=null,skipped:number|null=null):VerificationRecipeEvidence=>({status:'failed',cases,passed,skipped,reason});
  if(input.exitCode!==0||input.timedOut)return failed('The declared test command failed or timed out.');
  if(input.outputTruncated||text.includes('\n...[middle truncated]...\n'))return failed('Complete test collection evidence was truncated.');
+ if(declaration){
+  if(!declaration.commands.includes(input.commandLine))return failed('The selected environment rule does not match this literal command.');
+  return testEvidence(input,declaration);
+ }
  if(/^python3 -m unittest /u.test(input.commandLine)){
   const counts=[...text.matchAll(/^Ran (\d+) tests? in [^\r\n]+$/gm)];
   const outcomes=[...text.matchAll(/^OK(?: \(([^\r\n]*)\))?\s*$/gm)];

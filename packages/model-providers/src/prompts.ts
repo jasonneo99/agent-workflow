@@ -1,5 +1,6 @@
 import type { StageExecutionInput, StageExecutionOutput, StructuredAcceptanceContract } from "./types.js";
 import { foldStateDeltas, renderFactSet } from "./state-deltas.js";
+import {controllerCommandBoundary,workerAllowedCommands} from '../../local-tools/src/controller-commands.js';
 
 export interface StageJsonArtifact {
   /** Evidence suggestions only; owning-project scope validation remains separate. */
@@ -59,6 +60,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "",
     "Project action policy:",
     formatActionPolicy(input.projectConfig),
+    ...(input.executionPipeline?.required && input.executionPipeline.sourceChanges ? ['This run executes a source phase only. Preserve installation, deployment, launch, native interaction, screenshots and UI acceptance as explicit pending downstream obligations until separately authorized and evidenced. Source checks and source integration cannot fulfill those obligations; planning them does not grant execution authority.'] : []),
     "",
     ...candidateVerificationPrompt(input),
     "Compiled project/workflow brief:",
@@ -457,7 +459,8 @@ function formatActionPolicy(project: StageExecutionInput["projectConfig"]): stri
   const actions = project.actions as Partial<StageExecutionInput["projectConfig"]["actions"]>;
   const list = (value: string[] | undefined): string => value?.join(" | ") || "none";
   return [
-    `Allowed commands: ${list(actions.allowed_commands)}`,
+    `Allowed worker commands: ${list(workerAllowedCommands(actions.allowed_commands ?? []))}`,
+    controllerCommandBoundary,
     `Blocked commands: ${list(actions.blocked_commands)}`,
     `Allowed write paths: ${list(actions.allowed_write_paths)}`,
     `Blocked write paths: ${list(actions.blocked_write_paths)}`,

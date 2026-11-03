@@ -4,6 +4,7 @@ import { structuredAcceptanceDecision } from "../../model-providers/src/quality.
 import type { AcceptanceGate, StructuredAcceptanceContract } from "../../model-providers/src/types.js";
 import {verificationRecipeEvidence} from '../../local-tools/src/verification-recipe-evidence.js';
 import type {ProjectConfig} from '../../agent-registry/src/schemas.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 
 export function acceptanceGate(stage: string): AcceptanceGate | null {
   if (/^(implement(?:ation)?|fix|backend|frontend|database)(?:$|[-_])/u.test(stage)) return "implementation";
@@ -140,8 +141,13 @@ async function resolveStoredAcceptance(
     // Accept only executed command results, not provider-authored stage outputs.
     const content = evidence.content;
     if (typeof content.commandLine !== "string" || !content.commandLine.trim()) return null;
+    const environment=content.environment as {profile?:unknown}|undefined;
+    const profile=typeof environment?.profile==='string'?row.policy?.execution?.environments?.profiles[environment.profile]:undefined;
+    const rules=profile?.verification.filter(rule=>rule.commands.some(pattern=>verificationCommandMatches(content.commandLine as string,pattern)))??[];
+    const declaration=rules.length===1?{...rules[0]!,commands:[content.commandLine]}:undefined;
+    if(row.policy?.execution?.environments&&row.policy.actions.verification_recipes?.some(recipe=>recipe.commands.includes(content.commandLine as string))&&!declaration)return null;
     const recipe=verificationRecipeEvidence({commandLine:content.commandLine,stdout:String(content.stdout??''),stderr:String(content.stderr??''),
-      exitCode:typeof content.exitCode==='number'?content.exitCode:null,timedOut:content.timedOut===true,outputTruncated:content.outputTruncated===true},row.policy?.actions?.verification_recipes);
+      exitCode:typeof content.exitCode==='number'?content.exitCode:null,timedOut:content.timedOut===true,outputTruncated:content.outputTruncated===true},row.policy?.actions?.verification_recipes,declaration);
     if(recipe?.status==='failed'||(content.verificationRecipe as {status?:string}|undefined)?.status==='failed')return null;
     if (typeof content.commandLine === "string") {
       const latest = await client.query<{ uri: string }>(
@@ -167,7 +173,7 @@ async function resolveStoredAcceptance(
   });
   if(gate==='verification'&&decision.reason===null){
     const expected=[...new Set((row.policy?.actions?.verification_recipes??[])
-      .filter(r=>r.source_paths.every(p=>frozen.sourcePaths?.includes(p)))
+      .filter(r=>[...r.source_paths,...r.test_paths].some(p=>frozen.sourcePaths?.includes(p)))
       .flatMap(r=>r.commands).filter(c=>row.policy?.actions?.allowed_commands?.includes(c)))];
     if(expected.some(c=>!verifiedRecipeCommands.has(c)))return {mode:'structured',reason:'Verification omits a required scoped recipe or its complete non-skipped test evidence.',findings:decision.findings};
   }

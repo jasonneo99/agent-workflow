@@ -3,6 +3,7 @@ import test from "node:test";
 import { acceptanceDigest, acceptanceGate, acceptancePreflight, acceptanceProposal, enrollAcceptanceContract, storedAcceptanceDecision, historicalCheckpointAcceptanceDecision } from "./acceptance.js";
 import type { StructuredAcceptanceContract } from "../../model-providers/src/types.js";
 import { structuredAcceptanceDecision } from "../../model-providers/src/quality.js";
+import {projectConfigSchema} from '../../agent-registry/src/schemas.js';
 
 function fixture(): StructuredAcceptanceContract {
   return { version: 1, contractId: "contract", projectId: "project", originRunId: "run", taskHash: acceptanceDigest("task"), subjectHash: "subject",
@@ -30,6 +31,43 @@ test('declared recipe verification rejects skipped collection and whitespace sub
  assert.notEqual((await run([command,other],'Ran 4 tests in 0.1s\nOK (skipped=4)\n')).reason,null);
  assert.match((await run(['git diff --check'])).reason!,/omits a required scoped recipe/);
  assert.match((await run([command])).reason!,/omits a required scoped recipe/);
+});
+
+test('frozen selected pytest rules recompute raw evidence for source-only scope and cannot be omitted',async()=>{
+ for(const command of ['python3 scripts/check_environment.py --group portable','"/opt/synthetic tools/venv/bin/python3" -m pytest tests/test_feature.py -q']){
+  const run=async(mode:string)=>{
+   const frozen=fixture();frozen.sourcePaths=['src/feature.py'];
+   const policy=projectConfigSchema.parse({project:{name:'Synthetic frozen parser'},execution:{environments:{profiles:{portable:{kind:'native',platform:'linux/amd64',source_paths:['src','tests','scripts'],readiness:[{argv:['node','--version']}],verification:[{commands:[command],format:'pytest',minimum_tests:2,expected_tests:2}]}}}},actions:{allowed_commands:[command,'git diff --check'],verification_recipes:[{source_paths:['src/feature.py','tests/test_feature.py'],test_paths:['tests/test_feature.py'],commands:[command],output_paths:[]}]}});
+   const content:any={commandLine:command,stdout:'2 passed in 0.01s\n',stderr:'',exitCode:0,timedOut:false,sourcePaths:frozen.sourcePaths,sourceBefore:'subject',sourceAfter:'subject',subjectHash:'subject',environment:{profile:'portable'},verificationRecipe:{status:'passed',cases:999,passed:999,skipped:0}};
+   if(mode==='omit'){content.commandLine='git diff --check';content.stdout='';delete content.verificationRecipe;delete content.environment;}
+   if(mode==='zero')content.stdout='0 passed in 0.01s\n';
+   if(mode==='skip')content.stdout='1 passed, 1 skipped in 0.01s\n';
+   if(mode==='exit')content.exitCode=1;
+   if(mode==='timeout')content.timedOut=true;
+   if(mode==='truncated')content.outputTruncated=true;
+   if(mode==='missing-profile')delete content.environment;
+   if(mode==='unknown-profile')content.environment.profile='unknown';
+   if(mode==='inherited-profile')content.environment.profile='constructor';
+   if(mode==='toString-profile')content.environment.profile='toString';
+   if(mode==='wrong-format')policy.execution.environments!.profiles.portable!.verification[0]!.format='unittest';
+   if(mode==='wrong-count')policy.execution.environments!.profiles.portable!.verification[0]!.expected_tests=3;
+   if(mode==='ambiguous-profile')policy.execution.environments!.profiles.portable!.verification.push({...policy.execution.environments!.profiles.portable!.verification[0]!});
+   if(mode==='failed-metadata')content.verificationRecipe.status='failed';
+   if(mode==='changed-source')content.sourceAfter='changed';
+   const observedAt='2026-01-01T00:00:00.000Z',uri='db://synthetic/declared-pytest';
+   const reference={artifactUri:uri,runId:'run',taskId:'task',stageId:'verification',kind:'command_output' as const,contentHash:acceptanceDigest(content),observedAt,subjectHash:'subject'};
+   frozen.deliverables[0]!.receipts.verification=[reference];
+   const client={query:async(sql:string)=>{
+    if(sql.includes('from workflow_runs where'))return {rows:[{projectId:'project',task:'task',metadata:{acceptanceContract:frozen},policy}]};
+    if(sql.includes('select uri from artifacts'))return {rows:[{uri}]};
+    return {rows:[{runId:'run',taskId:'task',stageId:'verification',projectId:'project',kind:'command_output',content,observedAt}]};
+   }} as unknown as Parameters<typeof storedAcceptanceDecision>[0];
+   return storedAcceptanceDecision(client,'run','verification',{acceptanceContract:frozen});
+  };
+  assert.equal((await run('pass')).reason,null,'Frozen format and raw counts pass despite unrelated claimed metadata counts');
+  for(const mode of ['zero','skip','exit','timeout','truncated','missing-profile','unknown-profile','inherited-profile','toString-profile','wrong-format','wrong-count','ambiguous-profile','failed-metadata','changed-source'])assert.notEqual((await run(mode)).reason,null,mode);
+  assert.match((await run('omit')).reason??'',/omits a required scoped recipe/,'A source-only task cannot replace its required owner check with an unrelated command');
+ }
 });
 
 test("supervision stages share the structured gate while advisory stages remain unmapped", () => {

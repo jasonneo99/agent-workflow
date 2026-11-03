@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
-import { dockerfileFor, ENVIRONMENT_COMMAND, planRunEnvironment, runEnvironmentCommand, runProcess, selectEnvironment,
+import { dockerfileFor, ENVIRONMENT_COMMAND, planRunEnvironment, prepareRunEnvironment, runEnvironmentCommand, runProcess, selectEnvironment,
   type ProcessResult, type ProcessRunner, type EnvironmentPlan } from "./index.js";
 import { environmentProfileSchema } from "./schema.js";
 import { testEvidence } from "./evidence.js";
@@ -140,6 +140,53 @@ test("snapshot blocks secrets, symlink escapes, missing inputs and byte limits",
   } finally { await f.cleanup(); }
 });
 
+test('readiness-only admission uses the real lifecycle without running or accepting candidate tests',async()=>{
+ const f=await fixture();try{
+  const context={runId:'readiness-only',taskId:'task-1'},plan=await planRunEnvironment({...f,context}),mock=dockerMock(plan);
+  const before=await fs.readFile(path.join(f.cwd,'tests/index.test.js'),'utf8');
+  const evidence=await prepareRunEnvironment({...f,context,runner:mock.runner});
+  assert.equal(evidence.status,'ready');assert.equal(evidence.phase,'readiness');assert.equal(evidence.cleanup,'complete');
+  assert.equal(mock.calls.filter(args=>args[3]==='create').length,1);
+  assert.ok(mock.calls.filter(args=>args[3]==='create').every(args=>args.includes('--version')&&!args.includes('--test')));
+  for(const id of evidence.resources.containers)assert.ok(mock.calls.some(args=>args[3]==='rm'&&args.at(-1)===id));
+  const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));
+  assert.equal(receipt.operation,'readiness');assert.equal(receipt.commandLine,undefined);assert.equal(receipt.result.verificationRecipe,undefined);
+  assert.equal(await fs.readFile(path.join(f.cwd,'tests/index.test.js'),'utf8'),before);
+  const actual=await runEnvironmentCommand({...f,context,commandLine:'node --test tests/index.test.js',argv:['node','--test','tests/index.test.js'],runner:mock.runner});
+  assert.equal(actual.verificationRecipe?.status,'passed');assert.notEqual(actual.environment.receiptPath,evidence.receiptPath);
+ }finally{await f.cleanup();}
+});
+test('readiness failure retains diagnostics, cleans owned resources and never runs a candidate test',async()=>{
+ for(const failCleanup of [false,true]){
+  const f=await fixture();try{
+   const context={runId:'failed-readiness'},plan=await planRunEnvironment({...f,context}),mock=dockerMock(plan,{failReady:true,failCleanup});
+   const evidence=await prepareRunEnvironment({...f,context,runner:mock.runner});
+   assert.equal(evidence.status,'blocked');assert.equal(evidence.cleanup,failCleanup?'failed':'complete');
+   assert.equal(mock.calls.filter(args=>args[3]==='create').length,1);
+   const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));
+   assert.equal(receipt.result.verificationRecipe,undefined);assert.notEqual(receipt.result.exitCode,0);
+  }finally{await f.cleanup();}
+ }
+});
+test('declared baseline dependencies block readiness before any runner invocation',async()=>{
+ const f=await fixture();try{
+  f.project.execution.environments!.profiles.test!.dependency_paths.push('missing-lock.json');let calls=0;
+  await assert.rejects(prepareRunEnvironment({...f,context:{runId:'missing-input'},runner:async()=>{calls++;return ok();}}),/ENOENT/);
+  assert.equal(calls,0);
+ }finally{await f.cleanup();}
+});
+test('native readiness observations cannot carry acceptance metadata or expand command authority',async()=>{
+ const f=await fixture();try{
+  f.project.execution.environments!.profiles.test=environmentProfileSchema.parse({kind:'native',platform:`${process.platform}/${process.arch==='x64'?'amd64':process.arch}`,source_paths:['tests'],readiness:[{argv:['node','--version']}]});
+  let calls=0;
+  const evidence=await prepareRunEnvironment({...f,context:{runId:'native-readiness'},nativeRunner:async argv=>{calls++;assert.deepEqual(argv,['node','--version']);return {...ok('v22'),verificationRecipe:{status:'passed',cases:999}} as ProcessResult;}});
+  assert.equal(calls,1);assert.equal(evidence.status,'ready');assert.equal((evidence.readiness[0]!.result as any).verificationRecipe,undefined);
+  const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));assert.equal(receipt.result.verificationRecipe,undefined);
+  f.project.actions.allowed_commands=[];
+  await assert.rejects(prepareRunEnvironment({...f,context:{runId:'revoked-capability'},nativeRunner:async()=>{throw Error('Must not run');}}),/exact project capability/);
+ }finally{await f.cleanup();}
+});
+
 test("fresh containers run dependency readiness before tests, retain evidence and clean only owned IDs", async () => {
   const f = await fixture(); try {
     const context = { runId: "repair-1", taskId: "task-1" }, commandLine = "node --test tests/index.test.js";
@@ -261,6 +308,40 @@ test("skipped, truncated, empty and unknown collections cannot pass verification
     assert.equal(testEvidence(ok("1 passed, 1 skipped in 0.01s\n"), pytest).status, "failed");
     assert.equal(testEvidence(ok("2 passed, 1 deselected in 0.01s\n"), pytest).status, "failed");
   } finally { await f.cleanup(); }
+});
+
+test('pytest warnings and successful subtests preserve primary counts without admitting failures or ambiguity',()=>{
+ const rule={commands:['python3 -m pytest tests -q'],format:'pytest' as const,minimum_tests:37,expected_tests:37};
+ const summary='37 passed, 1 warning, 83 subtests passed in 0.25s\n';
+ assert.deepEqual(testEvidence(ok(summary),rule),{status:'passed',cases:37,passed:37,skipped:0,reason:null});
+ assert.equal(testEvidence(ok('37 passed, 2 warnings in 1.0s\n'),rule).status,'passed');
+ for(const token of ['1 subtests failed','1 subtests skipped','1 subtests xfailed','1 subtests xpassed','1 subtests error','1 subtests deselected','1 unknown']){
+  assert.equal(testEvidence(ok(`37 passed, ${token} in 1.0s\n`),rule).status,'failed',token);
+ }
+ for(const text of [summary+summary,'37 passed, 37 passed in 1.0s\n','37 passed, 1 warning, 2 warnings in 1.0s\n','37 subtests passed in 1.0s\n'])assert.equal(testEvidence(ok(text),rule).status,'failed',text);
+ assert.equal(testEvidence(ok(summary),{...rule,expected_tests:2994}).status,'failed','Subtests cannot fill a primary collection requirement');
+ for(const patch of [{exitCode:1},{timedOut:true},{outputTruncated:true}])assert.equal(testEvidence(ok(summary,patch),rule).status,'failed');
+});
+test('declared native wrapper and absolute interpreter use the selected pytest rule for both evidence paths',async()=>{
+ const f=await fixture();try{
+  await fs.mkdir(path.join(f.cwd,'scripts'));
+  const script=path.join(f.cwd,'scripts/check_behavior.mjs');
+  const commands=['node scripts/check_behavior.mjs',`${JSON.stringify(process.execPath)} scripts/check_behavior.mjs`];
+  f.project.execution.environments!.profiles.test=environmentProfileSchema.parse({kind:'native',platform:`${process.platform}/${process.arch==='x64'?'amd64':process.arch}`,source_paths:['scripts','tests'],readiness:[{argv:['node','--version']}],verification:[{commands,format:'pytest',minimum_tests:2,expected_tests:2}]});
+  f.project.actions.allowed_commands=[ENVIRONMENT_COMMAND,'node --version',...commands];
+  f.project.actions.verification_recipes=[{source_paths:['scripts/check_behavior.mjs','tests/index.test.js'],test_paths:['tests/index.test.js'],commands,output_paths:[]}];
+  let attempt=0;
+  for(const commandLine of commands)for(const mode of ['pass','process-failure','skip','wrong-count','truncated','wrong-format']){
+   const stdout=mode==='skip'?'1 passed, 1 skipped in 0.01s\n':mode==='wrong-count'?'3 passed in 0.01s\n':mode==='truncated'?'x'.repeat(2000)+'\n2 passed in 0.01s\n':'2 passed in 0.01s\n';
+   // The owned wrapper executes assertions before emitting its declared format.
+   await fs.writeFile(script,`import assert from 'node:assert/strict';assert.equal(1+1,2);assert.equal('two'.length,3);process.stdout.write(${JSON.stringify(stdout)});process.exitCode=${mode==='process-failure'?1:0};\n`);
+   f.project.actions.max_output_chars=mode==='truncated'?256:30000;
+   f.project.execution.environments!.profiles.test!.verification[0]!.format=mode==='wrong-format'?'unittest':'pytest';
+   const result=await executeAllowedCommand({...f,commandLine,environmentContext:{runId:'declared-wrapper-'+attempt++,requireEnvironment:true,requireVerification:true}});
+   assert.equal(result.verificationRecipe?.status,mode==='pass'?'passed':'failed',commandLine+' '+mode);
+   if(mode==='pass'){assert.equal(result.verificationRecipe?.cases,2);assert.equal(result.environment?.status,'ready');}
+  }
+ }finally{await f.cleanup();}
 });
 
 test("cleanup failure remains visible and cannot be reported as a successful run", async () => {

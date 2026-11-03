@@ -89,6 +89,23 @@ CLI profile overrides selectors, then the default applies. A project can define
 an exact `run` selector for an individual task. Undeclared profiles are rejected.
 Profiles and selectors are trusted project policy, not free-form model arguments.
 
+`baseline_profile` optionally names the source baseline used during prepared
+source planning and verification-command selection, including before a task has
+identified individual files. It must name a declared profile. It grants no
+command fallback: each baseline check still needs a matching command selector
+or the existing `default_profile`. A project may set a baseline and exact check
+selectors while omitting the default, so unrelated native commands remain
+unmatched. When no baseline is declared, existing default behavior is preserved.
+Only profiles selected for the required checks receive readiness probes;
+declaring another platform profile does not make its toolchain required.
+
+An owner-declared literal verification recipe applies when the task's source
+scope intersects its declared source or test paths. Its complete source and test inputs
+must be bound to the selected environment, and its commands must remain allowed
+and declared behavioral checks there. Unchanged test inputs need no write grant;
+the recipe never expands the task's authorized writes. Covered paths use that
+runner, while uncovered paths retain focused command inference.
+
 ## Reproducibility and isolation
 
 - The recipe includes the normalized profile, Docker context, pinned base image,
@@ -130,6 +147,31 @@ Readiness probes support bounded `attempts` and `interval_ms` fields for startup
 latency. The same frozen total deadline applies to every retry. A missing library,
 failed version check or unavailable service stops the requested task command.
 
+Required source pipelines run readiness before the first model call of each
+stage, using the profiles selected by their literal verification commands.
+The same environment lifecycle, scoped native execution, authority checks,
+deadlines and owned-resource cleanup apply. A readiness-only receipt records
+`operation: readiness`; it executes no candidate command and contains no
+verification result. Candidate checks and independent verification still run
+fresh. Declare baseline files, dependency manifests and neutral test fixtures
+in the existing source, dependency and fixture paths. Readiness probes should
+check every required runtime dependency; the framework does not infer imports
+or install missing host tools. A new authorized file beneath an existing source
+root does not have to exist before an author creates it.
+
+`npm run agentflow` and direct `agentflow` invocations are controller operations,
+not model-requestable commands. Exact environment and checkpoint capability
+tokens remain required by the runtime but are omitted from worker command lists;
+broad command wildcards do not override this boundary. Workers request the
+underlying authorized behavioral check and consume supplied workflow evidence.
+
+An optional stage pattern `requires_source_writes: true` declares an authoring
+prerequisite without granting writes. It requires a write-capable role and a
+nonempty effective write grant before inference. Generated test-authoring stages
+declare it; read-only test review and legitimate no-change tasks do not. Existing
+snapshots without the optional field remain unchanged. Every actual write still
+passes exact task scope, current policy, source binding and ownership checks.
+
 ## Matching native platforms
 
 Use `kind: native` and an exact platform such as `darwin/arm64` for tools that
@@ -150,6 +192,11 @@ Verification contracts support Node test summaries, Python unittest and pytest.
 A process exit of zero does not pass a required test contract. Empty, skipped,
 failed, cancelled, deselected, todo, ambiguous or truncated collection remains
 unverified. An exact `expected_tests` count can additionally pin the collection.
+Owner-declared wrapper and absolute-interpreter commands use the selected
+profile's declared parser. Stored acceptance recomputes the raw result under the
+frozen profile rather than trusting reported passing counts. Pytest warnings
+and successful subtests do not increase the primary test count; nonpassing
+subtests and unknown or ambiguous summaries remain unverified.
 Independent verification uses a fresh attempt/run/task and compares the source
 and frozen recipe; a prior run's receipt never grants execution authority.
 
@@ -157,3 +204,10 @@ Container source tests establish source behavior on the declared platform.
 Installed, deployed, hardware, native GUI and human acceptance remain separate
 requirements. See [repair commit checkpoints](repair-commit-process.md) for
 committing candidates before independent verification.
+
+The source preparation artifact describes its source-phase scope and separately
+lists delivery capabilities it has not qualified. Its pending deliverables are
+copied only from the enrolled acceptance contract; a source-only task acquires
+no deployment requirement. Readiness or source success never promotes an
+installation, launch or visible-UI requirement to accepted, grants delivery
+authority, or replaces the original task's completion gates.

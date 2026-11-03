@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import { assertFileReadAllowed } from "../../local-tools/src/file-reader.js";
+import {assertWorkerCommand} from '../../local-tools/src/controller-commands.js';
 import { ENVIRONMENT_COMMAND, runEnvironmentsSchema, type EnvironmentContext, type EnvironmentProfile } from "./schema.js";
 import { testEvidence, verificationCommandMatches, type TestEvidence } from "./evidence.js";
 
@@ -236,21 +237,33 @@ class EnvironmentProcessError extends Error {
 }
 
 /** The supervisor owns Docker; containers receive no host bind mounts, socket, credentials or inherited host environment. */
-export async function runEnvironmentCommand(input: {
-  cwd: string; project: ProjectConfig; context: EnvironmentContext; commandLine: string; argv: string[];
+interface EnvironmentExecutionInput {
+  cwd: string; project: ProjectConfig; context: EnvironmentContext;
   runner?: ProcessRunner; nativeRunner?: (argv: string[], limits: { timeoutMs: number; maxOutputChars: number }) => Promise<ProcessResult>;
   assertAuthority?: () => Promise<void>;
-}): Promise<EnvironmentResult> {
+}
+/** Runtime admission only. This does not execute a candidate check or produce test evidence. */
+export async function prepareRunEnvironment(input: EnvironmentExecutionInput): Promise<EnvironmentEvidence> {
+  return (await executeEnvironment({...input,operation:'readiness'})).environment;
+}
+export async function runEnvironmentCommand(input: EnvironmentExecutionInput & {commandLine:string;argv:string[]}): Promise<EnvironmentResult> {
+  return executeEnvironment({...input,operation:'command'});
+}
+async function executeEnvironment(input: EnvironmentExecutionInput & ({operation:'readiness'}|{operation:'command';commandLine:string;argv:string[]})): Promise<EnvironmentResult> {
   // Check the real argv again at the public API boundary, including expanded compilation paths.
   const { assertCommandAllowed, expandCompileArguments } = await import("../../local-tools/src/command-executor.js");
-  assertCommandAllowed(input.commandLine, input.project);
-  if (stable(await expandCompileArguments(input.commandLine, input.cwd)) !== stable(input.argv)) throw Error("Environment argv does not match the exact authorized command.");
+  if(input.operation==='command') {
+    assertWorkerCommand(input.commandLine);
+    assertCommandAllowed(input.commandLine, input.project);
+    if (stable(await expandCompileArguments(input.commandLine, input.cwd)) !== stable(input.argv)) throw Error("Environment argv does not match the exact authorized command.");
+  }
   await input.assertAuthority?.();
   const { plan, files, root, config } = await resolvePlan(input);
-  const declarations = plan.spec.verification.filter(item => item.commands.some(pattern=>verificationCommandMatches(input.commandLine,pattern)));
+  const commandLine=input.operation==='command'?input.commandLine:undefined;
+  const declarations = commandLine===undefined?[]:plan.spec.verification.filter(item => item.commands.some(pattern=>verificationCommandMatches(commandLine,pattern)));
   if(declarations.length>1)throw Error('Ambiguous verification contract for this literal command.');
   const declaration = declarations[0];
-  if (input.context.requireVerification && !declaration) throw Error("Independent verification requires a declared test collection contract for this exact command.");
+  if (input.operation==='command' && input.context.requireVerification && !declaration) throw Error("Independent verification requires a declared test collection contract for this exact command.");
   const attemptId = randomUUID(), started = Date.now();
   const evidence: EnvironmentEvidence = { schemaVersion: 1, authority: "execution-evidence-only", runId: input.context.runId,
     taskId: input.context.taskId ?? null, attemptId, profile: plan.profile, status: "blocked", phase: "preparation", reason: null,
@@ -279,7 +292,9 @@ export async function runEnvironmentCommand(input: {
   };
   const probeUntilReady = async (probe: EnvironmentProfile["readiness"][number], observe: () => Promise<ProcessResult>, message: string) => {
     for (let attempt = 0; attempt < probe.attempts; attempt++) {
-      const observation = await observe();
+      const value = await observe();
+      // Readiness observations cannot carry nested command/acceptance metadata.
+      const observation:ProcessResult={exitCode:value.exitCode,signal:value.signal,stdout:value.stdout,stderr:value.stderr,timedOut:value.timedOut,durationMs:value.durationMs,...(value.outputTruncated?{outputTruncated:true}:{})};
       evidence.readiness.push({ argv: probe.argv, result: observation });
       const matchesExpectation = !probe.expect_output || (observation.stdout + observation.stderr).includes(probe.expect_output);
       if (observation.exitCode === 0 && !observation.timedOut && !observation.outputTruncated && matchesExpectation) return;
@@ -334,8 +349,8 @@ export async function runEnvironmentCommand(input: {
       evidence.runtimeHash = environmentDataHash([...new Map(evidence.readiness.filter(item => item.result.exitCode === 0 && !item.result.timedOut && !item.result.outputTruncated)
         .map(item => [stable(item.argv), { argv: item.argv, stdout: item.result.stdout, stderr: item.result.stderr }])).values()]);
       await freezeRuntime(directory, root, plan, input.context, evidence.runtimeHash);
-      evidence.status = "ready"; evidence.phase = "command";
-      result = await inNative(input.argv);
+      evidence.status = "ready";
+      if(input.operation==='command') { evidence.phase='command';result=await inNative(input.argv); }
     } else {
       const cached = await invoke(["image", "inspect", "--format", "{{json .}}", plan.imageTag!]);
       let imageInfo: { Id?: string; Os?: string; Architecture?: string; Config?: { Labels?: Record<string, string> } };
@@ -380,7 +395,11 @@ export async function runEnvironmentCommand(input: {
         await probeUntilReady(probe, () => inContainer(probe.argv, "readiness"), "Environment dependency/readiness check failed");
       }
       evidence.status = "ready";
-      result = await inContainer(input.argv, "command");
+      if(input.operation==='command')result = await inContainer(input.argv, "command");
+    }
+    if(input.operation==='readiness') {
+      evidence.phase='readiness';
+      result={exitCode:0,signal:null,stdout:'',stderr:'',timedOut:false,durationMs:Date.now()-started};
     }
   } catch (error) {
     evidence.status = "blocked";
@@ -412,7 +431,7 @@ export async function runEnvironmentCommand(input: {
   evidence.receiptPath = path.join(receiptDirectory, `${attemptId}.json`);
   const outcome: EnvironmentResult = { ...result, durationMs: Date.now() - started, environment: evidence,
     ...(verificationRecipe ? { verificationRecipe } : {}) };
-  await fs.writeFile(evidence.receiptPath, `${JSON.stringify({ recordedAt: new Date().toISOString(), commandLine: input.commandLine, plan, result: outcome }, null, 2)}\n`, { flag: "wx", mode: 0o400 });
+  await fs.writeFile(evidence.receiptPath, `${JSON.stringify({ recordedAt: new Date().toISOString(), ...(input.operation==='readiness'?{operation:'readiness'}:{commandLine}), plan, result: outcome }, null, 2)}\n`, { flag: "wx", mode: 0o400 });
   return outcome;
 }
 

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { contextInfluence, influenceHash, type ContextInfluence, type ContextInfluenceReference } from "../../project-evidence/src/influence.js";
 import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
+import {controllerCommandBoundary,workerAllowedCommands} from '../../local-tools/src/controller-commands.js';
 
 export interface CompileInput {
   onInfluence?: (influence: ContextInfluence) => void;
@@ -151,8 +152,9 @@ function formatAppliedTuningNotes(notes: Array<{ relativePath: string; content: 
 function formatActionPolicy(project: ProjectConfig): string {
   return [
     "### Commands",
-    "Allowed:",
-    ...project.actions.allowed_commands.map((command) => `- ${command}`),
+    "Allowed worker commands:",
+    ...workerAllowedCommands(project.actions.allowed_commands).map((command) => `- ${command}`),
+    controllerCommandBoundary,
     "Blocked:",
     ...project.actions.blocked_commands.map((command) => `- ${command}`),
     `Timeout: ${project.actions.command_timeout_ms}ms`,

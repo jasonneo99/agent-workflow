@@ -6,6 +6,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import {prepareScopedCommandSandbox} from './scoped-command-sandbox.js';
 import {verificationRecipeEvidence,type VerificationRecipeEvidence} from './verification-recipe-evidence.js';
+import {assertWorkerCommand} from './controller-commands.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 import { runEnvironmentCommand, selectEnvironment, type EnvironmentContext, type EnvironmentEvidence, type EnvironmentResult } from '../../run-environments/src/index.js';
 
 export interface CommandExecutionResult {
@@ -89,6 +91,7 @@ export async function executeAllowedCommand(input: {
   assertEnvironmentAuthority?: () => Promise<void>;
 }): Promise<CommandExecutionResult> {
   const commandLine = normalizeCommand(input.commandLine);
+  assertWorkerCommand(commandLine);
   assertCommandAllowed(commandLine, input.project);
   const argv = await expandCompileArguments(commandLine, input.cwd);
   const managedGit = input.environmentContext?.managedSource === true || input.environmentContext?.requireEnvironment === true;
@@ -113,13 +116,6 @@ export async function executeAllowedCommand(input: {
   if (!argv.length) {
     throw new Error("Command is empty.");
   }
-  if (argv.slice(0, 5).join(" ") === "npm run agentflow -- environments") {
-    throw new Error("The environment capability cannot be requested as a nested agent command; request the underlying authorized test command.");
-  }
-  if (argv.slice(0, 5).join(" ") === "npm run agentflow -- repair-checkpoint") {
-    throw new Error("The repair checkpoint capability is managed by the worker; request the underlying authorized test command.");
-  }
-
   const started = Date.now();
   const timeoutMs = input.project.actions.command_timeout_ms;
   const maxOutputChars = input.project.actions.max_output_chars;
@@ -147,8 +143,14 @@ export async function executeAllowedCommand(input: {
           status: 'blocked', phase: 'resolution', reason, platform: input.project.execution.environments!.profiles[selectedEnvironment]!.platform,
           recipeHash: '', dependencyHash: '', sourceHash: '', imageId: null, runtimeHash: null, readiness: [], receiptPath: null, cleanup: 'not-needed', resources: { containers: [], network: null } } };
     }
-    const retained = verificationRecipeEvidence({ ...observed, commandLine }, input.project.actions.verification_recipes);
-    const verificationRecipe = retained?.status === 'failed' ? retained : observed.verificationRecipe ?? retained;
+    const rules=observed.environment.profile===selectedEnvironment
+      ?input.project.execution.environments!.profiles[observed.environment.profile]?.verification.filter(rule=>rule.commands.some(pattern=>verificationCommandMatches(commandLine,pattern)))??[]:[];
+    const declaration=rules.length===1?{...rules[0]!,commands:[commandLine]}:undefined;
+    const retained = verificationRecipeEvidence({ ...observed, commandLine }, input.project.actions.verification_recipes,declaration);
+    const ownedRecipe=input.project.actions.verification_recipes?.some(recipe=>recipe.commands.includes(commandLine));
+    const verificationRecipe:VerificationRecipeEvidence|undefined = ownedRecipe&&!declaration
+      ?{status:'failed',cases:null,passed:null,skipped:null,reason:'Executed environment evidence has no unique matching declared behavioral rule.'}
+      :retained?.status === 'failed' ? retained : observed.verificationRecipe ?? retained;
     return { ...observed, commandLine, cwd: input.cwd, ...(verificationRecipe ? { verificationRecipe } : {}) };
   }
 

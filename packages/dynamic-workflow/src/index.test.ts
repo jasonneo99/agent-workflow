@@ -54,8 +54,28 @@ test("implementation stages do not invent a separate plan-promotion approval", (
 test("test authoring has source authority and is followed by separate read-only verification",()=>{
  const plan=constructDynamicWorkflow({goal:'Implement a desktop feature with focused regression coverage and deploy it',project,executionProfile:'adaptive'});
  const author=plan.stages.find(stage=>stage.id==='test')!,verifier=plan.stages.find(stage=>stage.id==='verify')!;
- assert.equal(author.agent,'test-engineer');assert.equal(author.pattern.type,'executor');assert.equal(author.pattern.requires_verifier,true);
+ assert.equal(author.agent,'test-engineer');assert.equal(author.pattern.type,'executor');assert.equal(author.pattern.requires_verifier,true);assert.equal(author.pattern.requires_source_writes,true);
  assert.equal(verifier.pattern.type,'verifier');assert.ok(plan.stages.indexOf(author)<plan.stages.indexOf(verifier));
+});
+
+test('explicit test authoring fails admission without write authority while read-only review stays valid',()=>{
+ const readOnly=projectConfigSchema.parse({...project,actions:{...project.actions,allowed_write_paths:[]}});
+ assert.throws(()=>constructDynamicWorkflow({goal:'Implement a small feature with tests',project:readOnly}),/requires source authoring/);
+ const review=constructDynamicWorkflow({goal:'Review the proposed diff',project:readOnly});
+ assert.ok(review.stages.some(stage=>stage.id==='test-review'));
+ assert.ok(review.stages.every(stage=>stage.pattern.requires_source_writes===undefined));
+ const historical=constructDynamicWorkflow({goal:'Review the proposed diff',project}),before=JSON.stringify(historical);
+ assert.equal(validateDynamicWorkflow(historical,project).stages[0]!.pattern.requires_source_writes,undefined);
+ assert.equal(JSON.stringify(historical),before,'Absent optional requirements do not rewrite historical definitions');
+ const broken=constructDynamicWorkflow({goal:'Implement a small feature',project});
+ broken.stages.find(stage=>stage.id==='test')!.pattern.type='verifier';broken.dynamic!.definition_hash=definitionHash(broken);
+ assert.throws(()=>validateDynamicWorkflow(broken,project),/write-capable stage/);
+});
+
+test('generated planning retains delivery obligations without inventing runtime capabilities',()=>{
+ const plan=constructDynamicWorkflow({goal:'Build an application, deploy it and visually verify it',project});
+ assert.match(plan.stages.find(stage=>stage.id==='triage')!.goal,/native\/UI acceptance remain explicit pending or blocked obligations/);
+ assert.equal(plan.stages.find(stage=>stage.id==='release')?.runtime_operation,undefined);
 });
 
 test("static low-risk build workflows fuse ceremony but retain implementation and verification", () => {

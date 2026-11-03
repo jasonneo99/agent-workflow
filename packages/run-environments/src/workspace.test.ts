@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {projectConfigSchema} from '../../agent-registry/src/schemas.js';
 import {executeAllowedCommand} from '../../local-tools/src/command-executor.js';
-import {ENVIRONMENT_COMMAND,planRunEnvironment,runProcess} from './index.js';
-import {prepareRunWorkspace} from './workspace.js';
+import {ENVIRONMENT_COMMAND,planRunEnvironment,runProcess,selectEnvironment,runEnvironmentsSchema} from './index.js';
+import {prepareRunWorkspace,pipelineEnvironmentPlans} from './workspace.js';
 import {createRepairCheckpoint,createCurrentRevisionCheckpoint,REPAIR_COMMIT_COMMAND,verifyRepairCheckpoint} from './repair-checkpoint.js';
 import {planSourceIntegration,publishSourceIntegration} from '../../workflow-engine/src/source-integration.js';
 
@@ -31,6 +31,22 @@ async function fixture(){
  const validate=async(root:string,taskId:string)=>{const result=await executeAllowedCommand({cwd:root,project,commandLine:command,environmentContext:{runId:'fresh-run',taskId,requireVerification:true,requireEnvironment:true,managedSource:true}});assert.equal(result.verificationRecipe?.status,'passed',result.stderr);return path.relative(root,result.environment!.receiptPath!);};
  return {parent,canonicalRoot,git,project,plan,prepare,validate,cleanup:()=>fs.rm(parent,{recursive:true,force:true})};
 }
+test('an explicit source baseline is snapshotted without granting command fallback or changing legacy defaults',async()=>{
+ const f=await fixture();try{
+  const legacy=runEnvironmentsSchema.parse(f.project.execution.environments);
+  assert.equal(Object.hasOwn(legacy,'baseline_profile'),false);assert.equal(selectEnvironment(f.project,{runId:'legacy'},'unmatched'),legacy.default_profile);
+  assert.equal(runEnvironmentsSchema.safeParse({...legacy,baseline_profile:'missing'}).success,false);
+  const environments=f.project.execution.environments!;delete environments.default_profile;environments.baseline_profile='test';
+  const command=environments.profiles.test!.verification[0]!.commands[0]!;
+  environments.selectors=[{command,profile:'test'}];f.project.actions.allowed_commands=[ENVIRONMENT_COMMAND,'node *'];
+  const plans=await pipelineEnvironmentPlans(f.canonicalRoot,f.project,'baseline-plan','feature','architecture');
+  assert.deepEqual(plans.map(plan=>plan.profile),['test']);assert.ok(plans[0]!.sourceFiles.some(file=>file.path==='src/value.js'));
+  assert.equal(selectEnvironment(f.project,{runId:'baseline-plan'},command),'test');
+  const native='xcodebuild -project Synthetic.xcodeproj';f.project.actions.allowed_commands.push(native);
+  assert.equal(selectEnvironment(f.project,{runId:'baseline-plan'},native),null);
+  await assert.rejects(executeAllowedCommand({cwd:f.canonicalRoot,project:f.project,commandLine:native,environmentContext:{runId:'baseline-plan',requireEnvironment:true}}),/declared prepared environment/);
+ }finally{await f.cleanup();}
+});
 test('preparation snapshots dirty declared source without consuming canonical staging or committing private context; reuse preserves writes',async()=>{
  const f=await fixture();try{
   const head=await f.git(f.canonicalRoot,'rev-parse','HEAD'),staged=await f.git(f.canonicalRoot,'diff','--cached');

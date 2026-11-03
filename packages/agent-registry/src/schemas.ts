@@ -107,8 +107,12 @@ export const workflowSchema = z.object({
       type: z.enum(["single-shot", "planner", "executor", "react", "reflexive", "verifier", "finalizer"]).default("executor"),
       max_iterations: z.number().int().positive().max(25).optional(),
       requires_verifier: z.boolean().default(false),
+      // Admission requirement only: it never grants a write or changes old snapshots.
+      requires_source_writes: z.boolean().optional(),
       promotion_gate: z.enum(["none", "approval", "evaluation", "policy", "release"]).default("none"),
       stop_conditions: z.array(z.string()).default([])
+    }).superRefine((pattern,context)=>{
+      if(pattern.requires_source_writes && !['executor','react','reflexive'].includes(pattern.type))context.addIssue({code:'custom',message:'Source authoring requires a write-capable stage, separate from read-only verification.'});
     }).default({
       type: "executor",
       requires_verifier: false,

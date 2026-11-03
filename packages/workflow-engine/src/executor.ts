@@ -20,8 +20,9 @@ import { randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
+import {assertWorkerCommand} from '../../local-tools/src/controller-commands.js';
 import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
-import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,type PreparedTaskExecution} from './run-preparation.js';
+import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,assertStageWriteAdmission,type PreparedTaskExecution} from './run-preparation.js';
 import {integratePreparedSource} from './source-integration.js';
 import { commandDelta, commandFailureDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
@@ -212,12 +213,18 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const project = task.executionPipeline?.required&&!task.executionPipeline.sourceChanges
         ? task.executionPipeline.isolation==='project-artifacts'?artifactExecutionPolicy(effectiveProject,task.executionPipeline,currentProject):{...effectiveProject,actions:{...effectiveProject.actions,allowed_write_paths:[]}}
         : repairVerifierPolicy(effectiveProject,stagePattern.type==='verifier');
+      try { assertStageWriteAdmission(task,project); }
+      catch(error) {
+        const reason=error instanceof Error?error.message:String(error);
+        await blockWorkflowTask({taskId:task.taskId,runId:task.runId,agentId:task.agentId,workerId:task.workerId!,fencingToken:task.fencingToken,summary:reason,reason,artifact:{phase:'stage-admission',outcome:'blocked',blockedReason:reason,stageExecutionStarted:false}});
+        stageTelemetry.end('blocked',reason);result.failed+=1;continue;
+      }
       if(task.executionPipeline?.required){
         try{
           const assertPreparation=await createRenewingStageAuthority({projectId:task.projectRootUri,runId:task.runId,stageId:task.stageId,workflowId:task.workflowId,agentId:task.agentId,providerId:'runtime-preparation',project,evidence:task.compiledBrief||task.stageGoal,leaseSeconds,assertLeaseOwned});
           preparation=await prepareTaskExecution(task,projectResolution.localRootUri,project,()=>assertPreparation(true));
           localProjectRootUri=preparation.root;
-          await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'run_execution_prepared',target:localProjectRootUri,summary:'Prepared the required run context and isolated source workspace; no legacy host fallback or acceptance is implied.',artifactKind:'run_preparation',artifactContent:{executionPipeline:task.executionPipeline,workspace:preparation.workspace??null}});
+          await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'run_execution_prepared',target:localProjectRootUri,summary:'Prepared the required run context and isolated source workspace; no legacy host fallback or acceptance is implied.',artifactKind:'run_preparation',artifactContent:{executionPipeline:task.executionPipeline,workspace:preparation.workspace??null,readiness:preparation.readiness??[],admission:preparation.admission??null}});
         }catch(error){
           const reason=error instanceof Error?error.message:String(error);
           await blockWorkflowTask({taskId:task.taskId,runId:task.runId,agentId:task.agentId,workerId:task.workerId!,fencingToken:task.fencingToken,summary:reason,reason,artifact:{phase:'runtime-preparation',outcome:'blocked',blockedReason:reason,executionPipeline:task.executionPipeline}});
@@ -687,7 +694,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files : undefined;
         const candidateProfile=([...(task.priorStageArtifacts??[])].reverse().find(stage=>stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint|undefined)?.environmentProfile;
         const candidateCommands=candidateProfile?project.execution.environments?.profiles[candidateProfile]?.verification.flatMap(rule=>rule.commands).filter(command=>!command.includes('*'))??[]:[];
-        const scopedCommands=preparation&&repairCommitSelected?await literalScopeVerificationCommands(localProjectRootUri,project,[...(task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()]):[];
+        const scopedCommands=preparation&&repairCommitSelected?await literalScopeVerificationCommands(localProjectRootUri,project,[...(task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()],{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId}):[];
         const declaredPipelineCommands=scopedCommands.length?scopedCommands:candidateCommands.length?candidateCommands:preparation?.commands??[];
         const observedCommands=new Set([...(output.requestedCommands??[]),...actionResults.flatMap(action=>typeof (action as {commandLine?:unknown}).commandLine==='string'?[(action as {commandLine:string}).commandLine]:[])]);
         const scheduledVerifierCommands = preparation&&((repairCommitSelected)||stagePattern.type==='verifier')
@@ -712,6 +719,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (deferredCommands.length) output = { ...output, requestedCommands: [] };
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
+          try { assertWorkerCommand(commandLine); }
+          catch(error) {
+            const reason=error instanceof Error?error.message:String(error);
+            const artifactUri=await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'local_command_rejected',target:commandLine,summary:reason,artifactKind:'action_rejection',artifactContent:{actionType:'local_command',target:commandLine,error:reason,requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
+            actionResults.push({type:'local_command_rejected',commandLine,artifactUri,error:reason});
+            continue;
+          }
           const legacyBinding=!stageInput.acceptanceContract&&task.agentId==='implementation-agent'
             ?await legacyNoChangeSourceBinding(noChangeInput):null;
           const sourcePaths = stageInput.acceptanceContract?.sourcePaths??legacyBinding?.sourcePaths;

@@ -25,6 +25,17 @@ test("all recent command packets retain exact acceptance references across a com
 
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
 
+test('workers see executable commands separately from controller enrollment capabilities and pending delivery',()=>{
+ const configured=projectConfigSchema.parse({...project,actions:{allowed_commands:['npm *','npm run test','npm run agentflow -- environments *','npm run agentflow -- repair-checkpoint *']}});
+ const prompt=buildStagePrompt({runId:'run',taskId:'task',projectConfig:configured,workflowId:'feature',workflowTask:'Build and deploy an application',stageId:'implement',agentId:'implementation-agent',agentName:'Implementer',agentPrompt:'Implement',stageGoal:'Implement source',compiledBrief:'',priorReceipts:[],executionPipeline:{required:true,sourceChanges:true}});
+ assert.match(prompt,/Allowed worker commands: npm \* \| npm run test/);
+ assert.ok(!prompt.includes('npm run agentflow -- environments *'));
+ assert.ok(!prompt.includes('npm run agentflow -- repair-checkpoint *'));
+ assert.match(prompt,/Controller commands are runtime-owned and excluded even by broad command wildcards/);
+ assert.match(prompt,/native interaction, screenshots and UI acceptance as explicit pending downstream obligations/);
+ assert.match(prompt,/planning them does not grant execution authority/);
+});
+
 test('prepared candidate verification plans survive large prior artifacts without borrowing another environment catalog',()=>{
  const focused='node --test tests/widget.test.js',broad='python3 -m unittest discover -s tests -p test_*.py -v';
  const configured=projectConfigSchema.parse({project:{name:'Synthetic desktop'},execution:{environments:{default_profile:'python-catalog',profiles:{

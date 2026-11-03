@@ -27,8 +27,8 @@ export async function pipelineEnvironmentPlans(cwd:string,project:ProjectConfig,
       if(!/No environment profile matches/.test(String(error)))throw error;
     }
   }
-  if(environments.default_profile&&!profiles.has(environments.default_profile)){
-    const plan=await planRunEnvironment({cwd,project,context:{runId,workflowId,stageId,profile:environments.default_profile}});profiles.set(plan.profile,plan);
+  for(const profile of [environments.baseline_profile,environments.default_profile])if(profile&&!profiles.has(profile)){
+    const plan=await planRunEnvironment({cwd,project,context:{runId,workflowId,stageId,profile}});profiles.set(plan.profile,plan);
   }
   if(!profiles.size)throw Error('Prepared source execution has no matching declared behavioral test profile.');
   return [...profiles.values()];

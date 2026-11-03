@@ -42,7 +42,8 @@ export function preparedWorkflow(workflow: WorkflowDefinition, required: boolean
   if (stages.length === 1) {
     const original = stages[0]!;
     stages = repair.stages.filter(stage=>!stage.runtime_operation).map(stage => ({ ...stage, depends_on: undefined }));
-    stages[0] = { ...stages[0]!, agent: original.agent, goal: `${original.goal}\n${stages[0]!.goal}` };
+    stages[0] = { ...stages[0]!, agent: original.agent, goal: `${original.goal}\n${stages[0]!.goal}`,
+      pattern:{...stages[0]!.pattern,...(original.pattern.requires_source_writes===undefined?{}:{requires_source_writes:original.pattern.requires_source_writes})} };
   }
   // Each source phase ends at a verifier. Add a final verifier for a workflow
   // whose documentation/packaging stages follow its earlier source review.

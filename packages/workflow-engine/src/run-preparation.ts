@@ -3,21 +3,39 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ProjectConfig} from '../../agent-registry/src/schemas.js';
 import {assertFilePathAllowed} from '../../local-tools/src/file-writer.js';
-import {assertCommandAllowed} from '../../local-tools/src/command-executor.js';
-import {materializeVerificationRecipes} from '../../storage/src/partner-recovery-admission.js';
+import {assertCommandAllowed,executeAllowedCommand} from '../../local-tools/src/command-executor.js';
+import {assertWorkerCommand} from '../../local-tools/src/controller-commands.js';
 import {assertRepairCommitEnabled} from '../../run-environments/src/repair-checkpoint.js';
 import {pipelineEnvironmentPlans,prepareRunWorkspace,type RunWorkspace} from '../../run-environments/src/workspace.js';
 import {acquireWorkIntent,renewWorkIntent,releaseWorkIntent,withClient,type ClaimedWorkflowTask} from '../../storage/src/postgres.js';
 import {validProjectArtifactPath,type RunPipelineContract} from '../../run-environments/src/pipeline.js';
-import type {EnvironmentPlan} from '../../run-environments/src/index.js';
+import {prepareRunEnvironment,selectEnvironment,type EnvironmentPlan,type EnvironmentEvidence,type EnvironmentContext} from '../../run-environments/src/index.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
+/** Explicit authoring requirements are checked against effective policy, never inferred from prose. */
+export function assertStageWriteAdmission(task:Pick<ClaimedWorkflowTask,'stagePattern'|'executionWritePaths'>,project:ProjectConfig):void {
+ const pattern=task.stagePattern as Record<string,unknown>|null;
+ if(!pattern||pattern.requires_source_writes!==true)return;
+ if(!['executor','react','reflexive'].includes(String(pattern.type)))throw Error('Source authoring requires a write-capable stage, separate from read-only verification.');
+ const grants=task.executionWritePaths;
+ const paths=Array.isArray(grants)?grants:project.actions.allowed_write_paths;
+ if(!paths.some(relative=>{try{assertFilePathAllowed(relative,project);return true;}catch{return false;}}))throw Error('This stage requires source authoring but has no effective authorized write path.');
+}
 export interface PreparedTaskExecution {
  root:string;workspace?:RunWorkspace;commands:string[];
+ readiness?:EnvironmentEvidence[];
+ admission?:ReturnType<typeof sourcePhaseAdmission>;
  beforeWrite(relative:string,verifiedPostimageHash?:string):Promise<void>;
  assertAuthority():Promise<void>;
  release():Promise<void>;
 }
+/** Describes what this phase establishes; it never replaces enrolled requirements. */
+export function sourcePhaseAdmission(contract?:ClaimedWorkflowTask['acceptanceContract']){return {
+ scope:'source-phase' as const,attestsProductDelivery:false,grantsDeliveryAuthority:false,
+ unqualifiedCapabilities:['installation','deployment','launch','native-interaction','visual-ui'],
+ pendingDeliverables:contract?.deliverables.filter(item=>item.status==='pending').map(item=>({id:item.id,description:item.description,requiredGates:[...item.requiredGates],status:item.status}))??[]
+};}
 /** Artifact declarations narrow the current and frozen policies; they never grant source or command authority. */
 export function artifactExecutionPolicy(project:ProjectConfig,contract:RunPipelineContract,current=project):ProjectConfig {
  if(contract.sourceChanges||contract.isolation!=='project-artifacts')throw Error('Expected a project-artifact contract');
@@ -36,11 +54,11 @@ export async function assertPhysicalArtifactPath(root:string,relative:string):Pr
  }
 }
 export function defaultProfileVerificationCommands(project:ProjectConfig,plans:readonly EnvironmentPlan[]):string[]{
- const name=project.execution.environments?.default_profile;
+ const name=project.execution.environments?.baseline_profile??project.execution.environments?.default_profile;
  const selected=name?plans.find(plan=>plan.profile===name):plans.length===1?plans[0]:undefined;
  return [...new Set(selected?.spec.verification.flatMap(rule=>rule.commands)??[])].filter(command=>{
   if(command.includes('*'))return false;
-  try{assertCommandAllowed(command,project);return true;}catch{return false;}
+  try{assertWorkerCommand(command);assertCommandAllowed(command,project);return true;}catch{return false;}
  });
 }
 async function prepareProjectArtifacts(task:ClaimedWorkflowTask,root:string,project:ProjectConfig,assertLease:()=>Promise<void>):Promise<PreparedTaskExecution>{
@@ -60,14 +78,32 @@ async function prepareProjectArtifacts(task:ClaimedWorkflowTask,root:string,proj
   await assertPhysicalArtifactPath(root,relative);
  }};
 }
-export async function literalScopeVerificationCommands(root:string,project:ProjectConfig,paths:readonly string[]):Promise<string[]>{
- const commands=materializeVerificationRecipes(project,paths);
+export async function literalScopeVerificationCommands(root:string,project:ProjectConfig,paths:readonly string[],context:EnvironmentContext={runId:'scope-verification'}):Promise<string[]>{
+ const exact=(relative:string)=>!!relative&&!path.isAbsolute(relative)&&!/^\w:/u.test(relative)&&!/[\\*?\[\]{}\x00-\x1f]/u.test(relative)&&relative.split('/').every(part=>part&&part!=='.'&&part!=='..');
+ // Owner-declared runtime recipes support any declared behavioral parser. The
+ // Partner's narrower automatic-recovery proposal rules remain separate.
+ const recipes=(project.actions.verification_recipes??[]).filter(recipe=>
+  recipe.source_paths.length>0&&recipe.source_paths.every(exact)&&[...recipe.source_paths,...recipe.test_paths].some(relative=>paths.includes(relative))
+  &&recipe.test_paths.length>0&&recipe.test_paths.every(exact)
+  &&recipe.output_paths.length===0&&recipe.commands.length>0&&recipe.commands.every(command=>{
+   try{
+    if(command.includes('*'))return false;
+    assertWorkerCommand(command);assertCommandAllowed(command,project);
+    const profile=selectEnvironment(project,context,command),spec=profile?project.execution.environments?.profiles[profile]:undefined;
+    if(!spec?.verification.some(rule=>rule.commands.some(pattern=>verificationCommandMatches(command,pattern))))return false;
+    const inputs=[...spec.source_paths,...spec.dependency_paths,...spec.fixture_paths??[]];
+    return [...recipe.source_paths,...recipe.test_paths].every(relative=>!spec.source_exclude_paths?.some(excluded=>relative===excluded||relative.startsWith(excluded+'/'))
+      &&inputs.some(input=>relative===input||relative.startsWith(input+'/')));
+   }catch{return false;}
+  }));
+ const commands=recipes.flatMap(recipe=>recipe.commands),covered=new Set(recipes.flatMap(recipe=>[...recipe.source_paths,...recipe.test_paths]));
  for(const relative of paths){
+  if(covered.has(relative))continue;
   const test=/^tests\/test_[A-Za-z0-9_]+\.py$/u.test(relative)?relative:relative.endsWith('.py')?`tests/test_${path.basename(relative)}`:null;
   if(test&&await fs.lstat(path.join(root,test)).then(stat=>stat.isFile(),()=>false))commands.push(`python3 -m unittest discover -s tests -p ${path.basename(test)} -v`);
   if(/^[A-Za-z0-9_./-]+\.(?:test|spec)\.[cm]?[jt]s$/u.test(relative))commands.push(`node --import tsx --test ${relative}`);
  }
- return [...new Set(commands)].filter(command=>{try{assertCommandAllowed(command,project);return true;}catch{return false;}});
+ return [...new Set(commands)].filter(command=>{try{assertWorkerCommand(command);assertCommandAllowed(command,project);return true;}catch{return false;}});
 }
 /** Runtime preparation owns an isolated namespace. It never borrows an old
  * run's source permissions or treats a copied checkout as historical enrollment. */
@@ -115,7 +151,24 @@ export async function prepareTaskExecution(task:ClaimedWorkflowTask,canonicalRoo
     writeIntent={...acquired,fileScopes:scopes};
    }
   };
-  const commands=await literalScopeVerificationCommands(workspace.root,project,task.executionPipeline?.sourcePaths??[]);
-  return {root:workspace.root,workspace,commands:commands.length?commands:defaultProfileVerificationCommands(project,plans),beforeWrite,assertAuthority,release};
+  const context={runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId};
+  const scopedCommands=await literalScopeVerificationCommands(workspace.root,project,task.executionPipeline?.sourcePaths??[],context);
+  const commands=scopedCommands.length?scopedCommands:defaultProfileVerificationCommands(project,plans);
+  if(!commands.length)throw Error('Prepared source execution needs a literal declared behavioral verification command before model execution.');
+  const profiles=[...new Set(commands.map(command=>selectEnvironment(project,context,command)))];
+  const readiness:EnvironmentEvidence[]=[];
+  for(const profile of profiles){
+   if(!profile)throw Error('A required behavioral check has no declared environment profile.');
+   const evidence=await prepareRunEnvironment({cwd:workspace.root,project,context:{...context,profile},assertAuthority,nativeRunner:async(argv,limits)=>{
+    const commandLine=argv.map(argument=>{
+     if(/["'\\\r\n]/u.test(argument))throw Error('Native readiness requires a simple allowlisted command; use a project script for complex probes.');
+     return /\s/u.test(argument)?`"${argument}"`:argument;
+    }).join(' ');
+    return executeAllowedCommand({cwd:workspace.root,commandLine,project:{...project,actions:{...project.actions,command_timeout_ms:limits.timeoutMs,max_output_chars:limits.maxOutputChars}}});
+   }});
+   readiness.push(evidence);
+   if(evidence.status!=='ready'||evidence.cleanup==='failed')throw Error(`Required environment readiness blocked (${profile}): ${evidence.reason??evidence.phase}; receipt ${evidence.receiptPath??'unavailable'}`);
+  }
+  return {root:workspace.root,workspace,commands,readiness,admission:sourcePhaseAdmission(task.acceptanceContract),beforeWrite,assertAuthority,release};
  }catch(error){await release();throw error;}
 }

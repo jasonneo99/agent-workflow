@@ -50,6 +50,15 @@ test('prepared source verification retains original requirements and identifies 
  assert.deepEqual(verifier.acceptance_criteria,['The full source suite passes']);
  assert.deepEqual(preparedWorkflow(prepared,true,repair),prepared,'Normalization cannot duplicate or change a frozen phase notice');
 });
+test('single-stage source normalization preserves explicit authoring admission without inventing it',async()=>{
+ const repair=(await loadWorkflows(root)).find(workflow=>workflow.id==='repair-blocked-item')!;
+ for(const requires_source_writes of [undefined,true,false]){
+  const original=workflowSchema.parse({...repair,id:'single-author',stages:[{...repair.stages[0]!,pattern:{...repair.stages[0]!.pattern,...(requires_source_writes===undefined?{}:{requires_source_writes})}}]}),before=JSON.stringify(original);
+  const prepared=preparedWorkflow(original,true,repair);
+  assert.equal(prepared.stages[0]!.pattern.requires_source_writes,requires_source_writes);
+  assert.equal(JSON.stringify(original),before);
+ }
+});
 test('context and roadmap maintenance retain their original stages and exact artifact-only contract',async()=>{
  const workflows=await loadWorkflows(root),repair=workflows.find(w=>w.id==='repair-blocked-item')!;
  const project=projectConfigSchema.parse({project:{name:'Portable fixture',roadmap_path:'docs/ROADMAP.md'}});

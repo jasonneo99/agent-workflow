@@ -260,7 +260,7 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
     return {
       id,
       agent: template.agent,
-      goal: template.goal,
+      goal: template.pattern==='planner'?`${template.goal}\nMap requested delivery obligations to declared capabilities, approvals and acceptance evidence. Unsupported installation, deployment and native/UI acceptance remain explicit pending or blocked obligations; source completion and intent expansion grant no additional authority.`:template.goal,
       subagents: [],
       depends_on: parallelGroup >= 0 ? parallelDependencies(templateIds, index, changes.parallel![parallelGroup]) : previous,
       ...(parallelGroup >= 0 ? { parallel_group: `parallel-${parallelGroup + 1}` } : {}),
@@ -272,6 +272,7 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
       pattern: {
         type: template.pattern,
         requires_verifier: template.pattern === "executor",
+        ...(template.id === 'test' ? {requires_source_writes:true} : {}),
         promotion_gate: template.approval || changes.approvalStages?.includes(id) ? "approval" as const : template.pattern === "verifier" ? "evaluation" as const : template.pattern === "executor" ? "policy" as const : "none" as const,
         stop_conditions: []
       },
@@ -368,6 +369,7 @@ export function validateDynamicWorkflow(value: unknown, project: ProjectConfig):
   if (ids.size !== workflow.stages.length) throw new Error("Dynamic workflow stage ids must be unique.");
   for (const item of workflow.stages) {
     if ((item.depends_on ?? []).some((dependency) => !ids.has(dependency) || dependency === item.id)) throw new Error(`Stage '${item.id}' has an invalid dependency.`);
+    if(item.pattern.requires_source_writes && !project.actions.allowed_write_paths.length)throw Error(`Stage '${item.id}' requires source authoring but the project has no write authority.`);
   }
   assertAcyclic(workflow);
   if (requestedMutationVerb(workflow.dynamic.goal) && !workflow.stages.some((item) => item.pattern.type === "executor" && item.agent !== "test-engineer")) {
