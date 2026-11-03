@@ -1103,6 +1103,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
           await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
           actionResults.push({
+            type: "local_command",
             commandLine,
             artifactUri,
             exitCode: commandResult.exitCode,

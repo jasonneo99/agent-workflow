@@ -58,6 +58,8 @@ Reused command results retain the original declared collection, environment
 binding and truncation facts. Duplicate suppression must not discard passing
 verification evidence or convert failed, missing or truncated evidence into a
 pass. The original command receipt and source-sensitive identity stay authoritative.
+Fresh command results also identify their action type explicitly, so unchanged-
+revision validation can recognize executed checks and validate their receipts.
 
 Saved command output alone does not authorize recovery. Reuse requires a completed
 durable side-effect receipt matching the exact command, artifact and outcome,
