@@ -27,6 +27,27 @@ are unsupported completion, pre-edit verification, unconsumed tool results,
 acceptance scope drift, interrupted execution and conflicting ownership.
 Their present frequency and live causality require current reproduction.
 
+## Qualified source repairs
+
+The four inherited size failures are cleared through module extraction without
+raising ceilings. The aggregate check after extraction passed 1,986 tests with
+five unchanged skips. Subsequent behavior changes require a new combined check.
+
+Reproduced ownership defects now have regression controls: an old worker cannot
+release a newer claim, reclaiming with the same worker advances the task's own
+generation independently of the run epoch, and expiry recovery preserves a live
+sibling's lease. Completion and approval waits use the locked run epoch while
+task receipts retain the task generation. All claiming workers must adopt the
+new source together; mixed old and new claim writers remain unsupported.
+
+Codex children receive a minimal environment. Restricted executions use fresh
+sessions, a neutral directory, a qualified CLI version and controller-owned
+actions. Native command execution and delegation are disabled. Cancellation
+escalates an unresponsive owned child after a bounded grace period and cannot
+turn a forced stop into success. This establishes neither general descendant
+cleanup nor qualification on every operating system. Runtime adoption and live
+workflow delivery remain separate milestones.
+
 ## Repair order
 
 1. Extract cohesive modules to clear the inherited source-size failures. Preserve

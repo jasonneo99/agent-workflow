@@ -80,6 +80,7 @@ test("actual Codex CLI processes have bounded cancellation without treating SIGT
 import fs from 'node:fs';
 import {spawn} from 'node:child_process';
 const mode=${JSON.stringify(scenario)},args=process.argv.slice(2);
+if(args[0]==='--version'){console.log('codex-cli 0.160.0');process.exit(0);}
 const finish=()=>{fs.writeFileSync(args[args.indexOf('--output-last-message')+1],'{"summary":"synthetic complete"}');console.log('{"type":"turn.completed"}');process.exit(0);};
 process.on('SIGTERM',()=>{fs.appendFileSync(${JSON.stringify(signals)},'SIGTERM\\n');if(mode==='term-exits-zero')finish();});
 fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));

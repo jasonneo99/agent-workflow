@@ -11,10 +11,14 @@ baseline do not establish live task delivery.
   a clean local source baseline without publishing or restarting services.
 - [x] Retain the exact candidate/environment/check plan outside truncated
   provider history and refresh the bundled engine with unchanged dependencies.
-- [ ] Clear the four inherited file-size regressions through behavior-preserving
+- [x] Clear the four inherited file-size regressions through behavior-preserving
   module extractions; retain every existing size ceiling.
-- [ ] Reproduce and fix stale worker release without disturbing a newer owner
-  or a parallel stage; qualify command-result continuation and interruption.
+- [x] Reproduce and fix stale worker release, same-worker claim reuse, and
+  expiry recovery without disturbing a newer owner or a parallel stage.
+- [x] Bound Codex CLI cancellation and preserve forced-stop failures; qualify
+  restricted native tools and fresh sessions separately from workflow delivery.
+- [ ] Qualify durable command-result continuation and duplicate repair admission
+  through the complete pipeline.
 - [ ] Establish loaded runtime identity and verify the selected coding path.
 - [ ] Complete one bounded Codex task, then the fixed five-case development
   suite and ten additional bounded coding tasks without outside machinery repair
@@ -122,7 +126,8 @@ Operator contract: use the exact action **Archive from active views** only after
 
 - [x] Continuously replenish worker slots while long provider calls are active.
 - [x] Compile stage-specific context deltas and bound prior-stage evidence.
-- [x] Reuse read-only Codex sessions across stages and worker restarts on one host.
+- [x] Previously supported read-only Codex session reuse. V1 stabilization retires
+  reuse in favor of fresh ephemeral calls and controller-owned source reads.
 - [x] Fuse low-risk static build ceremony while retaining implementation and verification.
 - [x] Downshift bounded routine stages to fast models unless task risk requires the authored tier.
 
