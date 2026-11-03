@@ -99,11 +99,15 @@ test("R2 actual worker orders governed writes and refreshes failed command evide
       const row = receipts.get(input.idempotencyKey);
       return row?.kind === input.artifactKind ? row : null;
     },
+    getSideEffectReceipt: async (input: any) => {
+      assert.equal(input.projectId, task.runId);
+      return claims.get(input.idempotencyKey) ?? null;
+    },
     claimSideEffect: async (input: any) => {
       const existing = claims.get(input.idempotencyKey);
       if (existing) return { status: existing.status, receipt: existing.receipt };
       const claimToken = `synthetic-claim-${claims.size}`;
-      claims.set(input.idempotencyKey, { status: "claimed", claimToken });
+      claims.set(input.idempotencyKey, { ...input, status: "claimed", claimToken });
       return { status: "claimed", claimToken };
     },
     finalizeSideEffect: async (input: any) => {

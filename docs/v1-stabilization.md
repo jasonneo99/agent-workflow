@@ -59,6 +59,13 @@ binding and truncation facts. Duplicate suppression must not discard passing
 verification evidence or convert failed, missing or truncated evidence into a
 pass. The original command receipt and source-sensitive identity stay authoritative.
 
+Saved command output alone does not authorize recovery. Reuse requires a completed
+durable side-effect receipt matching the exact command, artifact and outcome,
+with the original run, task and stage ownership intact. Pending, uncertain,
+missing or mismatched receipts hold the task without repeating the command.
+Crash-window controls distinguish output saved before finalization from a
+finalized observation recovered before its stage checkpoint.
+
 ## Repair order
 
 1. Extract cohesive modules to clear the inherited source-size failures. Preserve

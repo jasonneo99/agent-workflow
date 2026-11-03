@@ -50,7 +50,7 @@ export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./r
 export type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 export { seedRegistry, workflowDefinitionHash } from "./registry.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
-export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
+export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, getSideEffectReceipt, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
 export { appendProvenanceClaim, assertStageAuthority, issueStageAuthorityGrant, listCurrentBreakers, persistGuardedTransaction, queuePromotionCandidate, recordCanaryOutcome, revokeProvenanceSource, transitionPromotionCandidate, tripBreaker } from "./guarded-autonomy.js";
 export { listWorkflowReuseEvidence } from "./reuse.js"; export { transitionWorkflowRun, type WorkflowRunTransitionInput } from "./run-transitions.js"; export { supersedeWorkflowRun } from "./run-supersession.js";
 export {

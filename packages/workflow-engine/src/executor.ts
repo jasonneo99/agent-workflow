@@ -50,6 +50,7 @@ import {
   checkpointWorkflowTaskContinuation,
   holdWorkflowTaskForApprovals,
   getArtifactByUri,
+  getSideEffectReceipt,
   claimSideEffect,
   claimNextWorkflowTask,
   completeWorkflowTask,
@@ -736,6 +737,27 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             idempotencyKey: commandIdempotencyKey
           });
           if (previousCommand) {
+            const effect = await getSideEffectReceipt({ projectId: task.runId, idempotencyKey: commandIdempotencyKey });
+            const finalized = previousCommand.runId === task.runId && previousCommand.taskId === task.taskId
+              && previousCommand.content.requestedByTaskId === task.taskId && previousCommand.content.requestedByStageId === task.stageId
+              && typeof previousCommand.content.commandLine === "string"
+              && normalizeActionText(previousCommand.content.commandLine) === normalizeActionText(commandLine)
+              && typeof previousCommand.content.timedOut === "boolean"
+              && (previousCommand.content.exitCode === null || Number.isInteger(previousCommand.content.exitCode))
+              && effect?.status === "completed" && effect.operation === "local_command"
+              && normalizeActionText(effect.target) === normalizeActionText(commandLine)
+              && effect.receipt?.artifactUri === previousCommand.uri
+              && effect.receipt.exitCode === previousCommand.content.exitCode && effect.receipt.timedOut === previousCommand.content.timedOut;
+            if (!finalized) {
+              const artifactUri = await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId,
+                actionType: "local_command_side_effect_unverified", target: commandLine,
+                summary: "Existing command evidence lacks a matching finalized effect receipt; no command was repeated.",
+                artifactKind: "action_reuse_blocked", artifactContent: { originalArtifactUri: previousCommand.uri,
+                  effectStatus: effect?.status ?? "missing", requestedByTaskId: task.taskId, requestedByStageId: task.stageId } });
+              actionResults.push({ type: "local_command_side_effect_unverified", commandLine, artifactUri,
+                originalArtifactUri: previousCommand.uri, effectStatus: effect?.status ?? "missing" });
+              continue;
+            }
             // Duplicate suppression must not discard the complete retained
             // observation. Repair/debug stages need the same bounded,
             // ownership-checked evidence packet as the original execution.

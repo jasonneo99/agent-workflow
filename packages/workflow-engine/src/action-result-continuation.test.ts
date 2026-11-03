@@ -43,6 +43,7 @@ test("real worker checkpoints and resumes final command results without executin
     t.mock.module(url, { namedExports: { ...defaults, ...overrides } });
   };
   const mode = process.env.AGENTFLOW_CONTINUATION_TEST_MODE;
+  const receiptCase = mode?.startsWith("receipt-") === true;
   const verificationReuse = mode?.startsWith("verification-") === true;
   const mixedRequests = mode === "read-command" || mode === "read-withdrawal";
   const checkpointSeeded = mode === "checkpoint-read" || mode === "checkpoint-missing";
@@ -63,6 +64,8 @@ test("real worker checkpoints and resumes final command results without executin
   const sourceOnly = mode === "read" || checkpointSeeded;
   const receipts = new Map<string, any>();
   const artifacts = new Map<string, any>();
+  const effects = new Map<string, any>();
+  let claims = 0, finalizations = 0;
   const task = {
     runId: "synthetic-run", taskId: "synthetic-task", stageId: "inspect", agentId: "test-agent",
     agentName: "Test", agentPrompt: "Inspect the fixture", workflowId: "test-workflow",
@@ -104,17 +107,18 @@ test("real worker checkpoints and resumes final command results without executin
       const row = receipts.get(input.idempotencyKey);
       if (!row) return null;
       assert.equal(row.content.idempotencyKey, input.idempotencyKey);
-      assert.equal(row.content.requestedByTaskId, task.taskId); assert.equal(row.content.requestedByStageId, task.stageId);
+      if (!receiptCase) { assert.equal(row.content.requestedByTaskId, task.taskId); assert.equal(row.content.requestedByStageId, task.stageId); }
       if (mode !== "verification-missing") return row;
       const content = { ...row.content }; delete content.verificationRecipe;
       return { ...row, content };
     },
-    claimSideEffect: async () => ({ status: "claimed", claimToken: "fixture-claim" }),
-    finalizeSideEffect: async () => true, dismissSupersededActionApprovals: async () => {},
+    getSideEffectReceipt: async ({ projectId, idempotencyKey }: any) => { assert.equal(projectId, task.runId); return effects.get(idempotencyKey) ?? null; },
+    claimSideEffect: async (input: any) => { claims++; effects.set(input.idempotencyKey, { ...input, status: "pending", receipt: {} }); return { status: "claimed", claimToken: "fixture-claim" }; },
+    finalizeSideEffect: async (input: any) => { finalizations++; effects.set(input.idempotencyKey, { ...effects.get(input.idempotencyKey), status: "completed", receipt: input.receipt }); return true; }, dismissSupersededActionApprovals: async () => {},
     requestActionApproval: async () => { throw new Error("Unexpected approval boundary"); },
     checkpointWorkflowTaskContinuation: async (input: any) => { checkpoint = JSON.parse(JSON.stringify(input.continuation)); },
     completeWorkflowTask: async (input: any) => { completed = input; },
-    blockWorkflowTask: async (input: any) => { if (verificationReuse) blocked = input; else throw new Error(`Unexpected block: ${input.reason}`); },
+    blockWorkflowTask: async (input: any) => { if (verificationReuse || receiptCase) blocked = input; else throw new Error(`Unexpected block: ${input.reason}`); },
     failWorkflowTask: async (input: any) => { throw new Error(`Unexpected failure: ${JSON.stringify(input)}`); }
   });
   await replace("./stage-authority.js", { createRenewingStageAuthority: async () => async () => {} });
@@ -141,6 +145,12 @@ test("real worker checkpoints and resumes final command results without executin
   await replace("../../model-providers/src/index.js", {
     executeWithProviderFallback: async ({ stageInput }: any) => {
       providerCalls++;
+      if (receiptCase) {
+        if (providerCalls > 1) assert.ok(stageInput.priorReceipts.some((receipt: any) => receipt.summary.includes("retained-final-evidence")));
+        return { output: { summary: "Stored command observation inspected.", artifact: { findings: ["Synthetic command observation"] },
+          requestedCommands: providerCalls === 1 ? ["node --version observation-readable"] : [] },
+          attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
+      }
       if (verificationReuse) {
         if (providerCalls > 1) assert.equal(executions, 1, "Repeating the same observed verification cannot execute it twice");
         const command = "node --test tests/frozen.test.mjs";
@@ -188,8 +198,42 @@ test("real worker checkpoints and resumes final command results without executin
         attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
     }
   });
-  const { runWorkerOnce } = await import("./executor.js");
+  const { runWorkerOnce, actionIdempotencyKey } = await import("./executor.js");
+  if (receiptCase) {
+    const command = "node --version observation-readable";
+    const key = actionIdempotencyKey({ taskId: task.taskId, stageId: task.stageId, agentId: task.agentId,
+      actionType: "local_command", target: command, payload: command, normalizePayload: true });
+    const uri = `db://workflow_runs/${task.runId}/command_output/${key}`;
+    const row = { uri, runId: task.runId, taskId: task.taskId, kind: "command_output", content: {
+      commandLine: command, exitCode: 0, timedOut: false, stdout: "retained-final-evidence", stderr: "",
+      idempotencyKey: key, requestedByTaskId: task.taskId, requestedByStageId: task.stageId } };
+    const effect = { status: "completed", operation: "local_command", target: command, receipt: { artifactUri: uri, exitCode: 0, timedOut: false } };
+    if (mode === "receipt-run") row.runId = "foreign-run";
+    if (mode === "receipt-task") row.taskId = "foreign-task";
+    if (mode === "receipt-content-task") row.content.requestedByTaskId = "foreign-task";
+    if (mode === "receipt-stage") row.content.requestedByStageId = "foreign-stage";
+    if (mode === "receipt-command") row.content.commandLine = "node different-command";
+    if (["receipt-pending", "receipt-uncertain"].includes(mode!)) effect.status = mode!.slice(8);
+    if (mode === "receipt-operation") effect.operation = "file_write";
+    if (mode === "receipt-target") effect.target = "node different-command";
+    if (mode === "receipt-uri") effect.receipt.artifactUri = "db://foreign/artifact";
+    if (mode === "receipt-outcome") effect.receipt.exitCode = 1;
+    if (mode === "receipt-timedout") effect.receipt.timedOut = true;
+    receipts.set(key, row); artifacts.set(uri, row);
+    if (mode !== "receipt-missing") effects.set(key, effect);
+  }
   const first = await runWorkerOnce(1, { recoverExpiredLeases: false });
+  if (receiptCase) {
+    const valid = mode === "receipt-finalized";
+    assert.equal(executions, 0, "Known command evidence must never execute again, including when its effect receipt is missing");
+    assert.equal(claims, 0); assert.equal(finalizations, 0, "Observation cannot silently finalize a prior effect");
+    assert.equal(first.completed, valid ? 1 : 0); assert.equal(Boolean(completed), valid); assert.equal(Boolean(blocked), !valid);
+    assert.equal(providerCalls, valid ? 2 : 1, "Only a finalized observation reaches the result-consumption turn");
+    assert.equal([...artifacts.values()].filter(row => row.kind === "command_output").length, 1);
+    assert.equal([...artifacts.values()].filter(row => row.kind === "action_reuse").length, valid ? 1 : 0);
+    if (!valid) assert.ok(blocked!.artifact.actionResults.some((action: any) => action.type === "local_command_side_effect_unverified"));
+    console.log("COMMAND_RECEIPT_RECOVERY_ASSERTIONS_PASSED " + mode); return;
+  }
   if (verificationReuse) {
     assert.equal(executions, 1); assert.equal(providerCalls, mode === "verification-failed" ? 2 : 3);
     assert.equal(checkpoint, undefined, "Complete reused observations need no extra continuation");

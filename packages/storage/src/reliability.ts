@@ -61,6 +61,19 @@ export async function recordSideEffectOnce(input: { projectId: string; idempoten
   });
 }
 
+/** Observation only: existing artifacts must not acquire a new effect claim. */
+export async function getSideEffectReceipt(input: { projectId: string; idempotencyKey: string }): Promise<{
+  status: string; operation: string; target: string; receipt: Record<string, unknown>;
+} | null> {
+  return withClient(async client => {
+    const result = await client.query<{ status: string; operation: string; target: string; receipt: Record<string, unknown> }>(
+      "select status,operation,target,receipt from side_effect_receipts where project_id=$1 and idempotency_key=$2",
+      [input.projectId, input.idempotencyKey]
+    );
+    return result.rows[0] ?? null;
+  });
+}
+
 export async function claimSideEffect(input: { projectId: string; idempotencyKey: string; operation: string; target: string; claimSeconds?: number }): Promise<{ status: "claimed" | "in_progress" | "completed" | "uncertain"; claimToken?: string; receipt: Record<string, unknown> }> {
   const claimSeconds = Math.max(30, Math.min(3600, input.claimSeconds ?? 300));
   return withClient(async (client) => {
