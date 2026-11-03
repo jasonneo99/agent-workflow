@@ -530,46 +530,85 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     const child = spawn(binary, args, { cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    const terminationGraceMs = 500;
     let bytes = 0;
+    let settled = false;
+    let terminationRequested = false;
     let terminationReason: "timeout" | "output_limit" | undefined;
-    const abort=()=>{terminationReason='timeout';child.kill('SIGTERM');};abortSignal?.addEventListener('abort',abort,{once:true});if(abortSignal?.aborted)abort();
-    const timer = setTimeout(() => {
-      terminationReason = "timeout";
+    let pendingFailure: { rawDetail: string; errorCode: string; phase: "stdin" | "spawn" } | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    const closeOwnedPipes = () => {
+      // These are our handles only. A descendant may still exist; closing a
+      // held pipe is not evidence that a process tree was terminated.
+      if (!hasExited()) return;
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const terminate = (reason?: "timeout" | "output_limit") => {
+      if (settled || hasExited() || terminationRequested) return;
+      terminationRequested = true;
+      terminationReason = reason;
+      clearTimeout(timer);
+      // child.killed means a signal was sent, not that this child exited.
+      killTimer = setTimeout(() => { if (!hasExited()) child.kill("SIGKILL"); }, terminationGraceMs);
       child.kill("SIGTERM");
-    }, timeoutMs);
+    };
+    const abort = () => terminate("timeout");
+    const timer = setTimeout(() => terminate("timeout"), timeoutMs);
     const collect = (target: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > maxBytes) {
-        terminationReason = "output_limit";
-        child.kill("SIGTERM");
+        // Output can finish draining after the process has already exited.
+        // Its byte limit still applies even when another signal is unnecessary.
+        if (!terminationRequested) terminationReason ??= "output_limit";
+        terminate("output_limit");
       }
       else target.push(chunk);
     };
-    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
-    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-      // A short-lived CLI may exit before consuming the prompt. Its close event
-      // carries the authoritative exit code and stderr; do not let the expected
-      // broken-pipe race mask that diagnostic on Linux runners.
-      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") return;
+    const onStdout = (chunk: Buffer) => collect(stdout, chunk);
+    const onStderr = (chunk: Buffer) => collect(stderr, chunk);
+    const onStdinError = (error: NodeJS.ErrnoException) => {
+      // Preserve a short-lived CLI's authoritative exit/stderr instead of
+      // replacing it with the expected broken-pipe race on its prompt input.
+      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED" || settled || terminationRequested) return;
+      pendingFailure ??= { rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_STDIN_FAILED", phase: "stdin" };
+      terminate();
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      if (settled || terminationReason) return;
+      pendingFailure ??= { rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_SPAWN_FAILED", phase: "spawn" };
+      if (child.pid !== undefined) terminate();
+    };
+    const onExit = () => {
       clearTimeout(timer);
-      logSpawn({ error: `stdin failed: ${error.code ?? "CODEX_CLI_STDIN_FAILED"}` });
-      reject(codexCliProcessError({ rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_STDIN_FAILED", forcedCategory: "spawn_unavailable" }));
-    });
-    child.on("error", (error) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (terminationRequested) closeOwnedPipes();
+      // Usually close follows exit immediately. Bound the drain if another
+      // process inherited these descriptors, while retaining normal output.
+      else drainTimer = setTimeout(closeOwnedPipes, terminationGraceMs);
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      const errorCode = (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED";
-      logSpawn({ error: `spawn failed: ${errorCode}` });
-      reject(codexCliProcessError({ rawDetail: error.message, errorCode, forcedCategory: "spawn_unavailable" }));
-    });
-    child.on("close", (code, signal) => {
-      abortSignal?.removeEventListener('abort',abort);
-      clearTimeout(timer);
-      if (code === 0 && bytes <= maxBytes) {
+      if (killTimer) clearTimeout(killTimer);
+      if (drainTimer) clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", abort);
+      child.stdout.removeListener("data", onStdout);
+      child.stderr.removeListener("data", onStderr);
+      child.stdin.removeListener("error", onStdinError);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      if (pendingFailure) {
+        logSpawn({ error: `${pendingFailure.phase} failed: ${pendingFailure.errorCode}` });
+        reject(codexCliProcessError({ ...pendingFailure, forcedCategory: "spawn_unavailable" }));
+      } else if (!terminationReason && code === 0 && bytes <= maxBytes) {
         logSpawn({});
         resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
-      }
-      else {
+      } else {
         const rawDetail = Buffer.concat(stderr).toString("utf8") || Buffer.concat(stdout).toString("utf8");
         const errorCode = terminationReason === "output_limit"
           ? "CODEX_CLI_OUTPUT_LIMIT"
@@ -579,7 +618,15 @@ async function runProcess(binary: string, args: string[], input: string | undefi
         logSpawn({ statusCode: code ?? undefined, error: codexStderrExcerpt(rawDetail).slice(0, 500) });
         reject(codexCliProcessError({ rawDetail, errorCode, exitCode: code ?? undefined, signal: signal ?? undefined, forcedCategory: terminationReason }));
       }
-    });
+    };
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.stdin.on("error", onStdinError);
+    child.on("error", onError);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+    abortSignal?.addEventListener("abort", abort, { once: true });
+    if (abortSignal?.aborted) abort();
     child.stdin.end(input);
   });
 }
