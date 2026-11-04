@@ -116,3 +116,77 @@ test("PostgreSQL concurrent reconciliation fences a waiting stale rollback",asyn
     }
   }));
 });
+
+test("PostgreSQL worktree registration appends numeric audit events across 9, 10 and 11 atomically",async()=>{
+  const fixture=process.env.TEST_DATABASE_URL;
+  assert.ok(fixture && fixture===process.env.DATABASE_URL,"Use the repository-owned disposable database wrapper");
+  assert.match(new URL(fixture).pathname,/^\/agentflow_suite_test_[a-f0-9]{32}$/u);
+  await withClient(async c=>{
+    assert.equal((await c.query("select current_database() as name")).rows[0].name,new URL(fixture).pathname.slice(1));
+    await c.query("begin");
+    try {
+      const schema=`identity_boundary_${randomUUID().replaceAll("-","")}`;
+      await c.query(`create schema ${schema}`);
+      await c.query(`set local search_path to ${schema},public`);
+      await c.query("create table projects(id uuid primary key,name text,root_uri text unique,profile text,config jsonb)");
+      await c.query(projectIdentitySchemaSql);
+      const primary=randomUUID(),commonRoot="/synthetic/identity-boundary/main";
+      await c.query("insert into projects values($1,'fixture',$2,'local',$3)",[primary,commonRoot,JSON.stringify({permissionScope:"canonical-only"})]);
+      await registerProjectIdentityScope(c,primary);
+      const register=async(index:number)=>{
+        const id=randomUUID(),root=`/synthetic/identity-boundary/worktree-${index}`;
+        await c.query("insert into projects values($1,'fixture',$2,'local',$3)",[id,root,JSON.stringify({permissionScope:root})]);
+        await registerProjectIdentityScope(c,id,commonRoot);
+        return id;
+      };
+      const events=async()=> (await c.query("select e.sequence::text,e.event_hash,e.previous_hash,row_to_json(e)::text as row_bytes from project_identity_events e order by e.sequence")).rows;
+      const bindings=async()=> (await c.query("select project_id,identity_id,kind,generation from project_identity_locations order by project_id")).rows;
+      const projects=async()=> (await c.query("select id,root_uri,config from projects order by id")).rows;
+      for(let index=1;index<=9;index++)await register(index);
+      assert.deepEqual((await events()).map(e=>e.sequence),Array.from({length:9},(_,i)=>String(i+1)));
+      await register(10);
+      const firstTen=await events(),originalBindings=await bindings(),originalProjects=await projects();
+      assert.deepEqual(firstTen.map(e=>e.sequence),Array.from({length:10},(_,i)=>String(i+1)));
+      assert.equal(await verifyProjectIdentityEventsOnClient(c),true);
+      await c.query("savepoint eleventh_registration");
+      let eleventh:string;
+      try {
+        eleventh=await register(11);
+      } catch(error) {
+        // The caller's transaction must retain the original bindings and event
+        // bytes if an append fails after its worktree mapping was attempted.
+        await c.query("rollback to savepoint eleventh_registration");
+        assert.deepEqual(await events(),firstTen);
+        assert.deepEqual(await bindings(),originalBindings);
+        assert.deepEqual(await projects(),originalProjects);
+        assert.equal(await verifyProjectIdentityEventsOnClient(c),true);
+        throw error;
+      }
+      const eleven=await events();
+      assert.deepEqual(eleven.map(e=>e.sequence),Array.from({length:11},(_,i)=>String(i+1)));
+      assert.deepEqual(eleven.slice(0,10),firstTen,"Every original row byte and hash must remain unchanged");
+      assert.equal(eleven[10].previous_hash,firstTen[9].event_hash);
+      assert.equal(await verifyProjectIdentityEventsOnClient(c),true);
+      const currentBindings=await bindings();
+      assert.deepEqual(currentBindings.filter(b=>b.project_id!==eleventh),originalBindings);
+      assert.deepEqual(currentBindings.find(b=>b.project_id===eleventh),{project_id:eleventh,identity_id:primary,kind:"worktree",generation:1});
+      assert.deepEqual((await projects()).filter(p=>p.id!==eleventh),originalProjects,"Registration cannot inherit or rewrite existing permissions");
+      assert.equal((await projects()).find(p=>p.id===eleventh).config.permissionScope,"/synthetic/identity-boundary/worktree-11");
+      await registerProjectIdentityScope(c,eleventh,commonRoot);
+      assert.deepEqual(await events(),eleven,"Reindexing an existing worktree is idempotent");
+      assert.deepEqual(await bindings(),currentBindings,"Reindexing cannot change binding identity, kind or generation");
+      // Abort a successful registration too: neither its identity mapping nor
+      // its hash-linked event may survive the same caller transaction rollback.
+      await c.query("rollback to savepoint eleventh_registration");
+      assert.deepEqual(await events(),firstTen);
+      assert.deepEqual(await bindings(),originalBindings);
+      assert.deepEqual(await projects(),originalProjects);
+      await register(11);
+      const retried=await events();
+      assert.deepEqual(retried.map(e=>e.sequence),Array.from({length:11},(_,i)=>String(i+1)));
+      assert.deepEqual(retried.slice(0,10),firstTen);
+      assert.equal(retried[10].previous_hash,firstTen[9].event_hash);
+      assert.equal(await verifyProjectIdentityEventsOnClient(c),true);
+    } finally { await c.query("rollback"); }
+  });
+});

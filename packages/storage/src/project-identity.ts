@@ -104,7 +104,7 @@ async function appendIdentityEvent(client: Client, action: string, actor: string
   if (!actor.trim() || !reason.trim()) throw new Error("An operator and reconciliation reason are required.");
   await client.query("select pg_advisory_xact_lock(hashtext('project-identity-audit'))");
   if (!await verifyProjectIdentityEventsOnClient(client)) throw new Error("Project identity audit chain is invalid.");
-  const last = (await client.query("select sequence::text,event_hash from project_identity_events order by sequence desc limit 1")).rows[0];
+  const last = (await client.query("select e.sequence::text,e.event_hash from project_identity_events e order by e.sequence desc limit 1")).rows[0];
   const record = {sequence:Number(last?.sequence ?? 0)+1,id:randomUUID(),createdAt:new Date().toISOString(),action,actor,reason,changes,previousHash:last?.event_hash ?? null};
   await client.query("insert into project_identity_events(sequence,id,created_at,action,actor,reason,changes,previous_hash,event_hash) values($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
     [record.sequence,record.id,record.createdAt,action,actor,reason,JSON.stringify(changes),record.previousHash,digest(record)]);
