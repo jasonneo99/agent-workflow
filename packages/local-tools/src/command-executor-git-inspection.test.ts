@@ -20,7 +20,7 @@ async function withGitFixture(check:(fixture:{cwd:string;commit:string;trace:str
    const result=spawnSync('git',args,{cwd,env:process.env,encoding:'utf8',timeout:5_000});
    assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);return result.stdout.trim();
   };
-  git('init','--quiet');git('config','user.name','Synthetic Fixture');git('config','user.email','fixture@example.invalid');
+  git('init','--quiet');git('config','user.name','Synthetic Fixture');git('config','user.email','developer@example.com');
   const hooks=path.join(root,'empty-hooks');await fs.mkdir(hooks);git('config','core.hooksPath',hooks);
   await fs.writeFile(path.join(cwd,'tracked.txt'),'before\n');await fs.writeFile(path.join(cwd,'.gitattributes'),'*.txt diff=synthetic\n');
   git('add','.');git('commit','--quiet','--no-gpg-sign','-m','baseline');
