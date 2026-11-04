@@ -1309,7 +1309,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           task, project, stagePattern, localProjectRootUri, actionResults,
           stageFileReads, stageStateDeltas, assertLeaseOwned, totalRequestedActions,
           route, routedStageInput, fallbackPolicy, guardedProviderFactory,
-          assertStageGuard, preparation, scoreOutput,
+          assertStageGuard, preparation, scoreOutput, deferredCommands,
           state: { output, quality, fallbackAttempts, actualProviderId, actualModel,
             mutationRetriesRemaining, reactIteration }
         });
@@ -1320,13 +1320,19 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           continue verifyActionRounds;
         }
         if (deferredCommands.length) {
-          const writesSucceeded = (output.requestedFileWrites ?? []).every((write) =>
-            actionResults.slice(writeActionStart).some((action) => {
-              if (!action || typeof action !== "object") return false;
-              const result = action as { type?: string; path?: string; artifactUri?: string };
-              return (result.type === "file_write" || result.type === "file_write_reused")
-                && result.path === write.path && Boolean(result.artifactUri);
-            }));
+          // One successful observation satisfies one mutation in this dispatch,
+          // never another same-path mutation or an earlier action round.
+          const completedWrites = new Map<string, number>();
+          for (const action of actionResults.slice(writeActionStart)) {
+            const result = action as { type?: string; path?: string; artifactUri?: string } | null;
+            if (result?.path && result.artifactUri && (result.type === "file_write" || result.type === "file_write_reused"))
+              completedWrites.set(result.path, (completedWrites.get(result.path) ?? 0) + 1);
+          }
+          const writesSucceeded = (output.requestedFileWrites ?? []).every(write => {
+            const available = completedWrites.get(write.path) ?? 0;
+            if (!available) return false;
+            completedWrites.set(write.path, available - 1); return true;
+          });
           if (!writesSucceeded) {
             output = { ...output, outcome: "blocked", blockedReason:
               "Requested commands require successful governed file-write prerequisites." };

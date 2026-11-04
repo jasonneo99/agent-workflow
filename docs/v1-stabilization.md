@@ -31,6 +31,25 @@ Their present frequency and live causality require current reproduction.
 
 ## Qualified source repairs
 
+Mutation-batch recovery now retains unvisited writes and dependent commands
+after a successful local patch correction. Verification requires the current
+batch's successful mutations, including repeated paths; earlier observations
+cannot satisfy a new failed write. Explicit replanning and blocked output keep
+their existing meaning. Actual-worker regressions exercise the failed-patch
+sequence and require all source writes before the behavioral check.
+
+Prepared Git inspection recognizes a narrow read-only `diff-tree` form with
+external helpers disabled. Prepared source recovery also distinguishes fresh
+full-graph retry from checkpoint preservation: unsupported source checkpoint
+reuse is held before recovery writes, and replacement acceptance needs fresh
+run-owned evidence. Structured and physical recovery gates remain independent.
+These source controls require runtime adoption and a new project-task trial;
+unit checks alone do not establish unattended operation.
+
+Explicit historical-run withdrawal remains view-only. A rejected pre-write
+reservation settles the visibility hold only when its exact no-effect
+disposition has a durable matching receipt; unresolved effects remain visible.
+
 The four inherited size failures are cleared through module extraction without
 raising ceilings. The aggregate check after extraction passed 1,986 tests with
 five unchanged skips. Subsequent behavior changes require a new combined check.

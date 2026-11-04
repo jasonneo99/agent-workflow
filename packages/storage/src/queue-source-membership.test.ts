@@ -39,6 +39,21 @@ test('exact-source membership reuses queue visibility without reviving hidden hi
   assert.equal(await activeQueueSourceOnClient(c,'source'),true,'Prose without its bound disposition artifact cannot hide work');
   await c.query("insert into artifacts values('source','operator_run_withdrawal',$1)",[withdrawn]);
   assert.equal(await activeQueueSourceOnClient(c,'source'),false,'Explicit withdrawal is not acceptance or successful replacement');
+  await c.query("insert into side_effect_receipts values('source','rejected','synthetic-write')");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'An unexplained rejected effect remains a visibility hold');
+  const noEffect={noEffect:true,reason:'deterministic-prewrite-parser-rejection',idempotencyKey:'synthetic-write',target:'source.ts',rejectionArtifactUri:'db://synthetic/rejection'};
+  await c.query("insert into action_receipts values('source','expired_prewrite_reservation_reconciled',clock_timestamp(),$1,'Synthetic no-effect reconciliation',null)",[noEffect]);
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'Unchained reconciliation cannot hide work');
+  await c.query("update action_receipts set receipt_hash='chain' where action_type='expired_prewrite_reservation_reconciled'");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),false,'A bound durable no-effect disposition settles the withdrawn pre-write reservation');
+  await c.query("update action_receipts set metadata=jsonb_set(metadata,'{idempotencyKey}','\"different-write\"') where action_type='expired_prewrite_reservation_reconciled'");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'A disposition for another write cannot settle this reservation');
+  await c.query("update action_receipts set metadata=$1 where action_type='expired_prewrite_reservation_reconciled'",[noEffect]);
+  for(const status of ['pending','uncertain']){
+   await c.query('update side_effect_receipts set status=$1',[status]);
+   assert.equal(await activeQueueSourceOnClient(c,'source'),true,'An unresolved effect cannot be concealed by a past disposition');
+  }
+  await c.query("update side_effect_receipts set status='rejected'");
   await c.query("insert into workflow_tasks values('source','running')");
   assert.equal(await activeQueueSourceOnClient(c,'source'),true,'A newly active task cannot be concealed by historical withdrawal');
  }finally{await c.query('rollback');}

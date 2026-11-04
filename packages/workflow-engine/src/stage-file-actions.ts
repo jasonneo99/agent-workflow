@@ -11,7 +11,7 @@ import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval, type Action
 import { claimSideEffect, dismissSupersededActionApprovals, finalizeSideEffect, findRunActionByIdempotencyKey, recordRunAction, requestActionApproval, withProjectExecutionLock, type ClaimedWorkflowTask } from "../../storage/src/postgres.js";
 import type { PreparedTaskExecution } from "./run-preparation.js";
 import { actionIdempotencyKey, hashText, normalizeActionText, recordBoundedReactLoopReceipt } from "./action-receipts.js";
-import { isRecoverableFileMutationFailure, prepareRejectedPatchRetry } from "./file-mutation-retry.js";
+import { isRecoverableFileMutationFailure, prepareRejectedPatchRetry, retainPendingPatchBatch } from "./file-mutation-retry.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 
 type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
@@ -157,6 +157,7 @@ export async function executeStageFileWrites(input: StageFileContext & {
   guardedProviderFactory: NonNullable<FallbackInput["providerFactory"]>;
   assertStageGuard: (sideEffect: boolean) => Promise<void>;
   preparation?: PreparedTaskExecution;
+  deferredCommands?: readonly string[];
   scoreOutput: (output: StageExecutionOutput) => ReturnType<typeof scoreStageOutput>;
 }): Promise<StageFileWriteResult> {
   const { task, project, stagePattern, localProjectRootUri, actionResults,
@@ -185,7 +186,8 @@ export async function executeStageFileWrites(input: StageFileContext & {
       stageFileReads.push({ path: write.path, content: "", truncated: false, error: `Post-write refresh unavailable: ${error instanceof Error ? error.message : String(error)}` });
     }
   };
-  for (const fileWrite of output.requestedFileWrites ?? []) {
+  const requestedWrites = output.requestedFileWrites ?? [];
+  for (const [writeIndex, fileWrite] of requestedWrites.entries()) {
     await assertLeaseOwned();
     reactIteration += 1;
     const mutation = normalizeRequestedFileMutation(fileWrite);
@@ -486,7 +488,17 @@ export async function executeStageFileWrites(input: StageFileContext & {
         });
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: retry.attempts, output: retry.output, latencyMs: Date.now() - retryStartedAt }).catch(() => 0);
         fallbackAttempts = [...fallbackAttempts, ...retry.attempts];
-        output = retry.output;
+        output = retainPendingPatchBatch({ rejectedPath: fileWrite.path,
+          pendingWrites: requestedWrites.slice(writeIndex + 1), deferredCommands: input.deferredCommands ?? [], correction: retry.output });
+        if (output !== retry.output) await recordRunAction({
+          runId: task.runId, taskId: task.taskId, agentId: task.agentId,
+          actionType: "file_write_retry_batch_retained", target: fileWrite.path,
+          summary: "Retained the unvisited mutation batch and deferred commands after a local patch correction.",
+          artifactKind: "file_write_retry", artifactContent: {
+            pendingPaths: requestedWrites.slice(writeIndex + 1).map(write => write.path),
+            deferredCommands: input.deferredCommands ?? [], policyUnchanged: true
+          }
+        });
         quality = scoreOutput(output);
         actualProviderId = retry.actualProvider;
         actualModel = retry.actualModel;

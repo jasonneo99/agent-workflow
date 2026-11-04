@@ -55,7 +55,16 @@ function visible(alias: string): string {
             and not exists(select 1 from action_approvals withdrawal_approval where withdrawal_approval.run_id=${alias}.id and withdrawal_approval.status in('pending','approved','executing','failed'))
             and not exists(select 1 from queue_coordinator_assignments withdrawal_assignment
               where (withdrawal_assignment.source_run_id=${alias}.id or withdrawal_assignment.child_run_id=${alias}.id) and withdrawal_assignment.state in('reserved','running','uncertain'))
-            and not exists(select 1 from side_effect_receipts withdrawal_effect where withdrawal_effect.project_id=${alias}.id::text and withdrawal_effect.status<>'completed')
+            and not exists(select 1 from side_effect_receipts withdrawal_effect
+              where withdrawal_effect.project_id=${alias}.id::text and withdrawal_effect.status<>'completed'
+                and not (withdrawal_effect.status='rejected' and exists(
+                  select 1 from action_receipts settled where settled.run_id=${alias}.id
+                    and settled.action_type='expired_prewrite_reservation_reconciled'
+                    and settled.receipt_hash is not null
+                    and settled.metadata->>'noEffect'='true'
+                    and settled.metadata->>'reason'='deterministic-prewrite-parser-rejection'
+                    and settled.metadata->>'idempotencyKey'=withdrawal_effect.idempotency_key
+                    and length(settled.metadata->>'rejectionArtifactUri')>0)))
             and exists(select 1 from artifacts withdrawal where withdrawal.run_id=hidden.run_id
               and withdrawal.kind='operator_run_withdrawal' and withdrawal.content=hidden.metadata))
           or (hidden.action_type='obsolete_policy_contract_retired'

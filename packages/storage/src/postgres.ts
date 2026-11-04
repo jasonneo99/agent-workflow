@@ -23,6 +23,7 @@ import { withClient } from "./client.js";
 import { commandEvidencePacket } from "./command-evidence.js";
 import { loadReplayEvidencePacket } from "./replay-evidence.js";
 import { validateRecoveryCheckpoint } from "./checkpoint-provenance.js";
+import {admitReplayRecovery,replayRecoveryNotification} from './replay-recovery.js';
 import { appendPlanContextInfluence } from "./context-influence.js";
 import { acceptanceDigest, acceptanceGate, acceptancePreflight, enrollAcceptanceContract, storedAcceptanceDecision } from "./acceptance.js";
 import type { StructuredAcceptanceContract } from "../../model-providers/src/types.js";
@@ -937,8 +938,8 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
   const replay = await replayWorkflowRun({
     sourceRunId: runId,
     actor: "retry-failed-run",
-    reason: "Retry requested; terminal history is immutable, so a checkpoint-preserving replacement run was created.",
-    preserveCompletedCheckpoints: true
+    reason: "Retry requested; terminal history is immutable and the replacement records its explicit recovery mode.",
+    preserveCompletedCheckpoints: true, ordinarySourceRetry: true
   });
   // A replay reserves recovery work; only independently verified completion can supersede its source.
   return replay?.queuedTasks ?? 0;
@@ -1560,6 +1561,7 @@ export async function replayWorkflowRun(input: {
   acceptanceRequirements?: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables">;
   revalidatedSubjectHash?: string;
   preserveCompletedCheckpoints?: boolean;
+  ordinarySourceRetry?: boolean;
   skipStageIds?: string[];
   evaluationMetadataPatch?: Record<string, unknown>;
   autonomyOverride?: string;
@@ -1640,6 +1642,9 @@ export async function replayWorkflowRun(input: {
       // Check before replacement reuse, conflict reconciliation, writes or cancellation.
       await assertGenericRunRecoveryAllowed(client,input.sourceRunId,'replay');
       if (automaticRepeatForbidden(sourceRun)) throw new Error(noAutomaticRepeatReason);
+      const recovery=await admitReplayRecovery(client,{sourceRunId:input.sourceRunId,task:sourceRun.task,evaluationMetadata:sourceRun.evaluationMetadata,
+        workflow:sourceRun.workflowSnapshot??sourceRun.workflowDefinition,preserveCompletedCheckpoints:input.preserveCompletedCheckpoints,
+        ordinarySourceRetry:input.ordinarySourceRetry,acceptanceRequirements:input.acceptanceRequirements});
       if (sourceRun.replacementRunId) {
         if (input.revalidatedSubjectHash) throw new Error("Source revalidation cannot reuse an existing replacement.");
         if (input.acceptanceRequirements) throw new Error("Explicit acceptance enrollment cannot reuse an existing replacement; inspect its requirements and replay that execution if needed.");
@@ -1708,7 +1713,7 @@ export async function replayWorkflowRun(input: {
       if (!workflow) {
         throw new Error(`Source run workflow is unavailable: ${input.sourceRunId}`);
       }
-      const sourceTasks = input.preserveCompletedCheckpoints
+      const sourceTasks = recovery.preserveCompletedCheckpoints
         ? await client.query<{
           id: string;
           stageId: string;
@@ -1784,7 +1789,7 @@ export async function replayWorkflowRun(input: {
         throw new Error("Replay source already has frozen acceptance requirements; replacement is forbidden.");
       }
       const replayAcceptance = sourceAcceptance ?? input.acceptanceRequirements;
-      const structuredRecovery = Boolean(sourceAcceptance && input.preserveCompletedCheckpoints
+      const structuredRecovery = Boolean(sourceAcceptance && recovery.preserveCompletedCheckpoints
         && ["failed", "blocked", "cancelled"].includes(sourceRun.status));
       if (structuredRecovery) {
         if (input.skipStageIds?.length) throw new Error("Structured recovery cannot skip stages.");
@@ -1815,7 +1820,7 @@ export async function replayWorkflowRun(input: {
         replayOfRunId: input.sourceRunId,
         replayedBy: input.actor,
         replayReason: input.reason,
-        checkpointResume: input.preserveCompletedCheckpoints === true,
+        checkpointResume: recovery.preserveCompletedCheckpoints, recoveryMode: recovery.mode,
         skippedStageIds: [...new Set(input.skipStageIds ?? [])]
       };
       // Re-enroll unchanged requirements atomically for the new execution. Source
@@ -2041,7 +2046,7 @@ export async function replayWorkflowRun(input: {
         metadata: JSON.stringify({
             actor: input.actor,
             sourceRunId: input.sourceRunId,
-            preserveCompletedCheckpoints: input.preserveCompletedCheckpoints === true,
+            preserveCompletedCheckpoints: recovery.preserveCompletedCheckpoints, recoveryMode: recovery.mode,
             completedTasks,
             skippedTasks,
             queuedTasks: workflow.stages.length - completedTasks - skippedTasks,
@@ -2087,13 +2092,8 @@ export async function replayWorkflowRun(input: {
         [input.sourceRunId, runId]
       );
 
-      await enqueueRunNotification(client, {
-        runId,
-        kind: "recovered",
-        eventKey: `replay:${input.sourceRunId}:${runId}`,
-        title: "Run resumed from checkpoint",
-        body: `Resumed from run ${input.sourceRunId}. ${input.reason}`
-      });
+      await enqueueRunNotification(client,replayRecoveryNotification({
+        runId,sourceRunId:input.sourceRunId,reason:input.reason,mode:recovery.mode}));
       await client.query("commit");
       return {
         projectId,

@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { StageFileWriteState } from "./stage-file-actions.js";
 
-const scenarios = ["write-and-reuse", "approval-boundaries", "lost-authority", "patch-retry", "partial-write-retry", "replacement-reroute", "reader-observations"];
+const scenarios = ["write-and-reuse", "approval-boundaries", "lost-authority", "patch-retry", "partial-write-retry", "patch-retry-batch", "patch-retry-repeated", "patch-retry-deferred", "patch-retry-authority", "replacement-reroute", "reader-observations"];
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 test("stage file actions preserve governed effects and caller-owned retry state", async t => {
@@ -131,7 +131,7 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     totalRequestedActions: 2, route: { providerId: "codex-cli" }, routedStageInput, fallbackPolicy, guardedProviderFactory,
     assertLeaseOwned: async () => { leaseCalls++; events.push("lease"); if (loseLease) throw new Error("synthetic lease lost"); },
     assertStageGuard: async (sideEffect: boolean) => { events.push("guard:" + sideEffect); if (loseGuard) throw new Error("synthetic authority lost"); },
-    preparation: { beforeWrite: async (relative: string) => { assert.ok(relative === target || (scenario === "partial-write-retry" && relative === "src/second.txt")); events.push("before-write"); } } as any,
+    preparation: { beforeWrite: async (relative: string) => { assert.ok(relative === target || ((scenario === "partial-write-retry" || scenario.startsWith("patch-retry-")) && ["src/second.txt", "src/third.txt"].includes(relative))); events.push("before-write"); } } as any,
     scoreOutput: (next: any) => { const quality = scoreStageOutput(routedStageInput, next); scoredOutputs.push({ next, quality }); return quality; }
   };
   const assertRetained = (next: StageFileWriteState, iteration: number) => {
@@ -231,6 +231,38 @@ test("stage file actions preserve governed effects and caller-owned retry state"
     assert.equal(exhausted.retryRequested, false); assert.equal(exhausted.state.mutationRetriesRemaining, 0);
     assert.equal(providerCalls.length, 1, "Exhausted mutation budget cannot invoke the provider again");
     assert.equal(await fs.readFile(path.join(root, target), "utf8"), before);
+  } else if (["patch-retry-batch", "patch-retry-repeated", "patch-retry-deferred", "patch-retry-authority"].includes(scenario)) {
+    const command = "node inspect-batch.cjs";
+    const corrected = { path: target, content: null, patch: "@@ -1 +1 @@\n-before\n+after\n", expectedHash: digest(before) };
+    const pending = scenario === "patch-retry-deferred" ? [] : scenario === "patch-retry-repeated"
+      ? [{ path: target, content: null, patch: "@@ -1 +1 @@\n-after\n+final\n", expectedHash: digest(after) },
+        { path: "src/second.txt", content: "second\n" }]
+      : [{ path: "src/second.txt", content: "second\n" }, { path: "src/third.txt", content: "third\n" }];
+    state.output = output([{ ...corrected, patch: "@@ -1 +1 @@\n-not-the-preimage\n+after\n" }, ...pending]);
+    // The executor holds these commands outside output while prerequisite writes run.
+    Object.assign(input, { deferredCommands: [command] });
+    prepareProviderResult(output([corrected]));
+    const correction = await executeStageFileWrites(input);
+    assert.equal(correction.retryRequested, true);
+    assert.deepEqual(correction.state.output.requestedFileWrites, [corrected, ...pending],
+      "A local correction must retain every unvisited mutation in original order, including repeated paths");
+    assert.deepEqual(correction.state.output.requestedCommands, [command],
+      "The caller's deferred commands must survive the local correction");
+    if (scenario === "patch-retry-authority") {
+      loseGuard = true;
+      await assert.rejects(executeStageFileWrites({ ...input, state: correction.state }), /synthetic authority lost/u);
+      assert.equal(await fs.readFile(path.join(root, target), "utf8"), before);
+      for (const file of pending) await assert.rejects(fs.stat(path.join(root, file.path)), { code: "ENOENT" });
+      assert.equal(finalized.length, 0, "Retained requests grant no effect after authority loss");
+    } else {
+      const resumed = await executeStageFileWrites({ ...input, state: correction.state });
+      assert.equal(resumed.retryRequested, false);
+      assert.equal(await fs.readFile(path.join(root, target), "utf8"), scenario === "patch-retry-repeated" ? "final\n" : after);
+      for (const file of pending.filter(write => write.path !== target)) assert.equal(await fs.readFile(path.join(root, file.path), "utf8"), file.content);
+      assert.equal(finalized.length, 1 + pending.length, "Each retained mutation finalizes exactly once");
+      assert.equal(resumed.state.mutationRetriesRemaining, 0);
+    }
+    assert.equal(providerCalls.length, 1);
   } else if (scenario === "partial-write-retry") {
     const second = "src/second.txt";
     await fs.writeFile(path.join(root, second), before);

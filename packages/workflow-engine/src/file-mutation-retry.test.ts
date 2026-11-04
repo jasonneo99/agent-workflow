@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rejectedPatchFeedback, replaceRefreshedPatchRead } from "./file-mutation-retry.js";
+import { rejectedPatchFeedback, replaceRefreshedPatchRead, retainPendingPatchBatch } from "./file-mutation-retry.js";
 import { foldStateDeltas, renderFactSet } from "../../model-providers/src/state-deltas.js";
 
 test("retry feedback preserves the rejected edit and exact count failure", () => {
@@ -30,4 +30,25 @@ test("retry refresh removes stale full and ranged reads but preserves other file
   replaceRefreshedPatchRead(reads, { path: "src/a.ts", content: "current", truncated: false, sha256: "fresh" });
   assert.deepEqual(reads.map(read => read.path), ["src/ab.ts", "src/a.ts"]);
   assert.equal(reads[1].content, "current");
+});
+
+test("only a local one-mutation correction retains an unvisited batch", () => {
+  const write = { path: "src/first.ts", content: "corrected" };
+  const pending = [{ path: "src/second.ts", content: "next" }];
+  const correction = { outcome: "completed" as const, summary: "Synthetic correction", artifact: { findings: [] },
+    requestedFileWrites: [write], requestedCommands: ["node check.cjs"] };
+  const rejectedPlans = [
+    { ...correction, outcome: "blocked" as const },
+    { ...correction, requestedFileWrites: [] },
+    { ...correction, requestedFileWrites: [pending[0]!] },
+    { ...correction, requestedFileWrites: [write, pending[0]!] }
+  ];
+  for (const next of rejectedPlans) assert.equal(retainPendingPatchBatch({ rejectedPath: write.path,
+    pendingWrites: pending, deferredCommands: ["node original.cjs"], correction: next }), next,
+  "Blocked, superseded and broader plans must not acquire abandoned mutations or commands");
+  const merged = retainPendingPatchBatch({ rejectedPath: write.path, pendingWrites: pending,
+    deferredCommands: ["node original.cjs", "node check.cjs"], correction });
+  assert.deepEqual(merged.requestedFileWrites, [write, ...pending]);
+  assert.deepEqual(merged.requestedCommands, ["node original.cjs", "node check.cjs"]);
+  assert.deepEqual(correction.requestedFileWrites, [write]); assert.deepEqual(pending, [{ path: "src/second.ts", content: "next" }]);
 });

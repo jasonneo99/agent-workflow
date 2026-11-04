@@ -10,6 +10,35 @@ A repair phase produces a source candidate with a durable revision. Independent
 verification checks that exact revision in a fresh environment. Failed attempts
 remain history; a candidate commit is never product acceptance.
 
+## Mutation batches and recovery
+
+When a rejected patch is corrected locally, the worker retains the ordered
+mutations that have not run and the commands waiting on that batch. Every
+mutation still passes its own authority, policy and preimage checks. Explicit
+blocked responses and replacement plans do not revive abandoned mutations.
+Verification waits for successful observations of every requested mutation in
+the current action round; an earlier write to the same path is not a substitute.
+
+Prepared source checkpoint receipts belong to their original workspace. A
+replacement run cannot preserve a completed source stage by copying its output
+JSON. Explicit checkpoint-preserving recovery is held before recovery writes
+when those workspace bindings cannot be restored. Attested read-only planning
+prefixes can still be preserved when they contain no source or command effects.
+
+Ordinary source-only retries use a fresh full graph and record the requested
+and effective recovery modes. Original checkpoints remain diagnostic history;
+the replacement needs its own source, tests and independent verification.
+Structured product requirements and physical or delivery recovery are not
+silently converted into fresh source-only retries. The notification identifies
+fresh replay separately from checkpoint preservation.
+
+Prepared source inspection supports the exact read-only form
+`git diff-tree --no-commit-id --name-status -r <commit>`, where the commit is
+`HEAD` or a full object ID. The executor disables external diff and text
+conversion helpers. Additional options, output files, configuration overrides
+and mutations remain outside that inspection capability; project command
+permission is still required.
+
 ## Phase sequence
 
 1. Start from a clean isolated worktree and record its parent commit. Acquire the
