@@ -722,7 +722,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (deferredCommands.length) output = { ...output, requestedCommands: [] };
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
-          try { assertWorkerCommand(commandLine); await admitManagedGitCommand({commandLine,cwd:localProjectRootUri,managedSource:task.executionPipeline?.required===true,project}); }
+          let managedHashRead=false;
+          try { assertWorkerCommand(commandLine); const admitted=await admitManagedGitCommand({commandLine,cwd:localProjectRootUri,managedSource:task.executionPipeline?.required===true,project}); managedHashRead=admitted.managedGitRead&&admitted.executionArgv[1]==='hash-object'; }
           catch(error) {
             const reason=error instanceof Error?error.message:String(error);
             const artifactUri=await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'local_command_rejected',target:commandLine,summary:reason,artifactKind:'action_rejection',artifactContent:{actionType:'local_command',target:commandLine,error:reason,requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
@@ -733,10 +734,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             ?await legacyNoChangeSourceBinding(noChangeInput):null;
           const sourcePaths = stageInput.acceptanceContract?.sourcePaths??legacyBinding?.sourcePaths;
           const sourceBefore = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths) : undefined;
-          // Only verification commands receive a new evidence identity after
-          // governed mutations. Arbitrary side effects retain their identity.
+          // Tests and validated raw Git hashes receive fresh evidence identities
+          // after governed writes. Arbitrary side effects retain their identity.
           const verificationCommand = isVerificationCommand(commandLine,project,{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId});
-          const writeSubject = verificationCommand ? verificationWriteSubject(actionResults) : undefined;
+          const writeSubject = verificationCommand || managedHashRead ? verificationWriteSubject(actionResults) : undefined;
           reactIteration += 1;
           const commandIdempotencyKey = actionIdempotencyKey({
             taskId: task.taskId,

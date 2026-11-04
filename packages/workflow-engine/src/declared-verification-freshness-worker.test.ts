@@ -4,12 +4,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repository = fileURLToPath(new URL("../../../", import.meta.url));
 const at = (relative: string) => pathToFileURL(path.join(repository, relative)).href;
 
-test("actual worker refreshes declared verification after writes without replaying arbitrary effects", async t => {
+test("actual worker refreshes verification and Git observations without replaying arbitrary effects", async t => {
   if (!process.env.AGENTFLOW_DECLARED_WORKER_ROOT) {
     for (const scenario of ["fresh", "stale-evidence"]) await t.test(scenario, async subtest => {
       const owned = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "declared-verification-worker-")));
@@ -54,13 +55,14 @@ test("actual worker refreshes declared verification after writes without replayi
   const { prepareRunWorkspace } = await import(at("packages/run-environments/src/workspace.ts"));
   const { REPAIR_COMMIT_COMMAND } = await import(at("packages/run-environments/src/repair-checkpoint.ts"));
   const command = "python3 scripts/check_source.py --group portable", effectCommand = "python3 scripts/record_effect.py";
+  const hashCommand = "git hash-object src/first.txt src/second.txt";
   const project = projectConfigSchema.parse({ project: { name: "Synthetic declared verification" },
     execution: { repair_commits: { enabled: true, stages: ["repair"] }, environments: { default_profile: "native", profiles: {
       native: { kind: "native", platform: process.platform + "/" + (process.arch === "x64" ? "amd64" : process.arch),
         source_paths: ["src", "scripts"], readiness: [{ argv: ["python3", "--version"] }],
         verification: [{ commands: [command], format: "pytest", expected_tests: 1 }] }
     } } }, policies: { require_approval_for_external_actions: false },
-    actions: { allowed_commands: [command, effectCommand, "python3 --version", ENVIRONMENT_COMMAND, REPAIR_COMMIT_COMMAND], allowed_write_paths: paths } });
+    actions: { allowed_commands: [command, effectCommand, hashCommand, "python3 --version", ENVIRONMENT_COMMAND, REPAIR_COMMIT_COMMAND], allowed_write_paths: paths } });
   await fs.mkdir(path.join(canonical, ".agent-workflow"));
   await fs.writeFile(path.join(canonical, ".agent-workflow/project.yaml"), JSON.stringify(project));
   await fs.writeFile(path.join(owned, "trusted.yaml"), "commands: []\n"); process.env.AGENTFLOW_TRUSTED_COMMANDS_FILE = path.join(owned, "trusted.yaml");
@@ -126,7 +128,8 @@ test("actual worker refreshes declared verification after writes without replayi
   await replace("packages/model-providers/src/index.ts", { providerFromEnv: () => { throw Error("No real provider permitted"); }, executeWithProviderFallback: async () => {
     calls++;
     return { output: { outcome: "completed", summary: "Consume the governed fixture source and actual checker results.", artifact: { findings: ["Synthetic current-source evidence"] },
-      requestedCommands: calls === 1 ? [command, effectCommand] : calls === 3 ? [effectCommand] : calls === 4 ? [command, effectCommand] : [],
+      requestedCommands: calls === 1 ? [command, effectCommand, hashCommand] : calls === 3 ? [effectCommand]
+        : calls === 4 ? [command, effectCommand, hashCommand] : calls === 5 ? [hashCommand] : [],
       requestedFileWrites: calls === 2 ? paths.map(relative => ({ path: relative, content: "after\n" })) : [] },
       attempts: [], actualProvider: "mock", actualModel: "synthetic", fallbackUsed: false };
   } });
@@ -134,10 +137,22 @@ test("actual worker refreshes declared verification after writes without replayi
   const result = await runWorkerOnce(1, { recoverExpiredLeases: false });
   const checks = records.filter(r => r.artifactKind === "command_output" && r.artifactContent.commandLine === command);
   const other = records.filter(r => r.artifactKind === "command_output" && r.artifactContent.commandLine === effectCommand);
+  const hashes = records.filter(r => r.artifactKind === "command_output" && r.artifactContent.commandLine === hashCommand);
+  const hashReuses = records.filter(r => r.artifactKind === "action_reuse" && r.artifactContent.target === hashCommand);
   console.log("DECLARED_VERIFICATION_WORKER_OBSERVATION " + JSON.stringify({ scenario, result, calls, checkerInvocations,
     checks: checks.map(r => ({ source: r.artifactContent.environment?.sourceHash, stdout: r.artifactContent.stdout, subject: r.artifactContent.governedWriteSubject })),
-    effectExecutions: other.length, blockedReason: blocked?.reason, failed }));
+    hashes: hashes.map(r => ({ stdout: r.artifactContent.stdout, subject: r.artifactContent.governedWriteSubject })),
+    hashReuses: hashReuses.length, effectExecutions: other.length, blockedReason: blocked?.reason, failed }));
   assert.equal(failed, undefined);
+  const blob = (text: string) => createHash(canonicalHead.length === 64 ? "sha256" : "sha1")
+    .update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
+  const beforeBlob = blob("before\n"), afterBlob = blob("after\n");
+  assert.equal(hashes.length, 2, "Source hashing executes once for each governed source version");
+  assert.deepEqual(hashes.map(r => r.artifactContent.stdout.trim().split(/\s+/u)),
+    [[beforeBlob, beforeBlob], [afterBlob, afterBlob]], "Git observations must describe the actual current bytes");
+  assert.notEqual(hashes[0]!.idempotencyKey, hashes[1]!.idempotencyKey);
+  assert.equal(hashReuses.length, 1, "An unchanged third observation does not execute Git again");
+  assert.equal(hashReuses[0]!.artifactContent.originalArtifactUri, hashes[1]!.uri, "Reuse selects the new source observation, not baseline");
   assert.ok(checks[0]?.artifactContent.stdout.includes("CHECK_SOURCE_before"));
   assert.equal(checkerInvocations, 2, "A changed source executes its declared checker once; unchanged repeats reuse evidence");
   assert.equal(checks.length, 2, "Both immutable baseline and post-write command observations remain recorded");
