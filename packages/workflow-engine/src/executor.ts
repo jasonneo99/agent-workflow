@@ -13,13 +13,14 @@ import { sourceSubjectHash } from "./source-subject.js";
 import { materializeVerificationRecipes } from "../../storage/src/partner-recovery-admission.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
 import {shouldCheckpointSourcePhase} from './phase-checkpoint.js';
+import {currentSourceVerificationReason,currentVerificationCommands} from './verification-freshness.js';
 import {verificationCommandsFirst} from './verification-command-order.js';
 import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
-import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
+import { admitManagedGitCommand, assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
 import {assertWorkerCommand} from '../../local-tools/src/controller-commands.js';
 import { assertRepairCommitEnabled, createRepairCheckpoint, createCurrentRevisionCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
 import {prepareTaskExecution,literalScopeVerificationCommands,artifactExecutionPolicy,assertStageWriteAdmission,type PreparedTaskExecution} from './run-preparation.js';
@@ -678,6 +679,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       let successfulFollowupRound = 0;
       let verifyRetryRequested = false;
+      let pipelineVerificationCommands:string[]=[];
       let unconsumedSuccessfulActionResult: string | null = null;
       let verifyEnvironmentalBlock: { summary: string; reason: string; files: string[] } | null = null;
       verifyActionRounds:
@@ -696,7 +698,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const candidateCommands=candidateProfile?project.execution.environments?.profiles[candidateProfile]?.verification.flatMap(rule=>rule.commands).filter(command=>!command.includes('*'))??[]:[];
         const scopedCommands=preparation&&repairCommitSelected?await literalScopeVerificationCommands(localProjectRootUri,project,[...(task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()],{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId}):[];
         const declaredPipelineCommands=scopedCommands.length?scopedCommands:candidateCommands.length?candidateCommands:preparation?.commands??[];
-        const observedCommands=new Set([...(output.requestedCommands??[]),...actionResults.flatMap(action=>typeof (action as {commandLine?:unknown}).commandLine==='string'?[(action as {commandLine:string}).commandLine]:[])]);
+        pipelineVerificationCommands=declaredPipelineCommands;
+        const observedCommands=new Set([...(output.requestedCommands??[]),...currentVerificationCommands(actionResults)]);
         const scheduledVerifierCommands = preparation&&((repairCommitSelected)||stagePattern.type==='verifier')
           ? declaredPipelineCommands.filter(command=>!observedCommands.has(command)&&(()=>{try{assertCommandAllowed(command,project);return true;}catch{return false;}})())
           : missingRepairVerifierCommands(project, stagePattern.type === "verifier",candidateFiles, output.requestedCommands ?? [], actionResults);
@@ -719,7 +722,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (deferredCommands.length) output = { ...output, requestedCommands: [] };
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
-          try { assertWorkerCommand(commandLine); }
+          try { assertWorkerCommand(commandLine); await admitManagedGitCommand({commandLine,cwd:localProjectRootUri,managedSource:task.executionPipeline?.required===true,project}); }
           catch(error) {
             const reason=error instanceof Error?error.message:String(error);
             const artifactUri=await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'local_command_rejected',target:commandLine,summary:reason,artifactKind:'action_rejection',artifactContent:{actionType:'local_command',target:commandLine,error:reason,requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
@@ -732,7 +735,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           const sourceBefore = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths) : undefined;
           // Only verification commands receive a new evidence identity after
           // governed mutations. Arbitrary side effects retain their identity.
-          const verificationCommand = isVerificationCommand(commandLine);
+          const verificationCommand = isVerificationCommand(commandLine,project,{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId});
           const writeSubject = verificationCommand ? verificationWriteSubject(actionResults) : undefined;
           reactIteration += 1;
           const commandIdempotencyKey = actionIdempotencyKey({
@@ -808,6 +811,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               artifactUri: previousCommand.uri,
               exitCode: previousCommand.content.exitCode,
               timedOut: previousCommand.content.timedOut,
+              governedWriteSubject: previousCommand.content.governedWriteSubject ?? null,
               verificationRecipe: previousCommand.content.verificationRecipe,
               environment: previousCommand.content.environment,
               outputTruncated: previousCommand.content.outputTruncated,
@@ -1088,6 +1092,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactKind: "command_output",
             artifactContent: {
               ...commandResult,
+              governedWriteSubject: writeSubject ?? null,
               ...(sourcePaths ? { sourcePaths, sourceBefore, sourceAfter,
                 subjectHash: sourceBefore === sourceAfter ? sourceAfter : null } : {}),
               approvalRule: commandApprovalRule ?? undefined,
@@ -1122,6 +1127,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactUri,
             exitCode: commandResult.exitCode,
             timedOut: commandResult.timedOut,
+            governedWriteSubject: writeSubject ?? null,
             verificationRecipe:commandResult.verificationRecipe,
             environment: commandResult.environment,
             outputPreview: truncateCommandOutputForError(commandOutputEvidence(commandResult.stdout, commandResult.stderr), 80, 4000),
@@ -1538,6 +1544,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const typedDecision = routedStageInput.acceptanceContract && typedGate
         ? await getWorkflowAcceptanceDecision(task.runId, output.artifact, typedGate) : undefined;
       const verificationViolation = pendingEvidenceReason(output)
+        ?? currentSourceVerificationReason(pipelineVerificationCommands,actionResults)
         ?? (routedStageInput.acceptanceContract
           ? (typedDecision?.mode === "legacy" ? "Enrolled acceptance contract is unavailable." : typedDecision?.reason ?? null)
           : completionReason({ ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })

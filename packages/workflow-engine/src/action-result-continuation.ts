@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
+import { selectEnvironment } from "../../run-environments/src/index.js";
+import type { EnvironmentContext } from "../../run-environments/src/schema.js";
 
 type FileReadEvidence = NonNullable<StageExecutionInput["fileReads"]>[number];
 
@@ -95,7 +98,7 @@ export function verificationWriteSubject(actionResults: unknown[]): string | und
 }
 
 /** Commands whose evidence is invalidated by any newer governed source postimage. */
-export function isVerificationCommand(commandLine: string): boolean {
+export function isVerificationCommand(commandLine: string, project?: ProjectConfig, context?: EnvironmentContext): boolean {
   const command = commandLine.trim();
   if (!command || /[;&|<>`$\n\r]/u.test(command)) return false;
   const tokens = command.split(/\s+/u);
@@ -112,7 +115,19 @@ export function isVerificationCommand(commandLine: string): boolean {
   // and frozen review recipe still independently gate every executed command.
   const invocation = tokens.slice(start).join(' ');
   if (/^node\s/u.test(invocation) && /(?:^|\s)(?:-e|--eval|-p|--print)(?:=|\s|$)/u.test(invocation)) return false;
-  return /^(?:npm (?:test|run (?:test|check|typecheck|validate|build)(?:[-:\w]*))(?:\s|$)|node (?:(?:--import|--require|-r) [\w./@-]+ )*(?:--test(?:\s|$)|[\w./-]+\.test\.(?:cjs|mjs|js)$)|python3? -m (?:unittest|pytest|compileall)(?:\s|$)|git diff --check(?:\s|$)|xcodebuild (?:build|test)(?:\s|$)|xcrun swiftc(?:\s|$))/u.test(invocation);
+  if (/^(?:npm (?:test|run (?:test|check|typecheck|validate|build)(?:[-:\w]*))(?:\s|$)|node (?:(?:--import|--require|-r) [\w./@-]+ )*(?:--test(?:\s|$)|[\w./-]+\.test\.(?:cjs|mjs|js)$)|python3? -m (?:unittest|pytest|compileall)(?:\s|$)|git diff --check(?:\s|$)|xcodebuild (?:build|test)(?:\s|$)|xcrun swiftc(?:\s|$))/u.test(invocation)) return true;
+  if (!project) return false;
+  // A trusted literal test declaration extends evidence invalidation only.
+  // Selectors or allowlist globs alone cannot turn arbitrary effects into tests.
+  const exact = (declared: string) => !/[\*?\[\]]/u.test(declared) && declared.trim() === command;
+  if (project.actions.verification_recipes?.some(recipe => recipe.commands.some(exact))) return true;
+  try {
+    const selected = selectEnvironment(project, context ?? { runId: "" }, command);
+    return Boolean(selected && project.execution.environments?.profiles[selected]?.verification
+      .some(rule => rule.commands.some(exact)));
+  } catch {
+    return false; // Invalid or unavailable selection cannot extend classification.
+  }
 }
 
 /** Requested evidence still needs a provider turn; it cannot be promoted as completion. */

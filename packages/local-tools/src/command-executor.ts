@@ -7,6 +7,7 @@ import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import {prepareScopedCommandSandbox} from './scoped-command-sandbox.js';
 import {verificationRecipeEvidence,type VerificationRecipeEvidence} from './verification-recipe-evidence.js';
 import {assertWorkerCommand} from './controller-commands.js';
+import {assertFileReadAllowed} from './file-reader.js';
 import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 import { runEnvironmentCommand, selectEnvironment, type EnvironmentContext, type EnvironmentEvidence, type EnvironmentResult } from '../../run-environments/src/index.js';
 
@@ -94,11 +95,9 @@ export async function executeAllowedCommand(input: {
   assertWorkerCommand(commandLine);
   assertCommandAllowed(commandLine, input.project);
   const argv = await expandCompileArguments(commandLine, input.cwd);
-  const managedGit = input.environmentContext?.managedSource === true || input.environmentContext?.requireEnvironment === true;
-  const managedGitRead = managedGit && argv[0] === 'git'
-    && (['status','diff','show','log','rev-parse','ls-files','ls-tree','cat-file','check-attr','check-ignore','for-each-ref','describe','merge-base','version'].includes(argv[1]??'')||isPreparedDiffTreeObservation(argv));
-  if(managedGit&&argv[0]==='git'&&!managedGitRead)throw Error('Source-control mutations are owned by the prepared runtime, not model-requested commands.');
-  if(managedGitRead&&argv.some(argument=>/^(?:--no-index|--ext-diff|--textconv|--filters|--output)(?:=|$)/u.test(argument)||argument.startsWith('../')||argument.includes('/../')||(path.isAbsolute(argument)&&!path.resolve(argument).startsWith(path.resolve(input.cwd)+path.sep))))throw Error('Prepared Git observations cannot escape the owning checkout or invoke external tools.');
+  const admittedGit = await admitManagedGitCommand({commandLine,cwd:input.cwd,project:input.project,
+    managedSource:input.environmentContext?.managedSource===true||input.environmentContext?.requireEnvironment===true});
+  const {managedGitRead}=admittedGit;
   if (argv.join("\0") !== splitCommand(commandLine).join("\0")) {
     const moduleIndex = argv[1] === "-B" ? 2 : 1;
     const prefix = argv.slice(0, moduleIndex + 2);
@@ -154,7 +153,7 @@ export async function executeAllowedCommand(input: {
     return { ...observed, commandLine, cwd: input.cwd, ...(verificationRecipe ? { verificationRecipe } : {}) };
   }
 
-  const executionArgv=managedGitRead&&['diff','diff-tree','show','log'].includes(argv[1]??'')?[argv[0]!,argv[1]!,'--no-ext-diff','--no-textconv',...argv.slice(2)]:argv;
+  const executionArgv=managedGitRead?admittedGit.executionArgv:argv;
   const sandbox=await prepareScopedCommandSandbox({enabled:input.project.actions.isolate_command_writes===true,nativePty:input.project.actions.isolate_command_writes===true && (input.project.actions.scoped_native_pty_commands??[]).includes(commandLine),argv:executionArgv,env:createProjectCommandEnv()});
   try{return await new Promise<CommandExecutionResult>((resolve, reject) => {
     const child = spawn(sandbox.argv[0], sandbox.argv.slice(1), {
@@ -201,6 +200,38 @@ export async function executeAllowedCommand(input: {
       resolve({...result,...(verificationRecipe?{verificationRecipe}:{})});
     });
   });}finally{await sandbox.cleanup();}
+}
+
+/** Read-only admission, independent of command policy; safe to call before an effect claim.
+ * Execution revalidates paths. This does not make a concurrently mutable checkout immutable. */
+export async function admitManagedGitCommand(input:{commandLine:string;cwd:string;managedSource:boolean;project:ProjectConfig}):Promise<{managedGitRead:boolean;executionArgv:string[]}> {
+  const commandLine=normalizeCommand(input.commandLine),argv=splitCommand(commandLine);
+  if(!input.managedSource||argv[0]!=='git')return {managedGitRead:false,executionArgv:argv};
+  const hashObservation=argv[1]==='hash-object';
+  const managedGitRead=hashObservation||['status','diff','show','log','rev-parse','ls-files','ls-tree','cat-file','check-attr','check-ignore','for-each-ref','describe','merge-base','version'].includes(argv[1]??'')||isPreparedDiffTreeObservation(argv);
+  if(!managedGitRead)throw Error('Source-control mutations are owned by the prepared runtime, not model-requested commands.');
+  if(argv.some(argument=>/^(?:--no-index|--ext-diff|--textconv|--filters|--output)(?:=|$)/u.test(argument)||argument.startsWith('../')||argument.includes('/../')||(path.isAbsolute(argument)&&!path.resolve(argument).startsWith(path.resolve(input.cwd)+path.sep))))throw Error('Prepared Git observations cannot escape the owning checkout or invoke external tools.');
+  if(hashObservation) {
+    if(containsShellMetacharacters(commandLine)||argv.length<3||argv.length>258)throw Error('Prepared Git hash-object requires bounded relative source file paths only.');
+    const root=await fs.realpath(input.cwd);
+    for(const relative of argv.slice(2)) {
+      const parts=relative.split('/');
+      if(!relative||relative!==relative.trim()||relative.length>4096||relative.startsWith('-')||path.posix.isAbsolute(relative)||path.win32.isAbsolute(relative)||/[\\:\u0000-\u001f\u007f]/u.test(relative)||parts.some(part=>!part||part==='.'||part==='..'||part.toLowerCase()==='.git'))throw Error('Prepared Git hash-object requires relative source file paths without options, surrounding whitespace or traversal.');
+      assertFileReadAllowed(relative,input.project);
+      let file=root;
+      try {
+        for(let index=0;index<parts.length;index++) {
+          file=path.join(file,parts[index]!);
+          const stat=await fs.lstat(file);
+          if(stat.isSymbolicLink()||(index===parts.length-1?!stat.isFile():!stat.isDirectory()))throw Error('Unsafe file type.');
+        }
+      } catch {throw Error('Prepared Git hash-object requires existing regular source files without symlinks.');}
+    }
+    // Bare hash-object invokes clean filters from repository config. Never let a model
+    // select flags; these trusted flags hash raw bytes and never write Git objects.
+    return {managedGitRead:true,executionArgv:['git','hash-object','--no-filters','--',...argv.slice(2)]};
+  }
+  return {managedGitRead:true,executionArgv:['diff','diff-tree','show','log'].includes(argv[1]??'')?[argv[0]!,argv[1]!,'--no-ext-diff','--no-textconv',...argv.slice(2)]:argv};
 }
 
 /** Admit only the reviewed committed-filename observation, never extra Git options. */

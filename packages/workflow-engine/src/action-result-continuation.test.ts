@@ -4,6 +4,7 @@ import { continuationBackoff, continuationRequestedFileReads, continuationMatche
 import type { StageExecutionOutput } from "../../model-providers/src/types.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 
 test('repaired execution ignores historical cached reads and resumes only its own checkpoint',()=>{
   const current='existing-assignment-repaired:synthetic-run:7';
@@ -356,4 +357,56 @@ test("already-allowed Node test bootstrap recipes remain verification, never she
     'node --import tsx script.ts', 'node --import tsx --eval code --test source.test.ts', recipe + '; other', recipe + '\nother']) {
     assert.equal(isVerificationCommand(command), false, command);
   }
+});
+
+test("exact project verification wrappers invalidate evidence without classifying arbitrary Python effects", () => {
+  const command = "python3 scripts/check_source.py --group portable";
+  const profile = { kind: "container", platform: "linux/arm64",
+    image: "example.test/checks@sha256:" + "a".repeat(64), source_paths: ["src"],
+    readiness: [{ argv: ["python3", "--version"] }],
+    verification: [{ commands: [command], format: "pytest", minimum_tests: 1 }] };
+  const project = projectConfigSchema.parse({ project: { name: "Synthetic declarations" },
+    execution: { environments: { profiles: { checks: profile }, selectors: [{ command, profile: "checks" }] } },
+    actions: { allowed_commands: [command, "python3 scripts/publish.py"] } });
+  assert.equal(isVerificationCommand(command), false, "The fixture reproduces the custom-wrapper classification gap");
+  assert.equal(isVerificationCommand(command, project), true);
+  for (const other of ["python3 scripts/publish.py", command + " --other", "python3 scripts/check_source.py --group native",
+    command + "; other", command + "\nother", command + " | other", command + " $(other)"]) {
+    assert.equal(isVerificationCommand(other, project), false, other);
+  }
+  const onlyAllowed = projectConfigSchema.parse({ project: { name: "Synthetic allowlist" }, actions: { allowed_commands: [command] } });
+  assert.equal(isVerificationCommand(command, onlyAllowed), false, "Command permission is not a verification declaration");
+  const selectorOnly = structuredClone(project); selectorOnly.execution.environments!.profiles.checks!.verification = [];
+  assert.equal(isVerificationCommand(command, selectorOnly), false, "Environment selection alone is not a test contract");
+});
+
+test("declared verification uses the selected profile and honors workflow and stage selectors", () => {
+  const command = "python3 scripts/check_source.py --group portable";
+  const profile = { kind: "container", platform: "linux/arm64",
+    image: "example.test/checks@sha256:" + "b".repeat(64), source_paths: ["src"],
+    readiness: [{ argv: ["python3", "--version"] }],
+    verification: [{ commands: [command], format: "pytest", minimum_tests: 1 }] };
+  const project = projectConfigSchema.parse({ project: { name: "Synthetic selection" }, execution: { environments: {
+    profiles: { selected: { ...profile, verification: [] }, reviewed: profile }, default_profile: "selected",
+    selectors: [{ command, profile: "reviewed", workflow: "source-repair", stage: "verify" }] } } });
+  assert.equal(isVerificationCommand(command, project), false, "An unselected profile cannot reclassify a command");
+  assert.equal(isVerificationCommand(command, project, { runId: "fixture", workflowId: "source-repair", stageId: "verify" }), true);
+  assert.equal(isVerificationCommand(command, project, { runId: "fixture", workflowId: "source-repair", stageId: "repair" }), false);
+  const baselineOnly = structuredClone(project); baselineOnly.execution.environments!.default_profile = undefined;
+  baselineOnly.execution.environments!.selectors = []; baselineOnly.execution.environments!.baseline_profile = "reviewed";
+  assert.equal(isVerificationCommand(command, baselineOnly), false, "Source-preparation baseline profiles are not command fallbacks");
+});
+
+test("literal action verification recipes remain independent of command permission and reject glob declarations", () => {
+  const command = "python3 scripts/check_source.py --group portable";
+  const recipe = { source_paths: ["src"], test_paths: ["tests"], commands: [command] };
+  const project = projectConfigSchema.parse({ project: { name: "Synthetic recipes" },
+    actions: { allowed_commands: [], verification_recipes: [recipe] } });
+  assert.equal(isVerificationCommand(command, project), true, "Classification does not grant otherwise absent command permission");
+  const wildcard = structuredClone(project); wildcard.actions.verification_recipes![0]!.commands = ["python3 scripts/check_source.py *"];
+  assert.equal(isVerificationCommand(command, wildcard), false);
+  assert.equal(isVerificationCommand("python3 scripts/check_source.py *", wildcard), false);
+  const unsafe = structuredClone(project); unsafe.actions.verification_recipes![0]!.commands = ["env PATH=other python3 scripts/check_source.py", "node --eval code"];
+  assert.equal(isVerificationCommand("env PATH=other python3 scripts/check_source.py", unsafe), false);
+  assert.equal(isVerificationCommand("node --eval code", unsafe), false);
 });
