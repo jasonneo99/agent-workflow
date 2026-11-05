@@ -408,6 +408,8 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
   program
     .command("run")
     .description("Queue a workflow run in enterprise storage and print the compiled brief")
+    .option("--related-to <run-id>", "earlier run of the same task; queue grouping only, without reusing authority or results")
+    .option("--related-reason <text>", "why this fresh attempt belongs to that task family; required with --related-to")
     .option("--acceptance-requirements <file>", "JSON requirements with explicit sourcePaths and pending deliverables; source identity is measured before atomic enrollment")
     .argument("<workflow>", "workflow id")
     .requiredOption("-p, --project <dir>", "project directory")
@@ -418,7 +420,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .option("--no-brief", "queue the run without printing the compiled brief")
     .option("--source-token-budget <number>", "token budget for indexed source summaries")
     .option("--source-max-files <number>", "maximum indexed source summaries to include")
-    .action(async (workflowId: string, options: { project: string; task: string; acceptanceRequirements?: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string; requester?: string; requesterChannel?: string }) => {
+    .action(async (workflowId: string, options: { project: string; task: string; relatedTo?: string; relatedReason?: string; acceptanceRequirements?: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string; requester?: string; requesterChannel?: string }) => {
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -434,6 +436,8 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       const result = await queueWorkflow(ctx, {
         workflowId,
         acceptanceRequirementsFile: options.acceptanceRequirements,
+        relatedRunId: options.relatedTo,
+        relatedRunReason: options.relatedReason,
         projectPath: options.project,
         task: options.task,
         policyProfile: options.policyProfile,
@@ -463,6 +467,8 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
   program
     .command("run-and-watch")
     .description("Index, queue, process, export, and summarize a workflow run")
+    .option("--related-to <run-id>", "earlier run of the same task; queue grouping only, without reusing authority or results")
+    .option("--related-reason <text>", "why this fresh attempt belongs to that task family; required with --related-to")
     .argument("<workflow>", "workflow id or alias")
     .requiredOption("-p, --project <dir>", "project directory")
     .requiredOption("-t, --task <task>", "task description")
@@ -480,6 +486,8 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .option("--source-token-budget <number>", "token budget for indexed source summaries")
     .option("--source-max-files <number>", "maximum indexed source summaries to include")
     .action(async (workflowId: string, options: {
+      relatedTo?: string;
+      relatedReason?: string;
       project: string;
       task: string;
       policyProfile?: string;
@@ -528,6 +536,8 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
 
       const queued = await queueWorkflow(ctx, {
         workflowId,
+        relatedRunId: options.relatedTo,
+        relatedRunReason: options.relatedReason,
         projectPath: projectDir,
         task: options.task,
         policyProfile: options.policyProfile,

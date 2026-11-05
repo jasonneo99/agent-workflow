@@ -7,6 +7,7 @@ import { createMcpLogger } from "./logging.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v3";
+import { appendFreshRunFamilyArgs, freshRunFamilyToolSchema } from "./fresh-run-family-options.js";
 import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { registerContextGatewayTools, registerContextThresholdTool } from "./tools/context.js";
 import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
@@ -740,6 +741,7 @@ server.registerTool(
     title: "AgentFlow run workflow",
     description: "Run a workflow for a project task and process worker stages by default. Set queueOnly=true only when you explicitly want to leave the run queued for a separate worker.",
     inputSchema: {
+      ...freshRunFamilyToolSchema,
       workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Task description."),
@@ -754,9 +756,10 @@ server.registerTool(
       sourceMaxFiles: z.number().int().positive().optional().describe("Maximum indexed source summaries to include.")
     }
   },
-  async ({ workflow, project, task, queueOnly, includeBrief, workerLimit, timeoutMs, out, skipIndex, fullIndex, sourceTokenBudget, sourceMaxFiles }) => {
+  async ({ workflow, project, task, relatedRunId, relatedRunReason, queueOnly, includeBrief, workerLimit, timeoutMs, out, skipIndex, fullIndex, sourceTokenBudget, sourceMaxFiles }) => {
     if (!queueOnly) {
       const args = ["run-and-watch", workflow, "--project", project, "--task", task];
+      appendFreshRunFamilyArgs(args, {relatedRunId, relatedRunReason});
       if (skipIndex) {
         args.push("--skip-index");
       }
@@ -777,6 +780,7 @@ server.registerTool(
     }
 
     const args = ["run", workflow, "--project", project, "--task", task];
+    appendFreshRunFamilyArgs(args, {relatedRunId, relatedRunReason});
     if (includeBrief !== true) {
       args.push("--no-brief");
     }
@@ -791,6 +795,7 @@ server.registerTool(
     title: "AgentFlow run and watch",
     description: "Index a project, queue a workflow, process worker tasks until complete or failed, export reports, and return the summary. If approval is required, the result tells the caller which approval ids to approve or execute in their current context.",
     inputSchema: {
+      ...freshRunFamilyToolSchema,
       workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Task description."),
@@ -811,6 +816,8 @@ server.registerTool(
     workflow,
     project,
     task,
+    relatedRunId,
+    relatedRunReason,
     skipIndex,
     indexMaxFiles,
     fullIndex,
@@ -824,6 +831,7 @@ server.registerTool(
     sourceMaxFiles
   }) => {
     const args = ["run-and-watch", workflow, "--project", project, "--task", task];
+    appendFreshRunFamilyArgs(args, {relatedRunId, relatedRunReason});
     if (skipIndex) {
       args.push("--skip-index");
     }

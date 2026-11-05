@@ -54,7 +54,7 @@ test("PostgreSQL: one latest card across repair sets, cycles, ties, and project 
         started_at timestamptz, replacement_run_id text, task text default '', evaluation_metadata jsonb default '{}'
       ) on commit drop;
       create temporary table workflow_tasks (run_id text, status text) on commit drop;
-      create temporary table action_receipts (run_id text, action_type text, created_at timestamptz,metadata jsonb,summary text,receipt_hash text) on commit drop;
+      create temporary table action_receipts (run_id text, action_type text, target text, created_at timestamptz,metadata jsonb,summary text,receipt_hash text) on commit drop;
       create temporary table action_approvals (id text,run_id text,status text) on commit drop;
       create temporary table artifacts(run_id text,kind text,content jsonb) on commit drop;
       create temporary table queue_coordinator_assignments(project_id text,source_run_id text,child_run_id text,state text) on commit drop;

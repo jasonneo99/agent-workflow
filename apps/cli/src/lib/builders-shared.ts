@@ -1530,6 +1530,8 @@ export async function pathIsFile(filePath: string): Promise<boolean> {
 
 
 export async function queueWorkflow(ctx: CliContext, input: {
+  relatedRunId?: string;
+  relatedRunReason?: string;
   acceptanceRequirementsFile?: string;
   workflowId: string;
   projectPath: string;
@@ -1662,6 +1664,8 @@ export async function queueWorkflow(ctx: CliContext, input: {
       subjectHash: await sourceSubjectHash(projectDir, requirements.sourcePaths) };
   }
   const run = await createWorkflowRun({
+    relatedRunId: input.relatedRunId,
+    relatedRunReason: input.relatedRunReason,
     acceptanceRequirements,
     projectName: project.project.name,
     projectRootUri: input.registeredProjectRootUri ?? projectDir,
@@ -1726,6 +1730,7 @@ export function resolveDefaultRequester(): string | null {
   return process.env.AGENTFLOW_REQUESTER?.trim()
     || process.env.USER?.trim()
     || process.env.LOGNAME?.trim()
+    || process.env.USERNAME?.trim()
     || null;
 }
 

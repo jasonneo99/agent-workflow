@@ -34,6 +34,7 @@ import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.j
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
 import { projectIdentitySchemaSql, registerProjectIdentityScope, projectIdentitySchemaAvailable } from "./project-identity.js";
 import { projectRegistrationRoot } from "./project-registration-root.js";
+import {prepareFreshRunFamilyLink,recordFreshRunFamilyLink,type FreshRunFamilyInput} from './fresh-run-family-link.js';
 import { stableJson, workflowDefinitionHash } from "./registry.js";
 import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
 import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
@@ -1310,7 +1311,7 @@ export async function listProjectFileSummaries(input: {
   });
 }
 
-export interface CreateRunInput {
+export interface CreateRunInput extends FreshRunFamilyInput {
   prepareOnly?: boolean;
   acceptanceRequirements?: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables">;
   projectName: string;
@@ -1375,10 +1376,11 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       );
       const projectId = projectResult.rows[0].id;
       await registerProjectIdentityScope(client, projectId, registrationLocation.commonRoot);
+      const queueFamilyLink=await prepareFreshRunFamilyLink(client,input,projectId);
       const workflowVersion = String(input.workflowVersion ?? "1");
       const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
       if (input.evaluationMetadata?.acceptanceContract) throw new Error("Use acceptanceRequirements for atomic runtime enrollment.");
-      const evaluationMetadataJson = JSON.stringify({ ...(input.evaluationMetadata ?? {}), executionPipeline,
+      const evaluationMetadataJson = JSON.stringify({ ...(input.evaluationMetadata ?? {}), executionPipeline, ...(queueFamilyLink?{queueFamilyLink}:{}),
         ...(executionPipeline.required&&executionPipeline.sourceChanges?{partnerRepairPipeline:{version:1,requiresVerifierSlot:true}}:{}),
         ...(input.acceptanceRequirements ? { acceptanceRequirements: input.acceptanceRequirements } : {}) });
       const presentation = buildRunPresentation({ task: input.task, workflowId: input.workflow.id, projectName: input.projectName });
@@ -1443,7 +1445,7 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
       await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator",
         actionType: "workflow_created", target: runId, summary: "Workflow created and queued.", metadata: "{}" });
-
+      await recordFreshRunFamilyLink(client,runId,queueFamilyLink);
       if (input.compiledBrief) {
         await appendPlanContextInfluence(client, { runId, text: input.compiledBrief, influence: input.compiledBriefMetadata?.contextInfluence, artifactUri: compiledBriefUri });
         await client.query(

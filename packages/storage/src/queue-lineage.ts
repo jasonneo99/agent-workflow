@@ -18,7 +18,7 @@ function scopeSql(identity: boolean, projectRootParameter?: string): string {
         r.evaluation_metadata->>'actor' as metadata_actor,r.evaluation_metadata->>'actorRole' as metadata_actor_role,
         r.evaluation_metadata->>'idempotencyKey' as idempotency_key,r.evaluation_metadata->>'sourceRunId' as source_run_id,
         r.evaluation_metadata->>'replayOfRunId' as replay_of_run_id,r.evaluation_metadata->>'repairOriginRunId' as repair_origin_run_id,
-        r.evaluation_metadata->>'parentRunId' as parent_run_id,
+        r.evaluation_metadata->>'parentRunId' as parent_run_id,r.evaluation_metadata->'queueFamilyLink' as queue_family_link,
         coalesce(l.identity_id,r.project_id) as family_project_id
         from workflow_runs r left join project_identity_locations l on l.project_id=r.project_id ${scope})`
     : `family_runs as (select r.id,r.project_id,r.run_set_id,r.status,r.started_at,r.replacement_run_id,r.task,
@@ -26,7 +26,7 @@ function scopeSql(identity: boolean, projectRootParameter?: string): string {
         r.evaluation_metadata->>'actor' as metadata_actor,r.evaluation_metadata->>'actorRole' as metadata_actor_role,
         r.evaluation_metadata->>'idempotencyKey' as idempotency_key,r.evaluation_metadata->>'sourceRunId' as source_run_id,
         r.evaluation_metadata->>'replayOfRunId' as replay_of_run_id,r.evaluation_metadata->>'repairOriginRunId' as repair_origin_run_id,
-        r.evaluation_metadata->>'parentRunId' as parent_run_id,
+        r.evaluation_metadata->>'parentRunId' as parent_run_id,r.evaluation_metadata->'queueFamilyLink' as queue_family_link,
         r.project_id as family_project_id from workflow_runs r ${scope})`;
 }
 
@@ -128,6 +128,22 @@ export function queuePresentationSql(identity = false, projectRootParameter?: st
     from family_runs where run_set_id is not null
 ), forward_edges(a,b) as (
   select id,anchor from set_members where id<>anchor
+  union
+  select member.id,candidate.id from family_runs member join family_runs candidate
+    on candidate.id::text=member.queue_family_link->>'relatedRunId'
+      and candidate.family_project_id=member.family_project_id
+      and member.queue_family_link->>'projectId'=member.project_id::text
+      and member.queue_family_link->>'relatedProjectId'=candidate.project_id::text
+      ${identity?"and member.queue_family_link->>'identityId'=member.family_project_id::text":""}
+      and member.queue_family_link->>'kind'='fresh-related-attempt'
+      and member.queue_family_link->>'version'='1' and member.queue_family_link->>'authority'='direct-human'
+      and member.queue_family_link->'executionAuthorityGranted'='false'::jsonb
+      and member.queue_family_link->'evidenceReused'='false'::jsonb
+      and member.queue_family_link->'originalAcceptanceChanged'='false'::jsonb
+      and exists(select 1 from action_receipts family_link
+        where family_link.run_id=member.id and family_link.action_type='fresh_run_family_linked'
+          and family_link.target=candidate.id::text and family_link.receipt_hash is not null
+          and family_link.metadata=member.queue_family_link)
   union
   select member.id,candidate.id from family_runs member
     join family_runs candidate on candidate.id=member.replacement_run_id
