@@ -1,6 +1,15 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
+import { createHash, randomUUID } from "node:crypto";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
+import {prepareScopedCommandSandbox} from './scoped-command-sandbox.js';
+import {verificationRecipeEvidence,type VerificationRecipeEvidence} from './verification-recipe-evidence.js';
+import {assertWorkerCommand} from './controller-commands.js';
+import {assertFileReadAllowed} from './file-reader.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
+import { runEnvironmentCommand, selectEnvironment, type EnvironmentContext, type EnvironmentEvidence, type EnvironmentResult } from '../../run-environments/src/index.js';
 
 export interface CommandExecutionResult {
   commandLine: string;
@@ -11,6 +20,45 @@ export interface CommandExecutionResult {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
+  outputTruncated?:boolean;
+  verificationRecipe?:VerificationRecipeEvidence;
+  environment?: EnvironmentEvidence;
+}
+
+export interface ExecutionCapabilityProbe {
+  id: string;
+  status: "passed" | "failed";
+  checkedAt: string;
+  digest: string;
+  reason: string | null;
+}
+
+/** Python redirects bytecode under an inherited cache prefix even for explicit
+ * py_compile calls. Inspect that artifact without removing the caller's
+ * write-isolation environment or permitting writes beside product source. */
+export function pythonCompilationCacheDirectory(sourceFile:string,cwd:string,env:NodeJS.ProcessEnv=process.env):string {
+  const directory=path.dirname(path.resolve(cwd,sourceFile));
+  if(!env.PYTHONPYCACHEPREFIX)return path.join(directory,"__pycache__");
+  return path.join(path.resolve(cwd,env.PYTHONPYCACHEPREFIX),directory.slice(path.parse(directory).root.length));
+}
+
+/** Exercise remediation-sensitive command behavior through the real executor.
+ * Probes are isolated, bounded, body-free and grant no command authority. */
+export async function probeCommandExecutionCapabilities():Promise<ExecutionCapabilityProbe[]> {
+  const id="python-pycompile-glob-v1",checkedAt=new Date().toISOString();
+  const cwd=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),"agentflow-worker-capability-")));
+  try {
+    await fs.mkdir(path.join(cwd,"source"));
+    await fs.writeFile(path.join(cwd,"source","probe.py"),"probe_value = 1\n","utf8");
+    const project={actions:{allowed_commands:["python3 -m py_compile source/*.py"],blocked_commands:[],command_timeout_ms:5_000,max_output_chars:2_000,isolate_command_writes:false}} as unknown as ProjectConfig;
+    const result=await executeAllowedCommand({commandLine:"python3 -m py_compile source/*.py",cwd,project});
+    const compiled=(await fs.readdir(pythonCompilationCacheDirectory("source/probe.py",cwd))).some(name=>name.startsWith("probe.")&&name.endsWith(".pyc"));
+    if(result.exitCode!==0||result.timedOut||!compiled)throw new Error(result.stderr.trim()||`probe exited ${result.exitCode}`);
+    return [{id,status:"passed",checkedAt,digest:createHash("sha256").update(`${id}\0expanded\0shell-false\0compiled`).digest("hex"),reason:null}];
+  } catch(error) {
+    const reason=(error instanceof Error?error.message:String(error)).replace(/\s+/gu," ").slice(0,500);
+    return [{id,status:"failed",checkedAt,digest:createHash("sha256").update(`${id}\0failed\0${reason}`).digest("hex"),reason}];
+  } finally { await fs.rm(cwd,{recursive:true,force:true}); }
 }
 
 export function assertCommandAllowed(commandLine: string, project: ProjectConfig): void {
@@ -40,23 +88,78 @@ export async function executeAllowedCommand(input: {
   commandLine: string;
   cwd: string;
   project: ProjectConfig;
+  environmentContext?: EnvironmentContext;
+  assertEnvironmentAuthority?: () => Promise<void>;
 }): Promise<CommandExecutionResult> {
   const commandLine = normalizeCommand(input.commandLine);
+  assertWorkerCommand(commandLine);
   assertCommandAllowed(commandLine, input.project);
-  const argv = splitCommand(commandLine);
+  const argv = await expandCompileArguments(commandLine, input.cwd);
+  const admittedGit = await admitManagedGitCommand({commandLine,cwd:input.cwd,project:input.project,
+    managedSource:input.environmentContext?.managedSource===true||input.environmentContext?.requireEnvironment===true});
+  const {managedGitRead}=admittedGit;
+  if (argv.join("\0") !== splitCommand(commandLine).join("\0")) {
+    const moduleIndex = argv[1] === "-B" ? 2 : 1;
+    const prefix = argv.slice(0, moduleIndex + 2);
+    const files = argv.slice(moduleIndex + 2);
+    const root = await fs.realpath(input.cwd);
+    const relative = files.map(file => path.isAbsolute(file) ? path.relative(root,file).split(path.sep).join("/") : file);
+    const candidates = [[...prefix,...files],[...prefix,...relative],
+      ...files.map(file=>[...prefix,file]),...relative.map(file=>[...prefix,file])];
+    for (const pattern of input.project.actions.blocked_commands) {
+      if (candidates.some(args=>matchesPattern(args.join(" "),pattern))) {
+        throw new Error(`Expanded compilation rejected by blocked pattern: ${pattern}`);
+      }
+    }
+  }
   if (!argv.length) {
     throw new Error("Command is empty.");
   }
-
   const started = Date.now();
   const timeoutMs = input.project.actions.command_timeout_ms;
   const maxOutputChars = input.project.actions.max_output_chars;
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(argv[0], argv.slice(1), {
+  const selectedEnvironment = input.environmentContext&&!managedGitRead ? selectEnvironment(input.project, input.environmentContext, commandLine) : null;
+  if(input.environmentContext?.requireEnvironment&&!selectedEnvironment&&!managedGitRead)throw Error('This run requires a declared prepared environment for this command; host fallback is disabled.');
+  if (input.environmentContext && selectedEnvironment) {
+    let observed: EnvironmentResult;
+    try { observed = await runEnvironmentCommand({ cwd: input.cwd, project: input.project,
+      context: input.environmentContext, commandLine, argv,
+      assertAuthority: input.assertEnvironmentAuthority,
+      nativeRunner: async (nativeArgv, limits) => {
+        const nativeCommand = nativeArgv === argv ? commandLine : nativeArgv.map(argument => {
+          if (/["'\\\r\n]/u.test(argument)) throw Error('Native readiness requires a simple allowlisted command; use a project script for complex probes.');
+          return /\s/u.test(argument) ? `"${argument}"` : argument;
+        }).join(' ');
+        return executeAllowedCommand({ cwd: input.cwd, project: { ...input.project, actions: { ...input.project.actions,
+          command_timeout_ms: limits.timeoutMs, max_output_chars: limits.maxOutputChars } }, commandLine: nativeCommand });
+      }
+    }); } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      observed = { exitCode: 126, signal: null, stdout: '', stderr: reason, durationMs: Date.now() - started, timedOut: false,
+        environment: { schemaVersion: 1, authority: 'execution-evidence-only', runId: input.environmentContext.runId,
+          taskId: input.environmentContext.taskId ?? null, attemptId: randomUUID(), profile: selectedEnvironment,
+          status: 'blocked', phase: 'resolution', reason, platform: input.project.execution.environments!.profiles[selectedEnvironment]!.platform,
+          recipeHash: '', dependencyHash: '', sourceHash: '', imageId: null, runtimeHash: null, readiness: [], receiptPath: null, cleanup: 'not-needed', resources: { containers: [], network: null } } };
+    }
+    const rules=observed.environment.profile===selectedEnvironment
+      ?input.project.execution.environments!.profiles[observed.environment.profile]?.verification.filter(rule=>rule.commands.some(pattern=>verificationCommandMatches(commandLine,pattern)))??[]:[];
+    const declaration=rules.length===1?{...rules[0]!,commands:[commandLine]}:undefined;
+    const retained = verificationRecipeEvidence({ ...observed, commandLine }, input.project.actions.verification_recipes,declaration);
+    const ownedRecipe=input.project.actions.verification_recipes?.some(recipe=>recipe.commands.includes(commandLine));
+    const verificationRecipe:VerificationRecipeEvidence|undefined = ownedRecipe&&!declaration
+      ?{status:'failed',cases:null,passed:null,skipped:null,reason:'Executed environment evidence has no unique matching declared behavioral rule.'}
+      :retained?.status === 'failed' ? retained : observed.verificationRecipe ?? retained;
+    return { ...observed, commandLine, cwd: input.cwd, ...(verificationRecipe ? { verificationRecipe } : {}) };
+  }
+
+  const executionArgv=managedGitRead?admittedGit.executionArgv:argv;
+  const sandbox=await prepareScopedCommandSandbox({enabled:input.project.actions.isolate_command_writes===true,nativePty:input.project.actions.isolate_command_writes===true && (input.project.actions.scoped_native_pty_commands??[]).includes(commandLine),argv:executionArgv,env:createProjectCommandEnv()});
+  try{return await new Promise<CommandExecutionResult>((resolve, reject) => {
+    const child = spawn(sandbox.argv[0], sandbox.argv.slice(1), {
       cwd: input.cwd,
       shell: false,
-      env: createProjectCommandEnv()
+      env: sandbox.env
     });
     const stdout = createBoundedOutputCapture(maxOutputChars);
     const stderr = createBoundedOutputCapture(maxOutputChars);
@@ -82,7 +185,7 @@ export async function executeAllowedCommand(input: {
 
     child.on("close", (exitCode, signal) => {
       clearTimeout(timeout);
-      resolve({
+      const result:CommandExecutionResult={
         commandLine,
         cwd: input.cwd,
         exitCode,
@@ -90,10 +193,99 @@ export async function executeAllowedCommand(input: {
         stdout: stdout.text(),
         stderr: stderr.text(),
         durationMs: Date.now() - started,
-        timedOut
-      });
+        timedOut,
+        ...(stdout.truncated()||stderr.truncated()?{outputTruncated:true}:{})
+      };
+      const verificationRecipe=verificationRecipeEvidence(result,input.project.actions.verification_recipes);
+      resolve({...result,...(verificationRecipe?{verificationRecipe}:{})});
     });
-  });
+  });}finally{await sandbox.cleanup();}
+}
+
+/** Read-only admission, independent of command policy; safe to call before an effect claim.
+ * Execution revalidates paths. This does not make a concurrently mutable checkout immutable. */
+export async function admitManagedGitCommand(input:{commandLine:string;cwd:string;managedSource:boolean;project:ProjectConfig}):Promise<{managedGitRead:boolean;executionArgv:string[]}> {
+  const commandLine=normalizeCommand(input.commandLine),argv=splitCommand(commandLine);
+  if(!input.managedSource||argv[0]!=='git')return {managedGitRead:false,executionArgv:argv};
+  const hashObservation=argv[1]==='hash-object';
+  const managedGitRead=hashObservation||['status','diff','show','log','rev-parse','ls-files','ls-tree','cat-file','check-attr','check-ignore','for-each-ref','describe','merge-base','version'].includes(argv[1]??'')||isPreparedDiffTreeObservation(argv);
+  if(!managedGitRead)throw Error('Source-control mutations are owned by the prepared runtime, not model-requested commands.');
+  if(argv.some(argument=>/^(?:--no-index|--ext-diff|--textconv|--filters|--output)(?:=|$)/u.test(argument)||argument.startsWith('../')||argument.includes('/../')||(path.isAbsolute(argument)&&!path.resolve(argument).startsWith(path.resolve(input.cwd)+path.sep))))throw Error('Prepared Git observations cannot escape the owning checkout or invoke external tools.');
+  if(hashObservation) {
+    if(containsShellMetacharacters(commandLine)||argv.length<3||argv.length>258)throw Error('Prepared Git hash-object requires bounded relative source file paths only.');
+    const root=await fs.realpath(input.cwd);
+    for(const relative of argv.slice(2)) {
+      const parts=relative.split('/');
+      if(!relative||relative!==relative.trim()||relative.length>4096||relative.startsWith('-')||path.posix.isAbsolute(relative)||path.win32.isAbsolute(relative)||/[\\:\u0000-\u001f\u007f]/u.test(relative)||parts.some(part=>!part||part==='.'||part==='..'||part.toLowerCase()==='.git'))throw Error('Prepared Git hash-object requires relative source file paths without options, surrounding whitespace or traversal.');
+      assertFileReadAllowed(relative,input.project);
+      let file=root;
+      try {
+        for(let index=0;index<parts.length;index++) {
+          file=path.join(file,parts[index]!);
+          const stat=await fs.lstat(file);
+          if(stat.isSymbolicLink()||(index===parts.length-1?!stat.isFile():!stat.isDirectory()))throw Error('Unsafe file type.');
+        }
+      } catch {throw Error('Prepared Git hash-object requires existing regular source files without symlinks.');}
+    }
+    // Bare hash-object invokes clean filters from repository config. Never let a model
+    // select flags; these trusted flags hash raw bytes and never write Git objects.
+    return {managedGitRead:true,executionArgv:['git','hash-object','--no-filters','--',...argv.slice(2)]};
+  }
+  return {managedGitRead:true,executionArgv:['diff','diff-tree','show','log'].includes(argv[1]??'')?[argv[0]!,argv[1]!,'--no-ext-diff','--no-textconv',...argv.slice(2)]:argv};
+}
+
+/** Admit only the reviewed committed-filename observation, never extra Git options. */
+function isPreparedDiffTreeObservation(argv:readonly string[]):boolean {
+  return argv.length===6&&argv[1]==='diff-tree'&&argv[2]==='--no-commit-id'&&argv[3]==='--name-status'&&argv[4]==='-r'
+    &&/^(?:HEAD|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/u.test(argv[5]??'');
+}
+
+/** Only the explicitly requested Python compilation recipe expands wildcards.
+ * Never enable a shell or apply expansion to scripts, flags or quoted literals.
+ */
+export async function expandCompileArguments(commandLine: string, cwd: string): Promise<string[]> {
+  const argv = splitCommand(commandLine);
+  const moduleIndex = argv[1] === "-B" ? 2 : 1;
+  if (!/^python(?:3(?:\.\d+)?)?$/u.test(argv[0] ?? "") ||
+      argv[moduleIndex] !== "-m" || argv[moduleIndex + 1] !== "py_compile") return argv;
+  const raw = commandLine.match(/"[^"]*"|'[^']*'|[^\s]+/gu) ?? [];
+  const root = await fs.realpath(cwd);
+  const expanded = argv.slice(0, moduleIndex + 2);
+  for (let index = moduleIndex + 2; index < argv.length; index++) {
+    const argument = argv[index];
+    if (!argument.includes("*") || /^["']/u.test(raw[index] ?? "")) {
+      expanded.push(argument);
+      continue;
+    }
+    if (!/^(?:[A-Za-z0-9_.-]+\/)*\*\.py$/u.test(argument) ||
+        argument.split("/").some(part => part === "." || part === "..")) {
+      throw new Error("Unsupported compilation wildcard; use a bounded project-relative *.py pattern.");
+    }
+    const directory = path.resolve(root, path.dirname(argument));
+    if (await fs.realpath(directory) !== directory) throw new Error("Compilation wildcard directory contains a symlink.");
+    const relative = path.relative(root, directory);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error("Compilation wildcard escapes the project.");
+    }
+    const matches: string[] = [];
+    const entries = await fs.opendir(directory);
+    let inspected = 0;
+    for await (const entry of entries) {
+      if (++inspected > 4096) throw new Error("Compilation wildcard directory exceeds inspection bound.");
+      if (!entry.name.endsWith(".py") || entry.name.startsWith(".")) continue;
+      const file = path.join(directory, entry.name);
+      if (!(await fs.lstat(file)).isFile() || entry.isSymbolicLink()) {
+        throw new Error("Compilation wildcard requires regular non-symlink files.");
+      }
+      matches.push(file);
+      if (matches.length > 256) throw new Error("Compilation wildcard exceeds file bound.");
+    }
+    if (!matches.length) throw new Error("Compilation wildcard matched no files.");
+    expanded.push(...matches.sort());
+    if (expanded.length > 512) throw new Error("Compilation arguments exceed bound.");
+  }
+  if (expanded.length > 512) throw new Error("Compilation arguments exceed bound.");
+  return expanded;
 }
 
 export function commandSerializationResource(commandLine: string, cwd: string): string | null {
@@ -117,6 +309,9 @@ function createProjectCommandEnv(): NodeJS.ProcessEnv {
   // commands should resolve their database config from the project cwd instead
   // of inheriting the workflow runtime connection string.
   delete env.DATABASE_URL;
+  // A workflow test command is a new collection, not a child of the runner's
+  // own Node test harness. Inheriting this silently skips nested collections.
+  delete env.NODE_TEST_CONTEXT;
 
   return env;
 }
@@ -184,7 +379,7 @@ function splitCommand(commandLine: string): string[] {
 }
 
 /** Retain the invocation preamble and latest diagnostics, never the whole log. */
-export function createBoundedOutputCapture(maxChars: number): { append(chunk: string): void; text(): string } {
+export function createBoundedOutputCapture(maxChars: number): { append(chunk: string): void; text(): string;truncated():boolean } {
   const limit = Math.max(0, Math.floor(maxChars));
   const marker = "\n...[middle truncated]...\n".slice(0, limit);
   const headLimit = Math.floor((limit - marker.length) / 2);
@@ -207,6 +402,7 @@ export function createBoundedOutputCapture(maxChars: number): { append(chunk: st
         tail = tailLimit ? (tail + chunk).slice(-tailLimit) : "";
       }
     },
-    text: () => truncated ? head + marker + tail : head
+    text: () => truncated ? head + marker + tail : head,
+    truncated:()=>truncated
   };
 }

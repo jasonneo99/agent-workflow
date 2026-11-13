@@ -52,3 +52,16 @@ test("memory ranking uses deterministic semantic similarity", () => {
   ] });
   assert.equal(plan.memory[0].sourceUri, "memory/reuse");
 });
+
+test("repair lesson consumption requires verified reinforcement before ranking", () => {
+  const base = { sourceUri: "memory/repair", kind: "workflow_repair_learning", summary: target.task, updatedAt: new Date(0).toISOString() };
+  for (const gates of [{}, { acceptanceVerified: false, outcome: "reinforce" }, { acceptanceVerified: true, outcome: "avoid" }, { acceptanceVerified: true, outcome: "observe" }, { acceptanceVerified: true }]) {
+    const plan = buildGovernedReusePlan({ target, candidates: [], memory: [{ ...base, ...gates }] });
+    assert.deepEqual(plan.memory, []);
+  }
+  const accepted = { ...base, acceptanceVerified: true, outcome: "reinforce" };
+  const plan = buildGovernedReusePlan({ target, candidates: [], memory: [accepted], maxMemory: 1 });
+  assert.equal(plan.memory[0]?.sourceUri, accepted.sourceUri);
+  assert.equal(plan.recommendation, "run-fresh");
+  assert.deepEqual(buildGovernedReusePlan({ target, candidates: [], memory: [{ ...base, kind: "orchestration_memory" }] }).memory.map((item) => item.sourceUri), [base.sourceUri]);
+});

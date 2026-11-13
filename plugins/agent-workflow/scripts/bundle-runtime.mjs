@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { createHash } from 'node:crypto';
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(pluginRoot, "../..");
@@ -17,7 +19,11 @@ function run(command, args, options = {}) {
 
 try {
   const runtimePin = JSON.parse(fs.readFileSync(path.join(pluginRoot, "runtime-version.json"), "utf8"));
-  const packageSpec = `${runtimePin.package}@${runtimePin.version}`;
+  // Local verification can package a reviewed, already-built engine without
+  // publishing it or accidentally bundling unrelated checkout changes.
+  const packageSpec = process.env.AGENTFLOW_PLUGIN_RUNTIME_TARBALL
+    ? path.resolve(process.env.AGENTFLOW_PLUGIN_RUNTIME_TARBALL)
+    : `${runtimePin.package}@${runtimePin.version}`;
   const packResult = JSON.parse(execFileSync("npm", [
     "pack", packageSpec,
     "--ignore-scripts",
@@ -38,16 +44,47 @@ try {
     "--no-fund",
     path.join(temporaryRoot, archive)
   ]);
+  const engineRoot = path.join(runtimeRoot, "node_modules", ...runtimePin.package.split("/"));
+  const installed = JSON.parse(fs.readFileSync(path.join(engineRoot, "package.json"), "utf8"));
+  if (installed.name !== runtimePin.package || installed.version !== runtimePin.version) {
+    throw new Error("Bundled engine does not match the plugin runtime pin.");
+  }
+  if (!fs.existsSync(path.join(engineRoot, "dist/apps/mcp/src/codex-origin.js"))) {
+    throw new Error("Runtime lacks request-scoped Codex origin binding; use a reviewed patched runtime tarball.");
+  }
   fs.rmSync(path.join(runtimeRoot, "node_modules", ".bin"), { recursive: true, force: true });
+  const installedLock=JSON.parse(fs.readFileSync(path.join(runtimeRoot,'package-lock.json'),'utf8'));
+  const dependencies=Object.entries(installedLock.packages??{}).flatMap(([packagePath,record])=>{
+    if(!packagePath||packagePath==='node_modules/'+runtimePin.package||!fs.existsSync(path.join(runtimeRoot,packagePath)))return [];
+    const url=new URL(record.resolved??'about:blank');
+    if(url.origin!=='https://registry.npmjs.org'||url.username||url.password||!/^sha(?:256|384|512)-[A-Za-z0-9+/]+=*$/u.test(record.integrity??''))throw Error('Runtime dependencies need public registry integrity provenance');
+    return [{path:packagePath,version:record.version,integrity:record.integrity,resolved:record.resolved}];
+  }).sort((a,b)=>b.path.length-a.path.length);
+  // Installer metadata contains the temporary local tarball location. It is not
+  // needed to execute the sealed runtime and must not enter a portable bundle.
+  for (const installerFile of ["package.json", "package-lock.json", "node_modules/.package-lock.json"]) {
+    fs.rmSync(path.join(runtimeRoot, installerFile), { force: true });
+  }
+  const dependencyFiles={};
+  const fingerprint=(relative)=>{
+    const absolute=path.join(runtimeRoot,relative),stat=fs.lstatSync(absolute);
+    if(stat.isDirectory()){for(const child of fs.readdirSync(absolute).sort())fingerprint(relative+'/'+child);return;}
+    const dependency=dependencies.find(entry=>relative.startsWith(entry.path+'/'));if(!dependency)return;
+    const bytes=stat.isSymbolicLink()?Buffer.from('link\0'+fs.readlinkSync(absolute)):fs.readFileSync(absolute);
+    dependencyFiles[relative]={packagePath:dependency.path,sha256:createHash('sha256').update(bytes).digest('hex')};
+  };
+  fingerprint('node_modules');
   fs.writeFileSync(path.join(runtimeRoot, "runtime-manifest.json"), `${JSON.stringify({
     package: runtimePin.package,
     version: runtimePin.version,
     integrity: packResult.integrity,
     shasum: packResult.shasum,
     entrypoint: "node_modules/@jasonneo99/agent-workflow/dist/apps/mcp/src/index.js",
+    dependencies,dependencyFiles,
     builtAt: new Date().toISOString()
   }, null, 2)}\n`);
-  execFileSync("tar", ["-czf", runtimeArchive, "-C", runtimeRoot, "."], { stdio: "inherit" });
+  const runtimeTar=execFileSync("tar", ["--no-xattrs", "-cf", "-", "-C", runtimeRoot, "."], {maxBuffer:512*1024*1024,env:{...process.env,COPYFILE_DISABLE:'1'}});
+  fs.writeFileSync(runtimeArchive,gzipSync(runtimeTar,{level:9}));
   const archiveHash = execFileSync("shasum", ["-a", "256", runtimeArchive], { encoding: "utf8" }).trim().split(/\s+/)[0];
   fs.writeFileSync(`${runtimeArchive}.sha256`, `${archiveHash}  runtime-bundle.tgz\n`);
   console.log(`Bundled published ${packageSpec} into ${runtimeRoot}`);

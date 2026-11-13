@@ -93,7 +93,7 @@ export class BedrockProvider implements ModelProvider {
       ].join(" "),
       prompt: buildStagePrompt(input),
       temperature: 0.2,
-      modelOverride: modelForStage
+      modelOverride: modelForStage,abortSignal:input.abortSignal,maxOutputTokens:input.maxOutputTokens
     });
     const parsed = normalizeStageArtifact(extractJsonObject(text) as StageJsonArtifact);
 
@@ -136,7 +136,7 @@ export class BedrockProvider implements ModelProvider {
     };
   }
 
-  private async converseJson(input: { system: string; prompt: string; temperature: number; modelOverride?: string }): Promise<string> {
+  private async converseJson(input: { system: string; prompt: string; temperature: number; modelOverride?: string;abortSignal?:AbortSignal;maxOutputTokens?:number }): Promise<string> {
     const egressStart = Date.now();
     let response;
     try {
@@ -150,9 +150,9 @@ export class BedrockProvider implements ModelProvider {
         }
       ],
       inferenceConfig: {
-        temperature: input.temperature
+        temperature: input.temperature,...(input.maxOutputTokens?{maxTokens:input.maxOutputTokens}:{})
       }
-      }));
+      }),input.abortSignal?{abortSignal:input.abortSignal}:undefined);
     } catch (error) {
       logEgress({ providerId: this.id, host: "bedrock-runtime", endpoint: "/converse", method: "POST", durationMs: Date.now() - egressStart, error: error instanceof Error ? error.message : String(error) });
       throw error;

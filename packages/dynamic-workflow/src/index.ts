@@ -28,7 +28,8 @@ export const stageTemplates: Record<string, StageTemplate> = {
   frontend: stage("frontend", "frontend-engineer", "Implement the frontend portion and interaction states.", "executor", "frontend_change", 6500, ["UI behavior matches the UX contract"], "standard"),
   backend: stage("backend", "backend-engineer", "Implement APIs, services, jobs, and integrations.", "executor", "backend_change", 6500, ["Service contracts and failure behavior are covered"], "standard"),
   integrate: stage("integrate", "implementation-agent", "Integrate parallel work-item results, reconcile overlaps, and preserve the combined acceptance contract.", "executor", "integration_summary", 6000, ["Parallel results are reconciled without dropping completed behavior", "Overlaps and residual conflicts are explicit"], "standard"),
-  test: stage("test", "test-engineer", "Add focused coverage for the changed behavior.", "verifier", "test_evidence", 4500, ["Happy path and material failure paths are tested"], "standard"),
+  test: stage("test", "test-engineer", "Add focused coverage for the changed behavior. Author tests within current project write policy, execute the focused tests, and retain their receipts. Independent read-only verification follows this authoring stage.", "executor", "test_evidence", 4500, ["Happy path and material failure paths are tested"], "standard"),
+  "test-review": stage("test-review", "test-engineer", "Review existing coverage and execute focused tests without editing source. Report missing cases for the owning author.", "verifier", "test_review", 4500, ["Existing coverage and material gaps are supported by executed evidence"], "standard"),
   verify: stage("verify", "auto-test-runner", "Run configured deterministic verification and report exact evidence.", "verifier", "verification_report", 4000, ["Required checks pass or failures are explained"], "fast"),
   docs: stage("docs", "docs-maintainer", "Update user and operator documentation for the change.", "reflexive", "documentation_update", 3500, ["Changed behavior and operating steps are documented"], "fast"),
   release: stage("release", "release-manager", "Assess release readiness, rollback, and approval evidence.", "finalizer", "release_decision", 3500, ["Go/no-go and rollback evidence are explicit"], "reasoning", true),
@@ -46,7 +47,7 @@ export const workflowArchetypes: WorkflowArchetype[] = [
   archetype("debug-failure", "Diagnose and fix a reproducible failure.", ["bug", "failure", "broken", "debug", "fix"], ["triage", "diagnose", "implement", "test", "verify", "package"]),
   archetype("security-hardening", "Review and harden a security boundary.", ["security", "vulnerability", "auth", "permission", "threat"], ["triage", "security", "architecture", "implement", "test", "verify", "security", "package"]),
   archetype("release", "Prepare and validate a release.", ["release", "ship", "deploy", "publish", "launch"], ["triage", "verify", "security", "docs", "release"]),
-  archetype("code-review", "Review a proposed code change.", ["review", "pull request", "pr", "diff", "audit"], ["triage", "architecture", "security", "test", "package"]),
+  archetype("code-review", "Review a proposed code change.", ["review", "pull request", "pr", "diff", "audit"], ["triage", "architecture", "security", "test-review", "package"]),
   archetype("documentation", "Create or maintain technical documentation.", ["documentation", "docs", "guide", "readme", "tutorial"], ["triage", "architecture", "docs", "verify", "package"]),
   archetype("model-improvement", "Improve prompts, routing, context, or evaluations.", ["model", "prompt", "routing", "eval", "fine tuning"], ["triage", "diagnose", "evaluate", "architecture", "implement", "verify", "package"]),
   archetype("maintenance", "Refactor or perform general repository maintenance.", ["refactor", "maintenance", "cleanup", "upgrade", "dependency"], ["triage", "architecture", "implement", "test", "verify", "docs", "package"]),
@@ -120,7 +121,7 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
       documentation: ["docs", "verify"],
       maintenance: ["implement", "verify"],
       "feature-delivery": ["implement", "verify"],
-      "code-review": ["architecture", "test"],
+      "code-review": ["architecture", "test-review"],
       "product-discovery": ["ux", "architecture", "security"]
     };
     const essentials = new Set(essentialsByArchetype[archetype.id] ?? ["implement", "verify"]);
@@ -190,9 +191,14 @@ export function optimizeStaticWorkflowForLatency(
   };
 }
 
+function requestedMutationVerb(goal: string): string | undefined {
+  return /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(make|implement|add|create|change|update|build|fix|repair|finish|complete|deliver|ship|remove|delete|write)\b/iu.exec(goal)?.[1]?.toLowerCase();
+}
+
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
-  const mutationIntent = /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(?:make|implement|add|create|change|update|build|fix|finish|complete|deliver|ship|remove|delete|write)\b/iu.test(goal);
+  const mutationVerb = requestedMutationVerb(goal);
+  const mutationIntent = mutationVerb !== undefined;
   const selected = workflowArchetypes
     .map((candidate, index) => ({
       candidate,
@@ -204,6 +210,7 @@ export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
       score: mutationIntent && candidate.id === "code-review"
         ? Number.NEGATIVE_INFINITY
         : candidate.keywords.reduce((score, keyword) => score + (normalized.includes(keyword) ? keyword.split(/\s+/).length : 0), 0)
+          + (mutationVerb === "repair" && candidate.id === "debug-failure" ? 1 : 0)
     }))
     .sort((left, right) => right.score - left.score || left.index - right.index)[0].candidate;
   // Mutation language is an execution contract. Even if a goal contains many
@@ -253,7 +260,7 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
     return {
       id,
       agent: template.agent,
-      goal: template.goal,
+      goal: template.pattern==='planner'?`${template.goal}\nMap requested delivery obligations to declared capabilities, approvals and acceptance evidence. Unsupported installation, deployment and native/UI acceptance remain explicit pending or blocked obligations; source completion and intent expansion grant no additional authority.`:template.goal,
       subagents: [],
       depends_on: parallelGroup >= 0 ? parallelDependencies(templateIds, index, changes.parallel![parallelGroup]) : previous,
       ...(parallelGroup >= 0 ? { parallel_group: `parallel-${parallelGroup + 1}` } : {}),
@@ -265,6 +272,7 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
       pattern: {
         type: template.pattern,
         requires_verifier: template.pattern === "executor",
+        ...(template.id === 'test' ? {requires_source_writes:true} : {}),
         promotion_gate: template.approval || changes.approvalStages?.includes(id) ? "approval" as const : template.pattern === "verifier" ? "evaluation" as const : template.pattern === "executor" ? "policy" as const : "none" as const,
         stop_conditions: []
       },
@@ -361,8 +369,12 @@ export function validateDynamicWorkflow(value: unknown, project: ProjectConfig):
   if (ids.size !== workflow.stages.length) throw new Error("Dynamic workflow stage ids must be unique.");
   for (const item of workflow.stages) {
     if ((item.depends_on ?? []).some((dependency) => !ids.has(dependency) || dependency === item.id)) throw new Error(`Stage '${item.id}' has an invalid dependency.`);
+    if(item.pattern.requires_source_writes && !project.actions.allowed_write_paths.length)throw Error(`Stage '${item.id}' requires source authoring but the project has no write authority.`);
   }
   assertAcyclic(workflow);
+  if (requestedMutationVerb(workflow.dynamic.goal) && !workflow.stages.some((item) => item.pattern.type === "executor" && item.agent !== "test-engineer")) {
+    throw new Error("Change requests require an implementation executor stage; test authoring alone cannot fulfill the implementation contract.");
+  }
   if (!workflow.stages.some((item) => item.pattern.type === "verifier")) throw new Error("Dynamic workflows require a verification stage.");
   return workflow;
 }

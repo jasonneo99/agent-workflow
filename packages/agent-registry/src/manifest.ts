@@ -158,7 +158,7 @@ async function loadBundleFiles(rootDir: string): Promise<BundleManifestFile[]> {
   ], { cwd: rootDir, absolute: true });
 
   return Promise.all(files.sort().map(async (file) => ({
-    path: path.relative(rootDir, file),
+    path: path.relative(rootDir, file).split(path.sep).join("/"),
     checksum: await sha256File(file)
   })));
 }

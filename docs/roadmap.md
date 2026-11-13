@@ -1,14 +1,146 @@
 # Agent Workflow Roadmap
 
+## Active direction — strengthen v1 (2026-11-03)
+
+The owner ended the v2 rewrite as an active delivery line and retained it as a
+learning experiment. Development effort now goes into strengthening and
+improving this existing v1 platform. The [v1 improvement plan](v1-improvement-plan.md)
+records the goals, immediate priorities and evidence required to advance.
+
+Reliable bounded task execution and independent acceptance remain first.
+Preserve existing projects, interfaces, services, data and historical evidence;
+use reviewed lessons to make small, tested changes. V2 architecture and pilot
+proposals are not automatic v1 commitments. Historical status and checkboxes
+below retain their original scope and evidence limits.
+
+## V1 stabilization (2026-11-02)
+
+The active repair scope is recorded in [V1 stabilization](v1-stabilization.md).
+Preserve existing source, Studio, services, storage and immutable history while
+qualifying the existing Codex CLI coding path. Component checks and a clean Git
+baseline do not establish live task delivery.
+
+- [x] Preserve pending source work, reconcile local branch history, and establish
+  a clean local source baseline without publishing or restarting services.
+- [x] Retain the exact candidate/environment/check plan outside truncated
+  provider history and refresh the bundled engine with unchanged dependencies.
+- [x] Clear the four inherited file-size regressions through behavior-preserving
+  module extractions; retain every existing size ceiling.
+- [x] Reproduce and fix stale worker release, same-worker claim reuse, and
+  expiry recovery without disturbing a newer owner or a parallel stage.
+- [x] Bound Codex CLI cancellation and preserve forced-stop failures; qualify
+  restricted native tools and fresh sessions separately from workflow delivery.
+- [ ] Qualify durable command-result continuation and duplicate repair admission
+  through the complete pipeline.
+- [ ] Establish loaded runtime identity and verify the selected coding path.
+- [ ] Complete one bounded Codex task, then the fixed five-case development
+  suite and ten additional bounded coding tasks without outside machinery repair
+  or false completion.
+- [ ] Reconcile eligible obsolete active views through the existing exact
+  authorization and acceptance gates, preserving historical statuses and receipts.
+
+## Historical rejection and obsolete-policy reconciliation (2026-10-27)
+
+- [x] Require every exact policy-family member's full receipt chain before retirement; preserve legacy coverage gaps without backfilling hashes.
+- [x] Implement defect-driven append-only retirement invalidation; independently review the exact standalone corrective payload and rehearse rollback against the real schema before bounded application.
+- [ ] Adopt authenticated invalidation visibility with a separate automatic-admission hold. Historical policy clearance remains held while legacy coverage and reader adoption are unresolved.
+
+- [x] Validate append-only deterministic pre-write rejection proofs before allowing archival exceptions; preserve expired reservations, run states and consumed authority.
+- [x] Validate explicit human obsolete-policy view retirement without claiming the historical contract passed; bind accepted current-policy evidence separately.
+- [x] Preserve human decision identity in metadata while auditing through a registered workflow agent; exercise real PostgreSQL agent foreign keys with an unregistered human display name.
+- [x] Prepare an isolated prospective runtime candidate from the verified packaged baseline plus the exact reconciliation delta, using a reviewed npm package payload, unchanged baseline dependency bytes and a full payload hash manifest.
+- [x] Independently byte-review the standalone operational candidates and rehearse real-schema rollback before bounded authorized reconciliation and corrective invalidation; installed/global readers remain unchanged.
+- [ ] Adopt the new obsolete-policy visibility predicate in global CLI, MCP, dashboard and Studio readers; a scoped operational candidate does not update installed readers.
+
+Validation: ten focused checks pass without skips, including real PostgreSQL original-contract preservation, family activity/effect gates, receipt tampering, exact request binding, temporal prior-rejection proofs, idempotency, full child-chain coverage, append-only defect correction and view projection. Current-source typecheck and whitespace checks pass. Runtime adoption and project acceptance remain separate gates.
+
+## Governed coordinator history archival (2026-10-26)
+
+- [x] Preserve immutable terminal attempts while removing an exact human-approved obsolete list from actionable views.
+- [x] Require fresh same-scope intent and fencing, unchanged source, independently verified original-requirement acceptance, and no active or unresolved work.
+- [x] Keep the accepted replacement visible and link archived attempts to it.
+- [x] Add separately authorized restore-to-view receipts that grant no execution authority.
+- [x] Expose the shared storage authority through CLI, MCP, dashboard run management, native Studio, reusable guidance, documentation, and regression coverage.
+- [x] Exclude archived attempts and their artifacts/stages from workflow and project-evidence graphs; a governed restore makes them visible again.
+- [ ] Publish and install the release, then independently verify the packaged runtime and each applicable UI surface.
+
+Operator contract: use the exact action **Archive from active views** only after a human names the exact obsolete run list and supplies a fresh reason. The operation preserves run status, contracts, receipts, checkpoints, consumed approvals, artifacts, and acceptance history; it never means an archived attempt ran successfully or was accepted. **Restore to active views** requires separate direct-human authorization and grants no execution authority. CLI commands are `coordinator-history-archive` and `coordinator-history-restore`; MCP exposes `agentflow_coordinator_history`.
+
+## Canonical acceptance stage aliases (2026-10-26)
+
+- [x] Map canonical verification and packaging stage IDs (including bounded
+  suffix variants) to their structured acceptance gates. Missing governed
+  receipts must block the stage rather than appear as narrative completion.
+- [x] Add dispatcher-to-storage regressions that reject missing receipts for
+  these exact stage names and retain advisory-name boundary checks.
+- [ ] Publish source changes through the normal runtime release process;
+  existing completed stage reports and running processes are not rewritten.
+
+## Current-source and interrupted-child reconciliation (2026-10-26)
+
+- [x] Hold an expired, quiescent drifted child through exact assignment, scope,
+  receipt-chain and direct-human authorization checks. Preserve its checkpoint,
+  attempt count, owner history and original snapshots; no replay or acceptance.
+- [x] Append independently authorized current-source observations without
+  fabricating missing historical file transitions. Original enrollment and
+  acceptance gates stay immutable; historical continuity remains unverified.
+- [x] Prevent historical repair candidates from overriding a new exact baseline
+  contract, and bind interrupted-child discovery to the reviewed project roots.
+- [ ] Verify installed runtime adoption separately from source CLI execution.
+- [ ] Independently prove each original product gate before queue closure.
+
+## Provenance decision receipt writer (2026-10-26)
+
+- [x] Record direct-human cohort decisions through the registered
+  `workflow-orchestrator` receipt writer rather than an unregistered human role
+  name. Keep human approval provenance and exact family/task/scope binding in
+  receipt metadata. Approval and rejection regression tests exercise the actual
+  receipt insertion boundary with a constrained synthetic registry.
+- [x] Validate decision and legacy-recovery unit gates (eight tests) and
+  append-only baseline reconciliation, including transactional PostgreSQL
+  verification (four tests). No original contract, history or gate is rewritten.
+- [ ] Release the source fix through the normal runtime publication process;
+  source CLI verification alone does not establish an installed release update.
+
 > Checkbox semantics: `[x]` means implemented and working on the primary
 > development host. It does **not** mean release-ready. See [Release
 > readiness](#release-readiness) for what "portable" requires.
+
+## Project Context Center (in progress)
+
+- [x] Accept the Project Evidence Graph locally in packaged native Studio.
+  A source-pinned QA package using signed baseline definitions passed native
+  list/detail, source/run navigation, restart, empty-state, storage-outage and
+  recovery checks. Unrelated working-tree definitions and their manifest remain
+  untouched; this is local macOS acceptance, not a published release.
+  See [contract and acceptance evidence](project-context-center.md).
+- [x] Record supplied-context influence through existing run receipts and expose it in run details.
+  Compilation, provider rounds/fallbacks, bound-executor inputs and replayed
+  plans retain attribution without granting authority. Native and browser
+  views expose hashes, provenance and navigation; older runs remain unrecorded.
+- [x] Add attributed indexed-fact corrections and bounded history through existing approvals and receipts; verify in packaged native Studio.
+- [x] Add governed deletion-impact preview and verify it in packaged native Studio.
+- [x] Unify project evidence search over existing stores with navigable, freshness-aware results; verify in packaged native Studio.
+- [x] Build an evidence-backed project-open brief with explicit inference boundaries; verify attribution, navigation, bounds, stale sources, recovery and restart in packaged native Studio.
+- [x] Add contextual approval review and resolution through existing controls; verify canonical states, role gates, snapshot changes, execution failures, navigation, bounds and restart in packaged native Studio.
+- [x] Add read-only capability health distinguishing runtime discovery, recorded grants, configuration, storage, transport and historical outcomes; verify partial failures, recovery, bounds and restart in packaged native Studio.
+- [x] Add read-only attempt journals over existing task counters and receipts; verify separate provider attempts, legacy gaps, bounds, isolation, navigation, recovery and restart in packaged native Studio.
+- [x] Reconcile durable follow-ups over explicit continuation links, handoffs, existing approvals and receipts; verify isolation, canonical states, bounds, older-run navigation, recovery and restart in packaged native Studio.
+
+- [x] Add bounded project I/O feeds over existing receipts; verify category filters, content suppression, attribution, older-run navigation, outage recovery and independent packaged native relaunch.
+
+- [x] Add read-only notification history over the existing outbox; verify state filters, transport/arrival separation, coalesced references, isolation, older-run navigation, recovery, unchanged approvals and independent packaged native relaunch.
+
+- [x] Reconcile action history over canonical approvals and explicit same-run receipts; verify state separation, category/link bounds, legacy gaps, existing review and approve-only refresh, stable scroll, older-run navigation, recovery and independent packaged native relaunch.
+
+- [x] Align Context Center with clean local engine/Studio revisions, immutable CI refs and commit-plus-source runtime provenance; verify packaged native behavior without accepting an older same-version CLI. Hosted CI and signed publication remain separate.
 
 ## Direct-speed governed execution
 
 - [x] Continuously replenish worker slots while long provider calls are active.
 - [x] Compile stage-specific context deltas and bound prior-stage evidence.
-- [x] Reuse read-only Codex sessions across stages and worker restarts on one host.
+- [x] Previously supported read-only Codex session reuse. V1 stabilization retires
+  reuse in favor of fresh ephemeral calls and controller-owned source reads.
 - [x] Fuse low-risk static build ceremony while retaining implementation and verification.
 - [x] Downshift bounded routine stages to fast models unless task risk requires the authored tier.
 
@@ -19,6 +151,22 @@ reversible.
 
 ## Chat-mode Studio integration
 
+- [x] Add a project-scoped Queue Partner instruction composer with selectable
+  items, recorded blockers and proposed fixes. Recognized repair/next-item
+  instructions use existing recovery ownership; approvals bind one displayed
+  proposal and its current payload. Duplicate or uncertain effects do not
+  automatically repeat. Read-only activity and general discussion remain
+  separate from action authority.
+- [x] Make Partner conversation-first with browser-local recent chats and drafts,
+  queued follow-ups, safe rich replies, exact inline decisions, and selected-run
+  activity. Interrupted requests retain an unconfirmed state without replay;
+  stopping a selected run uses its owning project's existing controls.
+- [x] Replace the remaining Partner panels with one chat. Surface useful recorded
+  updates, blockers and next steps inline, alongside a growing agent work trail
+  with expandable step details, cursor pagination and reconnect deduplication.
+  Derive working state from current worker leases and preserve completed history.
+- [ ] Adopt and independently verify the conversation changes in the installed
+  dashboard; source tests and a synthetic browser preview are separate evidence.
 - [x] Show requester identity and delivery channel on the active task.
 - [x] Route Studio approval decisions through the shared conversational reply contract.
 - [x] Redirect deduplicated retries to the continuation that owns the work.
@@ -1506,6 +1654,21 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Routing: provider smoke checks use an independently configurable, evidence-oriented fast-provider order while retaining readiness checks and deterministic fallback.
   - Resilience: specialist prompts require explicit acceptance evidence and preserve useful review output when optional provider or command paths fail.
 
+- [x] Feature: measure Queue Partner blocked-resolution yield.
+  - Milestone: 10 Learning And Model Improvement
+  - Priority: high
+  - Status: implemented
+  - Done: retain a bounded, task-body-free summary of blocked families observed, attempts, independently verified closures, non-resolving turns, closure rate, and measured time to verification for each resolution strategy.
+  - Safety: historical outcomes without a recorded strategy remain `unknown`; measurements inform later shadow evaluation but do not grant authority or bypass acceptance gates.
+  - Done: after at least 20 outcomes for each of two strategies, a 95% confidence-bound advantage of at least 0.10 can reorder only otherwise eligible strategies; the report exposes whether adaptive ranking is applied.
+
+- [x] Feature: deduplicate Queue Partner provenance-gap recovery.
+  - Milestone: 10 Learning And Model Improvement
+  - Priority: high
+  - Status: implemented
+  - Done: identical missing-contract, missing-scope, and missing-route gaps receive stable body-free project-scoped cohort identities; one representative performs discovery per pass while related families retain an explicit cohort wait state.
+  - Safety: cohort membership transfers neither receipts nor authority. Every family still needs exact run-bound evidence and its own immutable enrollment grant.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:
@@ -1527,3 +1690,30 @@ An item is portable (release-ready) only when all of these hold:
 
 Items marked `[x]` above that do not yet meet all five are implemented but not
 portable. Do not cut a release claiming them until they are.
+
+### Explicit archival after independent coordinator verification
+
+- [x] Provide a separate, exact human-authorized archival operation for obsolete terminal attempts after the existing independent original-requirement proof passes. Preserve statuses, receipts, grants and original contracts; retain the generic managed-run dismissal guard.
+- [x] Require a fresh exact-scope intent, verified assignment, exact approved run list, current source proof and no active task or unresolved approval. Reuse the existing receipt-based view filtering without deleting history or changing acceptance.
+- [ ] Publish the new archival API through a reviewed release; source-level use does not establish installed runtime adoption.
+
+### Governed project container lifecycle
+
+- [x] Add a reusable preview-first CLI and MCP operation for starting, stopping,
+  restarting, and inspecting project-owned Compose stacks.
+- [x] Isolate stacks with a stable project-scoped Compose name and retain
+  project-local intent/result receipts without treating lifecycle success as
+  workflow acceptance.
+- [x] Reject privileged mode, host namespaces and devices, engine-socket or
+  out-of-project mounts, external build/config/secret paths, explicit container
+  names, unrelated services, and destructive volume removal before execution.
+- [ ] Publish and verify the capability from a clean installed runtime; source
+  completion does not establish release or installed-runtime adoption.
+
+## Scoped native PTY fixture verification — 2026-10-27
+
+- [x] Add default-off exact-recipe native PTY capability for isolated macOS commands, using kernel per-allocation grants rather than all-terminal write access.
+- [x] Prove real allocation and denial of unrelated PTY, direct and descendant source writes, and missing/near recipe grants.
+- [ ] Adopt the validated capability through maintained runtime integrity/release and original-run recovery before claiming installed independent acceptance.
+
+See [scoped native PTY fixtures](scoped-native-pty.md). No deployment or existing approval boundary changes are implied.

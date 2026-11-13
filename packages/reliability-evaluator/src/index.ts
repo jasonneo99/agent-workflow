@@ -4,7 +4,7 @@ import { z } from "zod";
 export const evaluatorRequestSchema = z.object({
   protocol_version: z.literal(1),
   case_id: z.string().min(1),
-  candidate: z.record(z.unknown())
+  candidate: z.record(z.string(), z.unknown())
 });
 
 export const evaluatorResponseSchema = z.object({

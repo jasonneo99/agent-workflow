@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="${AGENTFLOW_SMOKE_PROJECT:-templates/project}"
-WORKFLOW="${AGENTFLOW_SMOKE_WORKFLOW:-build-feature}"
+SMOKE_TEMP_ROOT=""
+if [[ -n "${AGENTFLOW_SMOKE_PROJECT:-}" ]]; then
+  PROJECT_DIR="$AGENTFLOW_SMOKE_PROJECT"
+else
+  SMOKE_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agentflow-smoke-project.XXXXXX")"
+  PROJECT_DIR="$SMOKE_TEMP_ROOT/project"
+  mkdir -p "$PROJECT_DIR"
+  cp -R templates/project/. "$PROJECT_DIR/"
+fi
+trap 'if [[ -n "$SMOKE_TEMP_ROOT" ]]; then rm -rf "$SMOKE_TEMP_ROOT"; fi' EXIT
+# Exercise enterprise storage and governed project-artifact writes without
+# pretending the generic template has selected a source execution environment.
+WORKFLOW="${AGENTFLOW_SMOKE_WORKFLOW:-maintain-context}"
 TASK="${AGENTFLOW_SMOKE_TASK:-Smoke test portable agent workflow}"
 PROVIDER="${AGENTFLOW_SMOKE_PROVIDER:-mock}"
 

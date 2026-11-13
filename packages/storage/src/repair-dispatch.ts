@@ -2,6 +2,7 @@ import { acceptanceDigest, storedAcceptanceDecision } from "./acceptance.js";
 import { workflowAcceptanceTask } from "../../model-providers/src/quality.js";
 import { withClient } from "./client.js";
 import { appendActionReceipt } from "./receipt-writer.js";
+import { partnerManagesRepairOnClient } from './queue-repair-management.js';
 
 export function repairFingerprint(task: string, failure: string): string {
   const normalize = (value: string) => value.toLowerCase()
@@ -37,14 +38,66 @@ export async function validatedRepairEvidence(
 }
 
 
+export type RepairCoordinatorClaim = { id: string; fence: string };
+
+/** Caller holds the shared coordinator scheduler lock for this decision. */
+export async function coordinatorAllowsRepair(
+  client: Parameters<typeof storedAcceptanceDecision>[0],
+  input: { runId: string; projectId: string; runSetId: string; coordinatorClaim?: RepairCoordinatorClaim }
+): Promise<boolean> {
+  // Partner management is durable even between assignments and while paused.
+  // No exact live fenced coordinator claim means no competing legacy repair.
+  if (!input.coordinatorClaim && await partnerManagesRepairOnClient(client,input.projectId,`${input.projectId}:${input.runSetId}`)) return false;
+  const available = Boolean((await client.query("select to_regclass('queue_coordinator_assignments') name")).rows[0]?.name);
+  if (!available) return input.coordinatorClaim === undefined;
+  const assignments = await client.query<{ id: string; fence: string; sourceRunId: string; live: boolean }>(
+    `select a.id::text,a.fence::text,a.source_run_id::text as "sourceRunId",
+      (a.state in ('reserved','running') and exists(select 1 from work_intents i
+        where i.project_id::text=a.project_id::text and i.owner=a.owner
+          and i.fencing_token::text=a.intent_fence and i.expires_at>now())) as live
+     from queue_coordinator_assignments a where a.project_id=$1 and a.family_id=$2
+       and a.state in ('reserved','running','uncertain') for update of a`,
+    [input.projectId, `${input.projectId}:${input.runSetId}`]);
+  if (!assignments.rows.length) return input.coordinatorClaim === undefined;
+  return assignments.rows.length === 1 && assignments.rows[0].live === true
+    && assignments.rows[0].sourceRunId === input.runId
+    && assignments.rows[0].id === input.coordinatorClaim?.id
+    && assignments.rows[0].fence === input.coordinatorClaim?.fence;
+}
+
 /** A durable reservation intentionally fails closed if dispatch crashes afterward. */
-export async function reserveSupervisedRepair(input: { runId: string; task: string; failure: string }): Promise<boolean> {
+export async function reserveSupervisedRepair(input: { runId: string; task: string; failure: string; coordinatorClaim?: RepairCoordinatorClaim }): Promise<boolean> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const run = await client.query<{ projectId: string }>("select project_id::text as \"projectId\" from workflow_runs where id=$1", [input.runId]);
+      // Same ordering as coordinator reservations prevents cross-producer races.
+      await client.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
+      const run = await client.query<{ projectId: string; runSetId: string; task: string; metadata: Record<string, unknown> }>("select project_id::text as \"projectId\", run_set_id::text as \"runSetId\", task, evaluation_metadata as metadata from workflow_runs where id=$1 for update", [input.runId]);
       const projectId = run.rows[0]?.projectId;
       if (!projectId) throw new Error("Repair source project is unavailable.");
+      const source = run.rows[0];
+      if (!await coordinatorAllowsRepair(client, { runId: input.runId, projectId, runSetId: source.runSetId, coordinatorClaim: input.coordinatorClaim })) {
+        await client.query("rollback");
+        return false;
+      }
+      const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
+      if (source.task !== input.task || repairSources.has(String(source.metadata?.source ?? ""))
+        || source.metadata?.sourceRunId || source.metadata?.replayOfRunId) {
+        await client.query("rollback");
+        return false;
+      }
+      // Serialize every diagnosis for this source; changing a fingerprint cannot reset the budget.
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [`repair-source:${projectId}:${input.runId}`]);
+      const budget = await client.query<{ attempts: number; coolingDown: boolean }>(
+        `select count(*)::int as attempts,
+          coalesce(max(created_at) + (least(3600, 60 * power(2, greatest(count(*) - 1, 0))) * interval '1 second') > now(), false) as "coolingDown"
+         from artifacts where run_id=$1 and kind='repair_dispatch_claim'`, [input.runId]);
+      const attempts = budget.rows[0];
+      if (!attempts || !Number.isInteger(attempts.attempts) || attempts.attempts < 0
+        || attempts.attempts >= 3 || attempts.coolingDown !== false) {
+        await client.query("rollback");
+        return false;
+      }
       const fingerprint = repairFingerprint(input.task, input.failure);
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [`repair:${projectId}:${fingerprint}`]);
       const previous = await client.query<{ evidenceIds: string[] }>(

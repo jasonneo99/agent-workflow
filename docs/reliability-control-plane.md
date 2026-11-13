@@ -18,6 +18,33 @@ Renew long work with `intent renew --token ...` and release it with
 overlapping file scope fails closed. Fencing tokens prevent an expired owner
 from renewing or releasing a newer lease.
 
+## Queue capacity and external handoffs
+
+Current coordinator reservations share a five-item ceiling, including at most
+one independent verifier. Existing assignments, unassigned executing workflows,
+and valid external handoff reservations consume the same capacity. A historical
+database lane limit does not establish the active admission limit; older clients
+must be replaced before relying on the current contract.
+
+`registerExternalQueueReservation` records a restrictive capacity reservation,
+not permission to execute, write, approve, deploy, or accept a deliverable. It
+requires a separately authorized, receipt-bound original family, canonical
+project, exact owner, actual intent row ID, fence, complete file-scope set, role,
+and expiry. Expiry is bounded by the live intent and fifteen minutes. A literal
+bounded `path/**` scope is retained exactly; arbitrary globs are not accepted.
+
+Owner and fencing token alone do not identify an intent instance: releasing and
+reacquiring an intent can create a new row with a reused token. Assignment
+deduplication therefore requires authentic reservation-receipt proof of the same
+intent instance and exact binding. Historical assignments missing that proof
+remain conservatively counted separately. Ambiguous evidence fails closed.
+
+An uncertain external owner only inhibits admission. Neither a reservation nor a
+live lease proves that work is progressing, and an expired lease does not prove
+that an effect finished. Monitor the owning project's current run and receipts;
+keep unavailable status and original acceptance gaps explicit. Never create a
+duplicate worker or erase history to make room.
+
 ## Execution state
 
 Every stage follows `queued -> leased -> running -> completed | blocked | failed

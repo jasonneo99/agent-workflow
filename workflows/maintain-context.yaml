@@ -2,6 +2,14 @@ id: maintain-context
 name: Maintain Context
 description: Refresh project context, decisions, and compact memory after meaningful work.
 lead: context-curator
+execution:
+  kind: project-artifacts
+  artifact_paths:
+    - AGENTS.md
+    - .agent-workflow/context.md
+    - .agent-workflow/commands.md
+    - .agent-workflow/decisions.md
+    - .agent-workflow/memory.md
 default_autonomy: 2
 triggers:
   manual: true

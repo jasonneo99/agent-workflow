@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { objectiveHash, workIntentsConflict, type WorkIntent } from "../../reliability-control/src/index.js";
 import { withClient } from "./client.js";
 
+export function workIntentProjectId(value:string):string {
+  if(typeof value!=="string"||!value.match(/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu))throw new Error('Work intents require an exact project UUID; resolve canonical project paths before calling storage.');
+  return value.toLowerCase();
+}
+
 export async function withProjectExecutionLock<T>(input: { projectRootUri: string; resource: string }, execute: () => Promise<T>): Promise<T> {
   const key = `${input.projectRootUri.trim()}:${input.resource.trim()}`;
   return withClient(async (client) => {
@@ -15,6 +20,7 @@ export async function withProjectExecutionLock<T>(input: { projectRootUri: strin
 }
 
 export async function acquireWorkIntent(input: { projectId: string; owner: string; objective: string; fileScopes?: string[]; ttlSeconds?: number }): Promise<WorkIntent> {
+  input={...input,projectId:workIntentProjectId(input.projectId)};
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -31,15 +37,18 @@ export async function acquireWorkIntent(input: { projectId: string; owner: strin
 }
 
 export async function renewWorkIntent(input: { projectId: string; owner: string; fencingToken: string; ttlSeconds?: number }): Promise<boolean> {
+  input={...input,projectId:workIntentProjectId(input.projectId)};
   const ttl = Math.max(30, Math.min(3600, input.ttlSeconds ?? 900));
   return withClient(async (client) => (await client.query(`update work_intents set expires_at=now()+($4::int*interval '1 second'),updated_at=now() where project_id=$1 and owner=$2 and fencing_token=$3::bigint and expires_at>now()`, [input.projectId,input.owner,input.fencingToken,ttl])).rowCount === 1);
 }
 
 export async function releaseWorkIntent(input: { projectId: string; owner: string; fencingToken: string }): Promise<boolean> {
+  input={...input,projectId:workIntentProjectId(input.projectId)};
   return withClient(async (client) => (await client.query(`delete from work_intents where project_id=$1 and owner=$2 and fencing_token=$3::bigint`, [input.projectId,input.owner,input.fencingToken])).rowCount === 1);
 }
 
 export async function listWorkIntents(projectId?: string): Promise<WorkIntent[]> {
+  if(projectId!==undefined)projectId=workIntentProjectId(projectId);
   return withClient(async (client) => (await client.query<WorkIntent>(`select project_id as "projectId",owner,objective_hash as "objectiveHash",file_scopes as "fileScopes",expires_at::text as "expiresAt",fencing_token::text as "fencingToken" from work_intents where expires_at>now() and ($1::text is null or project_id=$1) order by updated_at desc`, [projectId ?? null])).rows);
 }
 
@@ -49,6 +58,19 @@ export async function recordSideEffectOnce(input: { projectId: string; idempoten
     if (inserted.rows[0]) return { reused: false, receipt: inserted.rows[0].receipt };
     const existing = await client.query<{ receipt: Record<string, unknown> }>(`select receipt from side_effect_receipts where project_id=$1 and idempotency_key=$2`,[input.projectId,input.idempotencyKey]);
     return { reused: true, receipt: existing.rows[0]?.receipt ?? {} };
+  });
+}
+
+/** Observation only: existing artifacts must not acquire a new effect claim. */
+export async function getSideEffectReceipt(input: { projectId: string; idempotencyKey: string }): Promise<{
+  status: string; operation: string; target: string; receipt: Record<string, unknown>;
+} | null> {
+  return withClient(async client => {
+    const result = await client.query<{ status: string; operation: string; target: string; receipt: Record<string, unknown> }>(
+      "select status,operation,target,receipt from side_effect_receipts where project_id=$1 and idempotency_key=$2",
+      [input.projectId, input.idempotencyKey]
+    );
+    return result.rows[0] ?? null;
   });
 }
 

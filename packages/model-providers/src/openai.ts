@@ -119,7 +119,7 @@ export class OpenAIProvider implements ModelProvider {
           content: buildStagePrompt(input)
         }
       ],
-      text: {
+      ...(input.maxOutputTokens?{max_output_tokens:input.maxOutputTokens}:{}),text: {
         format: {
           type: "json_schema",
           name: "stage_execution_result",
@@ -160,7 +160,7 @@ export class OpenAIProvider implements ModelProvider {
           strict: true
         }
       }
-    });
+    },input.abortSignal?{signal:input.abortSignal}:undefined);
 
     const parsed = normalizeStageArtifact(extractJsonObject(response.output_text) as StageJsonArtifact);
 

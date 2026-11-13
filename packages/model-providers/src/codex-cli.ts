@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash , randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { logEgress } from "./egress-log.js";
+import { codexCliChildEnvironment } from "./codex-cli-environment.js";
+import { assertCodexCliVersion, codexCliPermissionArgs } from "./codex-cli-permissions.js";
 import { acceptanceContractSchema, acceptanceContractShapeError } from "./acceptance-schema.js";
 import {
   buildFileSummaryPrompt,
@@ -18,7 +20,7 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; reasoningEffort?: "low" | "medium"; workingDirectory?: string; sessionKey?: string };
+type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; reasoningEffort?: "low" | "medium"; workingDirectory?: string; sessionKey?: string;abortSignal?:AbortSignal };
 type CodexCliRunResult = { output: string; model: string; usage?: StageExecutionOutput["usage"] };
 export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
 export interface CodexCliDiagnostic {
@@ -33,8 +35,6 @@ export interface CodexCliDiagnostic {
   stderrExcerpt?: string;
 }
 type CodexCliProcessError = Error & { code?: string; retryable?: boolean; diagnostic?: CodexCliDiagnostic };
-type CodexCliSessionRecord = { threadId: string; resumeCount: number; createdAt: number };
-const codexCliSessions = new Map<string, CodexCliSessionRecord>();
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
   execute(input: CodexCliRunInput): Promise<CodexCliRunResult>;
@@ -49,6 +49,19 @@ const stageSchema = {
     summary: { type: "string" },
     findings: { type: "array", items: { type: "string" } },
     nextAction: { type: "string" },
+    proposedSourcePaths: { type: "array", maxItems: 40, items: { type: "string", maxLength: 500 } },
+    memoryInfluence: {
+      type: ["object", "null"], additionalProperties: false,
+      properties: {
+        used: { type: "array", maxItems: 12, items: {
+          type: "object", additionalProperties: false,
+          properties: { childRunId: { type: "string", maxLength: 128 }, effect: { type: "string", enum: ["changed-plan", "confirmed-plan", "rejected"] }, reason: { type: "string", maxLength: 1500 } },
+          required: ["childRunId", "effect", "reason"]
+        } },
+        noInfluenceReason: { type: "string", maxLength: 2000 }
+      },
+      required: ["used", "noInfluenceReason"]
+    },
     requestedCommands: { type: "array", items: { type: "string" } },
     requestedFileReads: { type: "array", items: { type: "string" } },
     requestedFileSearches: { type: "array", maxItems: 4, items: { type: "string" } },
@@ -62,7 +75,7 @@ const stageSchema = {
       }
     }
   },
-  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileReads", "requestedFileSearches", "requestedFileWrites"]
+  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "proposedSourcePaths", "memoryInfluence", "requestedCommands", "requestedFileReads", "requestedFileSearches", "requestedFileWrites"]
 };
 
 const fileSummarySchema = {
@@ -96,7 +109,10 @@ export class CodexCliProvider implements ModelProvider {
           ? [`Codex CLI is authenticated with ${authMode === "any" ? "an allowed method" : authMode}.`]
           : [`Codex CLI authentication does not satisfy CODEX_CLI_AUTH_MODE=${authMode}.`]
       };
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code === "CODEX_CLI_UNQUALIFIED_VERSION") {
+        return { ready: false, details: [(error as Error).message] };
+      }
       return { ready: false, details: ["Codex CLI is unavailable or not authenticated."] };
     }
   }
@@ -105,14 +121,11 @@ export class CodexCliProvider implements ModelProvider {
     await this.requireReady();
     const model = configuredModelForTier(input.modelTier, input.modelOverride);
     const reasoningEffort = input.modelTier === "reasoning" ? "medium" : "low";
-    const workingDirectory = configuredCodexCliDirectRepoInspection() ? input.projectRootUri : undefined;
     const call: CodexCliRunInput = {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
-        workingDirectory
-          ? "Treat the supplied stage context and prior artifacts as primary. Avoid broad repository scans and repeated orientation. Inspect only a small, task-relevant path when the supplied evidence is insufficient; otherwise request exact additional files through requestedFileReads. Resolve named commits with bounded git show/diff when required. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
-          : "Direct repository inspection is disabled for this stage. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
-        buildStagePrompt(input)
+        "Direct repository inspection is disabled. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Request policy-governed commands and file writes in the structured output. Do not use native tools or claim side effects.",
+        buildStagePrompt(boundedCodexStageInput(input))
       ].join("\n\n"),
       schema: input.acceptanceContract ? {
         ...stageSchema,
@@ -121,10 +134,7 @@ export class CodexCliProvider implements ModelProvider {
       } : stageSchema,
       model,
       reasoningEffort,
-      workingDirectory,
-      // Preserve a stage's bounded read/retry context without replaying the
-      // entire workflow history into every later stage.
-      sessionKey: input.taskId
+      abortSignal: input.abortSignal
     };
     let result = await this.runner.execute(call);
     let decoded = extractJsonObject(result.output) as StageJsonArtifact;
@@ -185,6 +195,28 @@ export class CodexCliProvider implements ModelProvider {
   }
 }
 
+const CODEX_FILE_READ_CONTEXT_MAX_CHARS = 280_000;
+
+/** Keep the most recent source observations while leaving headroom for the
+ * fixed workflow contract, schema, and Codex transport envelope. The durable
+ * read artifacts remain complete; this only projects a bounded provider view. */
+export function boundedCodexStageInput(input: StageExecutionInput): StageExecutionInput {
+  const reads = input.fileReads ?? [];
+  if (reads.reduce((total, read) => total + read.content.length, 0) <= CODEX_FILE_READ_CONTEXT_MAX_CHARS) return input;
+  let remaining = CODEX_FILE_READ_CONTEXT_MAX_CHARS;
+  const selected: NonNullable<StageExecutionInput["fileReads"]> = [];
+  for (const read of [...reads].reverse()) {
+    if (remaining <= 0) break;
+    const marker = "\n...truncated to fit Codex provider input budget...";
+    const content = read.content.length <= remaining
+      ? read.content
+      : `${read.content.slice(0, Math.max(0, remaining - marker.length)).trimEnd()}${marker}`;
+    selected.push({ ...read, content, truncated: read.truncated || content.length < read.content.length });
+    remaining -= content.length;
+  }
+  return { ...input, fileReads: selected.reverse() };
+}
+
 export function configuredCodexCliModelForTier(tier?: ModelTier, override?: string): string | undefined {
   if (override?.trim()) return override.trim();
   if (tier) {
@@ -205,63 +237,43 @@ function configuredAuthMode(): "chatgpt" | "access-token" | "any" {
 
 export function createCodexCliRunner(): CodexCliRunner {
   const binary = resolveCodexCliBinary();
+  const requireCompatible = async (cwd: string, abortSignal?: AbortSignal): Promise<void> => {
+    const version = await runProcess(binary, ["--version"], undefined, cwd, abortSignal);
+    assertCodexCliVersion(version.stdout);
+  };
   return {
     authStatus: async () => {
-      const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
-      return `${result.stdout}\n${result.stderr}`.trim();
+      const temporaryDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-status-")));
+      try {
+        await requireCompatible(temporaryDir);
+        const result = await runProcess(binary, ["login", "status"], undefined, temporaryDir);
+        return `${result.stdout}\n${result.stderr}`.trim();
+      } finally {
+        await fs.rm(temporaryDir, { recursive: true, force: true });
+      }
     },
-    execute: async ({ prompt, schema, model, reasoningEffort, workingDirectory, sessionKey }) => {
+    execute: async ({ prompt, schema, model, reasoningEffort, abortSignal }) => {
       return withCodexCliProcessLock(async () => {
-        const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
+        if (abortSignal?.aborted) throw new Error("Codex CLI execution aborted before process start.");
+        const temporaryDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-")));
         const schemaPath = path.join(temporaryDir, "output-schema.json");
         const outputPath = path.join(temporaryDir, "last-message.json");
         try {
+          await requireCompatible(temporaryDir, abortSignal);
+          const resolvedBinary = await fs.realpath(binary);
           await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
-          const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
-          const resumeRecord = configuredCodexCliSessionReuse() && sessionKey ? await loadCodexCliSession(sessionKey) : undefined;
-          // Cap the resume chain: beyond a few resumes the thread's rollout grows
-          // large enough that `exec resume` itself becomes the failure mode
-          // (observed 2026-10-01 on 400k-800k token threads). Start fresh instead.
-          const resumeAttempt = resumeRecord && resumeRecord.resumeCount < configuredCodexCliMaxResumes() ? resumeRecord : undefined;
-          const buildArgs = (resumeThreadId: string | undefined): string[] => resumeThreadId
-            ? [
-              "exec", "resume", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
-              "--output-schema", schemaPath, "--output-last-message", outputPath,
-              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
-              ...(model ? ["--model", model] : []), resumeThreadId, "-"
-            ]
-            : [
-              "exec", ...(configuredCodexCliSessionReuse() && sessionKey ? [] : ["--ephemeral"]),
-              "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
-              "--sandbox", "read-only", "--cd", executionDirectory,
-              "--output-schema", schemaPath, "--output-last-message", outputPath,
-              "--color", "never",
-              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
-              ...(model ? ["--model", model] : []), "-"
-            ];
-          let processResult: { stdout: string; stderr: string };
-          let resumed = false;
-          try {
-            processResult = await runProcess(binary, buildArgs(resumeAttempt?.threadId), prompt, executionDirectory);
-            resumed = Boolean(resumeAttempt);
-          } catch (error) {
-            if (!resumeAttempt || !sessionKey) throw error;
-            // A failed `exec resume` must never fail the stage: the executor
-            // already passes full context via priorReceipts, so resume is a
-            // pure optimization. Forget the poisoned thread and retry once fresh.
-            await forgetCodexCliSession(sessionKey);
-            processResult = await runProcess(binary, buildArgs(undefined), prompt, executionDirectory);
-          }
+          // Always fresh: legacy session pointers and repository cwd inputs are
+          // ignored. Every structured action remains subject to controller policy.
+          const args = [
+            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+            "--cd", temporaryDir, ...codexCliPermissionArgs(temporaryDir, resolvedBinary),
+            "--output-schema", schemaPath, "--output-last-message", outputPath, "--color", "never",
+            ...(reasoningEffort ? ["--config", `model_reasoning_effort="${reasoningEffort}"`] : []),
+            ...(model ? ["--model", model] : []), "-"
+          ];
+          const processResult = await runProcess(resolvedBinary, args, prompt, temporaryDir, abortSignal);
           assertCodexCliTurnSucceeded(processResult.stdout);
           const output = await readCodexCliOutputFile(outputPath);
-          if (sessionKey) {
-            if (resumed) {
-              await bumpCodexCliResumeCount(sessionKey);
-            } else {
-              const threadId = parseCodexCliThreadId(processResult.stdout);
-              if (threadId) await rememberCodexCliSession(sessionKey, threadId);
-            }
-          }
           return { output, model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
         } finally {
           await fs.rm(temporaryDir, { recursive: true, force: true });
@@ -271,13 +283,11 @@ export function createCodexCliRunner(): CodexCliRunner {
   };
 }
 
-export function configuredCodexCliSessionReuse(): boolean {
-  return !/^(?:0|false|off|no)$/iu.test(process.env.AGENTFLOW_CODEX_SESSION_REUSE?.trim() ?? "");
-}
+/** @deprecated Restricted executions are always fresh; legacy environment settings are ignored. */
+export function configuredCodexCliSessionReuse(): boolean { return false; }
 
-export function configuredCodexCliDirectRepoInspection(): boolean {
-  return /^(?:1|true|on|yes)$/iu.test(process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION?.trim() ?? "");
-}
+/** @deprecated Files enter the model context only through controller-owned reads. */
+export function configuredCodexCliDirectRepoInspection(): boolean { return false; }
 
 export function parseCodexCliThreadId(jsonl: string): string | undefined {
   for (const line of jsonl.split(/\r?\n/u)) {
@@ -291,60 +301,8 @@ export function parseCodexCliThreadId(jsonl: string): string | undefined {
   return undefined;
 }
 
-async function loadCodexCliSession(sessionKey: string): Promise<CodexCliSessionRecord | undefined> {
-  const cached = codexCliSessions.get(sessionKey);
-  if (cached) return cached;
-  try {
-    const record = JSON.parse(await fs.readFile(codexCliSessionPath(sessionKey), "utf8")) as { threadId?: unknown; resumeCount?: unknown; createdAt?: unknown };
-    if (typeof record.threadId !== "string" || !/^[0-9a-f-]{36}$/iu.test(record.threadId)) return undefined;
-    if (typeof record.createdAt !== "number" || Date.now() - record.createdAt > 24 * 60 * 60 * 1000) return undefined;
-    const entry: CodexCliSessionRecord = {
-      threadId: record.threadId,
-      resumeCount: typeof record.resumeCount === "number" && record.resumeCount >= 0 ? Math.trunc(record.resumeCount) : 0,
-      createdAt: record.createdAt
-    };
-    codexCliSessions.set(sessionKey, entry);
-    return entry;
-  } catch {
-    return undefined;
-  }
-}
-
-async function rememberCodexCliSession(sessionKey: string, threadId: string): Promise<void> {
-  const record: CodexCliSessionRecord = { threadId, resumeCount: 0, createdAt: Date.now() };
-  codexCliSessions.set(sessionKey, record);
-  while (codexCliSessions.size > 128) codexCliSessions.delete(codexCliSessions.keys().next().value!);
-  const directory = codexCliSessionDirectory();
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(record)}\n`, { mode: 0o600 });
-}
-
-async function bumpCodexCliResumeCount(sessionKey: string): Promise<void> {
-  const record = codexCliSessions.get(sessionKey) ?? await loadCodexCliSession(sessionKey);
-  if (!record) return;
-  const updated: CodexCliSessionRecord = { ...record, resumeCount: record.resumeCount + 1 };
-  codexCliSessions.set(sessionKey, updated);
-  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(updated)}\n`, { mode: 0o600 }).catch(() => undefined);
-}
-
-async function forgetCodexCliSession(sessionKey: string): Promise<void> {
-  codexCliSessions.delete(sessionKey);
-  await fs.unlink(codexCliSessionPath(sessionKey)).catch(() => undefined);
-}
-
-/** Max `exec resume` calls before starting a fresh thread (default 3). 0 disables resume. */
-export function configuredCodexCliMaxResumes(): number {
-  const parsed = Number.parseInt(process.env.CODEX_CLI_MAX_RESUMES ?? "", 10);
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, 32)) : 3;
-}
-
-function codexCliSessionDirectory(): string {
-  return path.join(os.tmpdir(), `agentflow-codex-sessions-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
-}
-
-function codexCliSessionPath(sessionKey: string): string {
-  return path.join(codexCliSessionDirectory(), `${createHash("sha256").update(sessionKey).digest("hex")}.json`);
-}
+/** @deprecated No native session resumes are permitted. */
+export function configuredCodexCliMaxResumes(): number { return 0; }
 
 export function parseCodexCliUsage(jsonl: string): StageExecutionOutput["usage"] {
   let measured: StageExecutionOutput["usage"];
@@ -382,13 +340,15 @@ function finiteUsageNumber(value: unknown): number | undefined {
 }
 
 function resolveCodexCliBinary(): string {
-  const configured = process.env.CODEX_CLI_BIN?.trim();
-  if (configured) return configured;
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(directory, "codex");
-    if (existsSync(candidate)) return candidate;
+  const command = process.env.CODEX_CLI_BIN?.trim() || "codex";
+  if (path.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+    return existsSync(command) ? realpathSync(command) : command;
   }
-  return "codex";
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return realpathSync(candidate);
+  }
+  return command;
 }
 
 async function withCodexCliProcessLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -493,13 +453,11 @@ async function readCodexCliOutputFile(outputPath: string): Promise<string> {
   }
 }
 
-async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string): Promise<{ stdout: string; stderr: string }> {
+async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string,abortSignal?:AbortSignal): Promise<{ stdout: string; stderr: string }> {
   const startedAt = Date.now();
   const timeoutMs = configuredCodexCliTimeoutMs();
   const maxBytes = configuredCodexCliOutputMaxBytes();
-  const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-  delete environment.OPENAI_API_KEY;
-  delete environment.OPENAI_ADMIN_KEY;
+  const environment = codexCliChildEnvironment();
   const logSpawn = (outcome: { statusCode?: number; error?: string }): void => {
     const subcommand = args[0] === "exec" && args[1] === "resume" ? "exec resume" : args[0] === "exec" ? "exec" : args.slice(0, 2).join(" ");
     logEgress({
@@ -515,44 +473,85 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     const child = spawn(binary, args, { cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    const terminationGraceMs = 500;
     let bytes = 0;
+    let settled = false;
+    let terminationRequested = false;
     let terminationReason: "timeout" | "output_limit" | undefined;
-    const timer = setTimeout(() => {
-      terminationReason = "timeout";
+    let pendingFailure: { rawDetail: string; errorCode: string; phase: "stdin" | "spawn" } | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    const closeOwnedPipes = () => {
+      // These are our handles only. A descendant may still exist; closing a
+      // held pipe is not evidence that a process tree was terminated.
+      if (!hasExited()) return;
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const terminate = (reason?: "timeout" | "output_limit") => {
+      if (settled || hasExited() || terminationRequested) return;
+      terminationRequested = true;
+      terminationReason = reason;
+      clearTimeout(timer);
+      // child.killed means a signal was sent, not that this child exited.
+      killTimer = setTimeout(() => { if (!hasExited()) child.kill("SIGKILL"); }, terminationGraceMs);
       child.kill("SIGTERM");
-    }, timeoutMs);
+    };
+    const abort = () => terminate("timeout");
+    const timer = setTimeout(() => terminate("timeout"), timeoutMs);
     const collect = (target: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > maxBytes) {
-        terminationReason = "output_limit";
-        child.kill("SIGTERM");
+        // Output can finish draining after the process has already exited.
+        // Its byte limit still applies even when another signal is unnecessary.
+        if (!terminationRequested) terminationReason ??= "output_limit";
+        terminate("output_limit");
       }
       else target.push(chunk);
     };
-    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
-    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-      // A short-lived CLI may exit before consuming the prompt. Its close event
-      // carries the authoritative exit code and stderr; do not let the expected
-      // broken-pipe race mask that diagnostic on Linux runners.
-      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") return;
+    const onStdout = (chunk: Buffer) => collect(stdout, chunk);
+    const onStderr = (chunk: Buffer) => collect(stderr, chunk);
+    const onStdinError = (error: NodeJS.ErrnoException) => {
+      // Preserve a short-lived CLI's authoritative exit/stderr instead of
+      // replacing it with the expected broken-pipe race on its prompt input.
+      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED" || settled || terminationRequested) return;
+      pendingFailure ??= { rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_STDIN_FAILED", phase: "stdin" };
+      terminate();
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      if (settled || terminationReason) return;
+      pendingFailure ??= { rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_SPAWN_FAILED", phase: "spawn" };
+      if (child.pid !== undefined) terminate();
+    };
+    const onExit = () => {
       clearTimeout(timer);
-      logSpawn({ error: `stdin failed: ${error.code ?? "CODEX_CLI_STDIN_FAILED"}` });
-      reject(codexCliProcessError({ rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_STDIN_FAILED", forcedCategory: "spawn_unavailable" }));
-    });
-    child.on("error", (error) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (terminationRequested) closeOwnedPipes();
+      // Usually close follows exit immediately. Bound the drain if another
+      // process inherited these descriptors, while retaining normal output.
+      else drainTimer = setTimeout(closeOwnedPipes, terminationGraceMs);
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      const errorCode = (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED";
-      logSpawn({ error: `spawn failed: ${errorCode}` });
-      reject(codexCliProcessError({ rawDetail: error.message, errorCode, forcedCategory: "spawn_unavailable" }));
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0 && bytes <= maxBytes) {
+      if (killTimer) clearTimeout(killTimer);
+      if (drainTimer) clearTimeout(drainTimer);
+      abortSignal?.removeEventListener("abort", abort);
+      child.stdout.removeListener("data", onStdout);
+      child.stderr.removeListener("data", onStderr);
+      child.stdin.removeListener("error", onStdinError);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      if (pendingFailure) {
+        logSpawn({ error: `${pendingFailure.phase} failed: ${pendingFailure.errorCode}` });
+        reject(codexCliProcessError({ ...pendingFailure, forcedCategory: "spawn_unavailable" }));
+      } else if (!terminationReason && code === 0 && bytes <= maxBytes) {
         logSpawn({});
         resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
-      }
-      else {
+      } else {
         const rawDetail = Buffer.concat(stderr).toString("utf8") || Buffer.concat(stdout).toString("utf8");
         const errorCode = terminationReason === "output_limit"
           ? "CODEX_CLI_OUTPUT_LIMIT"
@@ -562,7 +561,15 @@ async function runProcess(binary: string, args: string[], input: string | undefi
         logSpawn({ statusCode: code ?? undefined, error: codexStderrExcerpt(rawDetail).slice(0, 500) });
         reject(codexCliProcessError({ rawDetail, errorCode, exitCode: code ?? undefined, signal: signal ?? undefined, forcedCategory: terminationReason }));
       }
-    });
+    };
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.stdin.on("error", onStdinError);
+    child.on("error", onError);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+    abortSignal?.addEventListener("abort", abort, { once: true });
+    if (abortSignal?.aborted) abort();
     child.stdin.end(input);
   });
 }

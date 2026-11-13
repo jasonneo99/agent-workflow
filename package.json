@@ -1,6 +1,6 @@
 {
   "name": "@jasonneo99/agent-workflow",
-  "version": "0.4.8",
+  "version": "0.4.11",
   "type": "module",
   "description": "Portable, model-agnostic agent workflows for any codebase",
   "license": "MIT",
@@ -77,6 +77,7 @@
     "scripts/run-agent-workflow-mcp.sh",
     "scripts/uninstall-launchagent.mjs",
     "scripts/atomic-release.mjs",
+    "scripts/notify-requester.py",
     "agent-workflow.bundle.json",
     "repository-maintenance-baseline.json",
     ".env.example",
@@ -103,6 +104,7 @@
     "release:atomic": "node scripts/atomic-release.mjs",
     "screenshots:dashboard": "node scripts/capture-dashboard-screenshots.mjs",
     "dashboard:sla": "node scripts/dashboard-sla-canary.mjs",
+    "runtime:verify-live": "node scripts/verify-live-runtime.mjs",
     "performance:baseline": "tsx scripts/performance-baseline.ts",
     "performance:compare": "tsx scripts/performance-compare.ts",
     "performance:workflow-compare": "tsx scripts/workflow-speed-compare.ts",
@@ -140,6 +142,7 @@
     "bundle-manifest": "tsx apps/cli/src/index.ts bundle-manifest",
     "doctor": "tsx apps/cli/src/index.ts doctor",
     "exec-command": "tsx apps/cli/src/index.ts exec-command",
+    "containers": "tsx apps/cli/src/index.ts containers",
     "export-run": "tsx apps/cli/src/index.ts export-run",
     "index-project": "tsx apps/cli/src/index.ts index-project",
     "init-project": "tsx apps/cli/src/index.ts init-project",
@@ -222,14 +225,17 @@
     "openai": "^6.47.0",
     "pg": "^8.22.0",
     "redis": "^5.12.1",
+    "typescript": "^5.6.2",
     "yaml": "^2.5.1",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/escape-html": "^1.0.4",
     "@types/node": "^22.5.4",
     "@types/pg": "^8.20.0",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.2"
+    "tsx": "^4.19.1"
+  },
+  "overrides": {
+    "body-parser": "^2.4.0"
   }
 }

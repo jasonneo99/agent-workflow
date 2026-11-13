@@ -3,7 +3,7 @@
   "bundle": {
     "id": "agent-workflow-core",
     "name": "Agent Workflow Core Bundle",
-    "version": "0.4.8",
+    "version": "0.4.11",
     "source": "https://github.com/jasonneo99/agent-workflow.git",
     "description": "Portable, model-agnostic agent workflows for any codebase"
   },
@@ -13,13 +13,13 @@
     "mcp": ">=1.29.0"
   },
   "counts": {
-    "agents": 26,
-    "workflows": 23,
-    "files": 49
+    "agents": 28,
+    "workflows": 24,
+    "files": 52
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "d790edefc63aa8b8cc6b524699ae39e9c4b34d77d3dd1817bad327096889f425"
+    "value": "07adee801d8d0ff44f7fbe693e1883bbd7eaeb51a71c73abccab62b95769d4fa"
   },
   "agents": [
     {
@@ -51,6 +51,11 @@
       "id": "auto-wide-open-executor",
       "path": "agents/automatic/auto-wide-open-executor.yaml",
       "checksum": "bf5c96d108befa0ec4e1333ceac02b137b712c34efecacacff564bac60a5bb93"
+    },
+    {
+      "id": "workflow-guide",
+      "path": "agents/automatic/workflow-guide.yaml",
+      "checksum": "242de67b40a9c3bae23262d781951d01dbb972514121521341f65225b1f9885a"
     },
     {
       "id": "context-curator",
@@ -100,7 +105,7 @@
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "45dd0e3c8211dd7b5f0c8500ad20d9ba14e043907577c6684d6bfe9ce85a2d79"
+      "checksum": "80ba4651bded3a883abb544eac70107f200eaecc3931efa6c4c2bd59cf3bb4c5"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -135,7 +140,12 @@
     {
       "id": "pr-preparer",
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "7958653e779d8890f1c31cd517d847854800f2e802f06f30f78cb64f01e86646"
+      "checksum": "2e6e8dced5b072489d813de865804e14e9c25551b4a5b79e764c282519c944ae"
+    },
+    {
+      "id": "queue-partner",
+      "path": "agents/operations/queue-partner.yaml",
+      "checksum": "a7d79b1168ff9cce411e7a087ede4dd948a89bf47db56ff44f5394363951aa2b"
     },
     {
       "id": "release-manager",
@@ -157,117 +167,122 @@
     {
       "id": "accessibility-review",
       "path": "workflows/accessibility-review.yaml",
-      "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
+      "checksum": "3912f282228101e944b5aee09997aec81f63765510e60e9bd185ae8667d3e23f"
     },
     {
       "id": "answer-question",
       "path": "workflows/answer-question.yaml",
-      "checksum": "871ea45247705122e234187baa49c3631414405ccc1ec6e6edaa8ea29dd8fba4"
+      "checksum": "4959e48cd341632eb3db3a5aff3cc78b65d174af8f641ec071b2c666e2f550c2"
     },
     {
       "id": "architecture-decision",
       "path": "workflows/architecture-decision.yaml",
-      "checksum": "5a52b8bf00985f66950ab9086d01d019574ec3d6697d5106db9104c3a6628bf9"
+      "checksum": "af6044bab0aa5faaddbb5b7bca0c611d8e219d3ae8d236501c5c7909b6c54767"
     },
     {
       "id": "build-feature",
       "path": "workflows/build-feature.yaml",
-      "checksum": "821216c55acd18cc972c835544d4ff82fc38ba13710449c423b7d285ee880d72"
+      "checksum": "89ef726408be67a8a7c43ed5b7f318ceefbc9ceaf08c1372d032ff9709f3f45b"
     },
     {
       "id": "ci-triage",
       "path": "workflows/ci-triage.yaml",
-      "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+      "checksum": "5a0e2ce4f3b3b262d98fb4f1aa4f14238631965b13ef2991409ae2296b5bed70"
     },
     {
       "id": "code-review",
       "path": "workflows/code-review.yaml",
-      "checksum": "8efcf02baf834d8fd076a9ebb2a4ab14940e571f65451b52bb764479986e6fb3"
+      "checksum": "21346ec8c8bbba466e36a58b9f52502f1d11f3b4fc04d40db2277e4e6cb96374"
     },
     {
       "id": "data-migration",
       "path": "workflows/data-migration.yaml",
-      "checksum": "128fecaf771c12220dbd1ed0e269bbade79df49c190dba4ca37f1c884cc610ab"
+      "checksum": "c9ae5a0129a8e73b74b681409bd0f3634f3ff47ca99a6da135b06da28b0a8fb3"
     },
     {
       "id": "debug-failure",
       "path": "workflows/debug-failure.yaml",
-      "checksum": "e42f9f30f14d9c057a0e2d34d6193364b8d09871c4fc69cd7713afb4a22a397e"
+      "checksum": "365fc72c5cea0a1efa6592fb74b32c8b9b423fe3ae777c9821279ec00f8e55a2"
     },
     {
       "id": "dependency-upgrade",
       "path": "workflows/dependency-upgrade.yaml",
-      "checksum": "0f14363187da9beddc0ed9afeb3f91bc123635e2d97ac9cdef1c0192ef9ac920"
+      "checksum": "9552f4acf526fc1c083a824e952a71b083b4eb5a311606104b081a7e05e45f4e"
     },
     {
       "id": "incident-response",
       "path": "workflows/incident-response.yaml",
-      "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
+      "checksum": "868dcc89fa2c0984680c858628131fcc0289e9ede637cf3a8b5862219647c5b7"
     },
     {
       "id": "investigate-issue",
       "path": "workflows/investigate-issue.yaml",
-      "checksum": "df5785948a18374245b7a3683e0600fc08dd6544fdbbea54ea598e89cf3b341a"
+      "checksum": "8569ab140465a9cf766bef122c3bda90084dfa19b72230f2a80b70ab00078138"
     },
     {
       "id": "maintain-context",
       "path": "workflows/maintain-context.yaml",
-      "checksum": "017d0bd8dff08ff64aa2519285b41c80ee3f112abdd1699a10a36fd6d34bf04b"
+      "checksum": "f6939f4fd9060fd8481b235dd4258b05cfe258865e644765b9bd41cbb9edbd54"
     },
     {
       "id": "model-improvement",
       "path": "workflows/model-improvement.yaml",
-      "checksum": "43df0bb3bdde08e651d13d2c7bf64761daee8ad09f6e8106296a99e8844d2f1e"
+      "checksum": "8eb4164e44107b5098676a50743b9428adc14166e6f98f018ce50a7aa4e45322"
     },
     {
       "id": "performance-investigation",
       "path": "workflows/performance-investigation.yaml",
-      "checksum": "abee449fa90a5303c7b8b285dd688765b0d526fe3a5a0d4f94cebca419f57b91"
+      "checksum": "072ce4c7b23cff12f054e659eccb9d9f74b9a181eaaa6f54503681215248d2e9"
     },
     {
       "id": "product-discovery",
       "path": "workflows/product-discovery.yaml",
-      "checksum": "4b628895f2ff67213ddd42ff5c566d46c2d54d7165675ea4956e08c806246559"
+      "checksum": "7ad01e75de18bbe2577f9fc81fadb94b9f733a705d4f82639fa6d83a92eed4a6"
     },
     {
       "id": "production-readiness",
       "path": "workflows/production-readiness.yaml",
-      "checksum": "58025297278fada19b15f668ea4d73f6789e98846859b6dc67d0523ed186add0"
+      "checksum": "1694a58e409b2689b0e618899e70d41d733353d69464dfcd46038a54835c57ea"
     },
     {
       "id": "provider-smoke",
       "path": "workflows/provider-smoke.yaml",
-      "checksum": "bd57f99d6a91da17c9f94ad0a019403d36e83bb947a16c8b48066979699c319e"
+      "checksum": "593b765dbf1b57e645679a7f6d950967360be40553260d729a7f7ab3a23f7bc8"
+    },
+    {
+      "id": "repair-blocked-item",
+      "path": "workflows/repair-blocked-item.yaml",
+      "checksum": "44206ab0499ed36a9181a12f2714c8022c7d07f46d26bee7611fa7188405ac73"
     },
     {
       "id": "review-pr",
       "path": "workflows/review-pr.yaml",
-      "checksum": "6102f3fac71089dab8496c5e4e16b6fdd5b63302a96f687d84853cb4e86e3398"
+      "checksum": "693be67285eccf8a94f4e23292874fbd14d914eddf39d12cd284125fd6f30389"
     },
     {
       "id": "roadmap-curation",
       "path": "workflows/roadmap-curation.yaml",
-      "checksum": "441a56bb69b4fc03a316550edd0433dfefbc02ffc46c7dbf9636f9b9cb12a9c4"
+      "checksum": "597c65228dd0ec228663646b53baf7d69bc875fa82bb3ac5a3452674ff4961bf"
     },
     {
       "id": "security-audit",
       "path": "workflows/security-audit.yaml",
-      "checksum": "067dfa5b5a0d1e8ccf4c446eaaf7371026a6a23dc9a560d9db9b6203b5cc4ded"
+      "checksum": "938138d75b2eea7a91629d9dbe4992e2c73ff10b2416131fdc940ea5c824451b"
     },
     {
       "id": "ship-release",
       "path": "workflows/ship-release.yaml",
-      "checksum": "2f4f00e97b7e4f8757319f79fc97b69950b660c5491fedd111cb3ed32148c862"
+      "checksum": "1d51bb407af4ba04d9001a2480862e16df0ba0062b32fce783035c423dc93f4f"
     },
     {
       "id": "training-evaluation",
       "path": "workflows/training-evaluation.yaml",
-      "checksum": "c9751c0d53848d310760453ca0f2b682a09ecdab8fb098e0929831999e0d6248"
+      "checksum": "7dc0a6695ff3e6ed4bb5a763c84d22d6802a76fdeeee25d8125751666cab1a38"
     },
     {
       "id": "wide-open-automation",
       "path": "workflows/wide-open-automation.yaml",
-      "checksum": "0e84019da0cce28f5f9c6a8e30c0c31830f1d6538fba243324d57d78bd535f5c"
+      "checksum": "6c59ea50e54b81908d9dd258adf3b43c13427a7d316e7d721272f13fd953f741"
     }
   ],
   "files": [
@@ -294,6 +309,10 @@
     {
       "path": "agents/automatic/auto-wide-open-executor.yaml",
       "checksum": "bf5c96d108befa0ec4e1333ceac02b137b712c34efecacacff564bac60a5bb93"
+    },
+    {
+      "path": "agents/automatic/workflow-guide.yaml",
+      "checksum": "242de67b40a9c3bae23262d781951d01dbb972514121521341f65225b1f9885a"
     },
     {
       "path": "agents/core/context-curator.yaml",
@@ -333,7 +352,7 @@
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "45dd0e3c8211dd7b5f0c8500ad20d9ba14e043907577c6684d6bfe9ce85a2d79"
+      "checksum": "80ba4651bded3a883abb544eac70107f200eaecc3931efa6c4c2bd59cf3bb4c5"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
@@ -361,7 +380,11 @@
     },
     {
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "7958653e779d8890f1c31cd517d847854800f2e802f06f30f78cb64f01e86646"
+      "checksum": "2e6e8dced5b072489d813de865804e14e9c25551b4a5b79e764c282519c944ae"
+    },
+    {
+      "path": "agents/operations/queue-partner.yaml",
+      "checksum": "a7d79b1168ff9cce411e7a087ede4dd948a89bf47db56ff44f5394363951aa2b"
     },
     {
       "path": "agents/operations/release-manager.yaml",
@@ -377,95 +400,99 @@
     },
     {
       "path": "workflows/accessibility-review.yaml",
-      "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
+      "checksum": "3912f282228101e944b5aee09997aec81f63765510e60e9bd185ae8667d3e23f"
     },
     {
       "path": "workflows/answer-question.yaml",
-      "checksum": "871ea45247705122e234187baa49c3631414405ccc1ec6e6edaa8ea29dd8fba4"
+      "checksum": "4959e48cd341632eb3db3a5aff3cc78b65d174af8f641ec071b2c666e2f550c2"
     },
     {
       "path": "workflows/architecture-decision.yaml",
-      "checksum": "5a52b8bf00985f66950ab9086d01d019574ec3d6697d5106db9104c3a6628bf9"
+      "checksum": "af6044bab0aa5faaddbb5b7bca0c611d8e219d3ae8d236501c5c7909b6c54767"
     },
     {
       "path": "workflows/build-feature.yaml",
-      "checksum": "821216c55acd18cc972c835544d4ff82fc38ba13710449c423b7d285ee880d72"
+      "checksum": "89ef726408be67a8a7c43ed5b7f318ceefbc9ceaf08c1372d032ff9709f3f45b"
     },
     {
       "path": "workflows/ci-triage.yaml",
-      "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+      "checksum": "5a0e2ce4f3b3b262d98fb4f1aa4f14238631965b13ef2991409ae2296b5bed70"
     },
     {
       "path": "workflows/code-review.yaml",
-      "checksum": "8efcf02baf834d8fd076a9ebb2a4ab14940e571f65451b52bb764479986e6fb3"
+      "checksum": "21346ec8c8bbba466e36a58b9f52502f1d11f3b4fc04d40db2277e4e6cb96374"
     },
     {
       "path": "workflows/data-migration.yaml",
-      "checksum": "128fecaf771c12220dbd1ed0e269bbade79df49c190dba4ca37f1c884cc610ab"
+      "checksum": "c9ae5a0129a8e73b74b681409bd0f3634f3ff47ca99a6da135b06da28b0a8fb3"
     },
     {
       "path": "workflows/debug-failure.yaml",
-      "checksum": "e42f9f30f14d9c057a0e2d34d6193364b8d09871c4fc69cd7713afb4a22a397e"
+      "checksum": "365fc72c5cea0a1efa6592fb74b32c8b9b423fe3ae777c9821279ec00f8e55a2"
     },
     {
       "path": "workflows/dependency-upgrade.yaml",
-      "checksum": "0f14363187da9beddc0ed9afeb3f91bc123635e2d97ac9cdef1c0192ef9ac920"
+      "checksum": "9552f4acf526fc1c083a824e952a71b083b4eb5a311606104b081a7e05e45f4e"
     },
     {
       "path": "workflows/incident-response.yaml",
-      "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
+      "checksum": "868dcc89fa2c0984680c858628131fcc0289e9ede637cf3a8b5862219647c5b7"
     },
     {
       "path": "workflows/investigate-issue.yaml",
-      "checksum": "df5785948a18374245b7a3683e0600fc08dd6544fdbbea54ea598e89cf3b341a"
+      "checksum": "8569ab140465a9cf766bef122c3bda90084dfa19b72230f2a80b70ab00078138"
     },
     {
       "path": "workflows/maintain-context.yaml",
-      "checksum": "017d0bd8dff08ff64aa2519285b41c80ee3f112abdd1699a10a36fd6d34bf04b"
+      "checksum": "f6939f4fd9060fd8481b235dd4258b05cfe258865e644765b9bd41cbb9edbd54"
     },
     {
       "path": "workflows/model-improvement.yaml",
-      "checksum": "43df0bb3bdde08e651d13d2c7bf64761daee8ad09f6e8106296a99e8844d2f1e"
+      "checksum": "8eb4164e44107b5098676a50743b9428adc14166e6f98f018ce50a7aa4e45322"
     },
     {
       "path": "workflows/performance-investigation.yaml",
-      "checksum": "abee449fa90a5303c7b8b285dd688765b0d526fe3a5a0d4f94cebca419f57b91"
+      "checksum": "072ce4c7b23cff12f054e659eccb9d9f74b9a181eaaa6f54503681215248d2e9"
     },
     {
       "path": "workflows/product-discovery.yaml",
-      "checksum": "4b628895f2ff67213ddd42ff5c566d46c2d54d7165675ea4956e08c806246559"
+      "checksum": "7ad01e75de18bbe2577f9fc81fadb94b9f733a705d4f82639fa6d83a92eed4a6"
     },
     {
       "path": "workflows/production-readiness.yaml",
-      "checksum": "58025297278fada19b15f668ea4d73f6789e98846859b6dc67d0523ed186add0"
+      "checksum": "1694a58e409b2689b0e618899e70d41d733353d69464dfcd46038a54835c57ea"
     },
     {
       "path": "workflows/provider-smoke.yaml",
-      "checksum": "bd57f99d6a91da17c9f94ad0a019403d36e83bb947a16c8b48066979699c319e"
+      "checksum": "593b765dbf1b57e645679a7f6d950967360be40553260d729a7f7ab3a23f7bc8"
+    },
+    {
+      "path": "workflows/repair-blocked-item.yaml",
+      "checksum": "44206ab0499ed36a9181a12f2714c8022c7d07f46d26bee7611fa7188405ac73"
     },
     {
       "path": "workflows/review-pr.yaml",
-      "checksum": "6102f3fac71089dab8496c5e4e16b6fdd5b63302a96f687d84853cb4e86e3398"
+      "checksum": "693be67285eccf8a94f4e23292874fbd14d914eddf39d12cd284125fd6f30389"
     },
     {
       "path": "workflows/roadmap-curation.yaml",
-      "checksum": "441a56bb69b4fc03a316550edd0433dfefbc02ffc46c7dbf9636f9b9cb12a9c4"
+      "checksum": "597c65228dd0ec228663646b53baf7d69bc875fa82bb3ac5a3452674ff4961bf"
     },
     {
       "path": "workflows/security-audit.yaml",
-      "checksum": "067dfa5b5a0d1e8ccf4c446eaaf7371026a6a23dc9a560d9db9b6203b5cc4ded"
+      "checksum": "938138d75b2eea7a91629d9dbe4992e2c73ff10b2416131fdc940ea5c824451b"
     },
     {
       "path": "workflows/ship-release.yaml",
-      "checksum": "2f4f00e97b7e4f8757319f79fc97b69950b660c5491fedd111cb3ed32148c862"
+      "checksum": "1d51bb407af4ba04d9001a2480862e16df0ba0062b32fce783035c423dc93f4f"
     },
     {
       "path": "workflows/training-evaluation.yaml",
-      "checksum": "c9751c0d53848d310760453ca0f2b682a09ecdab8fb098e0929831999e0d6248"
+      "checksum": "7dc0a6695ff3e6ed4bb5a763c84d22d6802a76fdeeee25d8125751666cab1a38"
     },
     {
       "path": "workflows/wide-open-automation.yaml",
-      "checksum": "0e84019da0cce28f5f9c6a8e30c0c31830f1d6538fba243324d57d78bd535f5c"
+      "checksum": "6c59ea50e54b81908d9dd258adf3b43c13427a7d316e7d721272f13fd953f741"
     }
   ],
   "migrations": [

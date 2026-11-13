@@ -2,6 +2,8 @@ id: performance-investigation
 name: Performance Investigation
 description: Establish a baseline, isolate bottlenecks, apply a scoped optimization, and compare results.
 lead: technical-architect
+execution:
+  kind: source-change
 default_autonomy: 2
 triggers:
   manual: true

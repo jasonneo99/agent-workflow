@@ -5,7 +5,7 @@ export const notificationKindSchema = z.enum([
   "failed", "recovered", "completed", "message"
 ]);
 export type NotificationKind = z.infer<typeof notificationKindSchema>;
-export const notificationDeliveryStateSchema = z.enum(["queued", "delivered", "acknowledged", "failed"]);
+export const notificationDeliveryStateSchema = z.enum(["queued", "delivered", "acknowledged", "failed", "coalesced", "delivery_uncertain"]);
 
 const evidenceSchema = z.object({
   uri: z.string().trim().min(1),

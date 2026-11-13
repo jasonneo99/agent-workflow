@@ -13,6 +13,7 @@ import { acceptanceDigest, storedAcceptanceDecision } from "../packages/storage/
 import { structuredAcceptanceDecision } from "../packages/model-providers/src/quality.js";
 import { projectConfigSchema, workflowSchema } from "../packages/agent-registry/src/schemas.js";
 import type { StructuredAcceptanceContract } from "../packages/model-providers/src/types.js";
+import { reserveSupervisedRepair, repairFingerprint } from "../packages/storage/src/repair-dispatch.js";
 
 const configuredUrl = databaseUrl();
 const previousUrl = process.env.DATABASE_URL;
@@ -62,6 +63,31 @@ try {
     const proposal = structuredClone(contract);
     proposal.deliverables[0].status = "verified";
     for (const gate of gates) proposal.deliverables[0].receipts[gate] = [reference];
+    if (runId === replacementRunForLinkedRecovery) {
+      // One original-task replay, two sequential distinct causes, then genuine
+      // stored acceptance. A replay is not eligible for another automatic repair;
+      // eligible original-run reservations are exercised separately below.
+      const causes = ["synthetic regression command failed", "synthetic source provenance changed"];
+      assert.notEqual(repairFingerprint(sourceTask, causes[0]), repairFingerprint(sourceTask, causes[1]));
+      for (const [index, failure] of causes.entries()) {
+        const broken = index === 0 ? { ...content, exitCode: 1 }
+          : { ...content, sourceAfter: acceptanceDigest("changed synthetic source") };
+        await client!.query("update artifacts set content=$2 where uri=$1", [uri, JSON.stringify(broken)]);
+        const rejected = structuredClone(proposal);
+        for (const gate of gates) rejected.deliverables[0].receipts[gate]![0].contentHash = acceptanceDigest(broken);
+        assert.notEqual((await storedAcceptanceDecision(client!, runId, "verification", { acceptanceContract: rejected })).reason, null);
+        await assert.rejects(completeWorkflowTask({ taskId: claimed.taskId, runId, agentId: claimed.agentId,
+          workerId: "r3-worker", fencingToken: claimed.fencingToken, summary: failure,
+          artifact: { acceptanceContract: rejected } }), /Structured acceptance rejected/);
+        const repair = { runId, task: sourceTask, failure };
+        assert.equal(await reserveSupervisedRepair(repair), false, "Replay lineage cannot recursively reserve automatic repair");
+        assert.equal((await client!.query("select count(*)::int n from artifacts where run_id=$1 and kind='terminal_acceptance'", [runId])).rows[0].n, 0);
+        // Correct the exact injected cause before discovering the next one.
+        await client!.query("update artifacts set content=$2 where uri=$1", [uri, JSON.stringify(content)]);
+      }
+      assert.equal((await client!.query("select task from workflow_runs where id=$1", [runId])).rows[0].task, sourceTask);
+      assert.equal((await client!.query("select count(*)::int n from artifacts where run_id=$1 and kind='repair_dispatch_claim'", [runId])).rows[0].n, 0);
+    }
     // In-memory identity control only; never rewrites storage or provider requirements.
     const identityControl = { ...proposal, originRunId: runId };
     for (const gate of gates) {
@@ -101,7 +127,14 @@ try {
       throw error;
     }
     assert.equal((await client!.query("select status from workflow_runs where id=$1", [runId])).rows[0].status, "completed");
+    if (runId === replacementRunForLinkedRecovery) {
+      for (const gate of gates) assert.equal((await storedAcceptanceDecision(client!, runId, gate, { acceptanceContract: proposal })).reason, null);
+      assert.equal((await verifyRunReceiptChain(runId)).valid, true);
+      console.log("LINKED_DISTINCT_CAUSE_RECOVERY_PASSED: same original-task replay; failed command then changed provenance rejected; recursive repair reservations refused; corrected evidence accepted at all four gates; valid receipt chain");
+    }
   };
+  const sourceTask = "Synthetic R3 acceptance replay";
+  let replacementRunForLinkedRecovery: string | undefined;
   await exercise(source.runId, false);
   const sourceContract = await frozen(source.runId);
   console.log("R3_SOURCE_CONTROL_COMPLETED");
@@ -110,6 +143,7 @@ try {
   assert.notEqual(replacement.runId, source.runId);
   assert.equal(replacement.projectId, source.projectId);
   assert.equal(replacement.queuedTasks, 1);
+  replacementRunForLinkedRecovery = replacement.runId;
   assert.deepEqual(await frozen(source.runId), sourceContract);
   assert.equal((await client.query("select status from workflow_runs where id=$1", [source.runId])).rows[0].status, "completed");
   await exercise(replacement.runId, true);
@@ -242,6 +276,26 @@ try {
   console.log("R3_RECOVERY_CHECKPOINT_PRESERVED_FRESH_ACCEPTANCE_AND_TAMPER_CONTROLS_PASSED");
   console.log("R3_REPEATED_RECOVERY_VALIDATED_ANCESTRY_PASSED");
   console.log("R3_HISTORICAL_COMPLETION_CUTOFF_CURRENT_SUPERSESSION_PASSED");
+  // Real production reservation controls use a separate eligible original run.
+  // Only disposable fixture timestamps simulate elapsed backoff; production
+  // limits and clocks remain unchanged.
+  const eligibleTask = "Synthetic eligible original repair";
+  const eligible = await createWorkflowRun({ projectName: "Synthetic R3", projectRootUri: root,
+    projectProfile: "test", projectConfig: config, workflow, task: eligibleTask,
+    autonomy: "2", policyProfile: "local", policySnapshot: config, policySnapshotHash: acceptanceDigest(config) });
+  const reserve = (failure: string) => reserveSupervisedRepair({ runId: eligible.runId, task: eligibleTask, failure });
+  assert.equal(await reserve("first synthetic cause"), true);
+  assert.equal(await reserve("first synthetic cause"), false);
+  assert.equal(await reserve("second synthetic cause"), false, "Distinct cause cannot bypass source cooldown");
+  await client.query("update artifacts set created_at=now()-interval '2 minutes' where run_id=$1 and kind='repair_dispatch_claim'", [eligible.runId]);
+  assert.equal(await reserve("first synthetic cause"), false, "Elapsed cooldown cannot rearm unchanged evidence");
+  assert.equal(await reserve("second synthetic cause"), true);
+  await client.query("update artifacts set created_at=now()-interval '10 minutes' where run_id=$1 and kind='repair_dispatch_claim'", [eligible.runId]);
+  assert.equal(await reserve("third synthetic cause"), true);
+  await client.query("update artifacts set created_at=now()-interval '10 minutes' where run_id=$1 and kind='repair_dispatch_claim'", [eligible.runId]);
+  assert.equal(await reserve("fourth synthetic cause"), false, "Changing fingerprints cannot reset the three-attempt source budget");
+  assert.equal((await verifyRunReceiptChain(eligible.runId)).valid, true);
+  console.log("ORIGINAL_REPAIR_RESERVATION_COOLDOWN_DEDUP_BUDGET_PASSED");
 } finally {
   await client?.end();
   try {

@@ -2,41 +2,27 @@ id: training-evaluation
 name: Training Proposal Evaluation
 description: Convert one approved public-source training proposal into a bounded local holdout, execute it without changing production behavior, and produce reviewable evidence.
 lead: eval-curator
+execution:
+  kind: source-change
 default_autonomy: 2
 triggers:
   manual: true
   events: []
 stages:
-  - id: design-holdout
-    agent: eval-curator
-    goal: >-
-      Translate the approved proposal into explicit synthetic cases, baseline expectations, pass/fail criteria, privacy constraints, and rollback conditions.
-      This is a read-only reasoning stage: return the design as the stage artifact without requesting commands, file writes, or a project work intent.
-      Do not change agent definitions or runtime policy.
-    context:
-      load:
-        - project_context
-        - evaluation_results
-        - run_receipts
-      max_tokens: 5000
-    output: training_holdout_plan
   - id: execute-holdout
     agent: test-engineer
-    goal: Execute the approved bounded holdout with the governed `npm run agentflow -- training-holdout` command, using the design artifact from the prior stage, the proposal id from the workflow task, `--write`, and a project-relative design path. Record the command, report path, exact observation coverage, verdict, failures, usage, and unavailable checks truthfully. Missing fixtures, an unavailable runner, or zero measurable coverage must produce a completed INCONCLUSIVE result with the exact evidence gap and next action; do not block solely because measurements are unavailable. Do not modify production behavior.
+    goal: Execute exactly the engine-issued `npm run agentflow -- training-holdout` command and persisted design path in the workflow task. Do not discover, redesign, or substitute the holdout. Record the report path, exact observation coverage, verdict, failures, calls, and token usage. Missing or incomplete measurements are NEEDS_EVIDENCE and may not be accepted as evaluated. Do not modify production behavior.
     context:
       load:
-        - training_holdout_plan
         - commands
-        - relevant_source_files
-      max_tokens: 7000
+      max_tokens: 1500
     output: training_holdout_results
   - id: review-evidence
     agent: model-improvement-diagnostician
-    goal: Review the holdout results against the baseline and success criteria. Return a completed PASS, FAIL, or INCONCLUSIVE verdict with cited run evidence, measured benefit, risks, cost impact, rollback recommendation, and the next evidence needed. Missing measurements are an INCONCLUSIVE verdict, not a workflow blocker. Do not promote or apply the proposal.
+    goal: Review only the persisted measured holdout report against its baseline and success criteria. Return PASS, FAIL, or NEEDS_EVIDENCE with cited coverage, measured benefit, risks, cost impact, rollback recommendation, and the next evidence needed. Missing or partial measurements are NEEDS_EVIDENCE and cannot be accepted. Do not promote or apply the proposal.
     context:
       load:
-        - training_holdout_plan
         - training_holdout_results
         - evaluation_results
-      max_tokens: 5000
+      max_tokens: 1500
     output: training_evaluation_verdict

@@ -77,6 +77,30 @@ models can analyze the project, but requested commands and file writes are
 rejected. Results are written as Markdown and JSON under
 `.agent-workflow/evaluations/` unless `--out` is supplied.
 
+## Automatic evaluation runner
+
+The launchd-compatible runner discovers valid suite YAML files in `.agent-workflow/evaluations/` and invokes the existing built `evaluate` CLI for suites with no JSON result or whose newest result is at least `interval_hours` old. Report identity uses the YAML suite `id`; duplicate or invalid IDs are rejected.
+
+Configuration lives in `.agent-workflow/evaluation-daemon.yaml`. Defaults are `interval_hours: 24`, `suite_glob: "*.yaml"`, `max_concurrent: 1`, `project: "."`, `hour: 2`, `minute: 0`, `timeout_minutes: 180`, and `skip_index: true`. The suite filter supports `*` wildcards. Missing configuration is created with defaults; invalid configuration is rejected.
+
+With a 24-hour interval, launchd uses a daily calendar schedule at the configured local hour and minute. Other positive intervals use `StartInterval` in seconds. Re-run `start` after changing the schedule to refresh the plist.
+
+```bash
+npm run build
+npm run agentflow -- evaluation-daemon status --json
+npm run agentflow -- evaluation-daemon start
+npm run agentflow -- evaluation-daemon stop
+```
+
+These are operator commands for a built checkout on macOS: `start` installs and loads the per-user LaunchAgent; `stop` unloads and removes it. Starting scheduling can execute configured provider evaluations. Successful tests do not install or activate the daemon.
+
+A live daemon lock skips overlapping ticks, stale process locks are reaped, and `max_concurrent` bounds in-flight suites. An `evaluate` exit code of 75 is treated as a skipped evaluation rather than a failure notification.
+
+Results use the existing evaluation JSON/Markdown output directory. Per-evaluation records are appended to `.agent-workflow/evaluation-daemon-tokens.jsonl`; token usage is currently `status: "unknown"` with `totalTokens: null` because evaluation reports do not expose measured token totals. Estimated cost mix is separate from measured usage. Failures invoke `scripts/notify-requester.py` on a best-effort basis. Tick state and process output are available in `.agent-workflow/evaluation-daemon-state.json` and `.agent-workflow/evaluation-daemon.log`.
+
+Scheduler and CLI tests use temporary fixtures and synthetic process/launchctl adapters. Run `npm exec -- node --import tsx --test scripts/evaluation-daemon.test.ts apps/cli/src/commands/evaluation-daemon.test.ts` for focused verification, including overlap, concurrency, configuration and lifecycle controls. Release review also requires fresh full-suite, typecheck, build and OSS boundary evidence; live activation is a separate operator action.
+
+
 ## Ranking
 
 A run passes when status, minimum average quality, and maximum fallback

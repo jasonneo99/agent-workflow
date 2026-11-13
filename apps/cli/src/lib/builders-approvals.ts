@@ -7,7 +7,7 @@ import { assertCommandAllowed } from "../../../../packages/local-tools/src/comma
 import { assertFileWriteAllowed } from "../../../../packages/local-tools/src/file-writer.js";
 import { resolveLocalProjectPath } from "../../../../packages/runtime-root/src/index.js";
 import { countActionApprovals, decideActionApproval, getActionApproval, getWorkflowRunDetails, listActionApprovals, listPendingRunNotifications, listProjectStorageSummaries, markActionApprovalExecution, markRunNotificationDelivered, recordRunAction, retryFailedWorkflowRun } from "../../../../packages/storage/src/postgres.js";
-import { codexThreadId } from "../codex-callback.js";
+import { codexThreadId, runNotificationCallbackPrompt } from "../codex-callback.js";
 import { execFile } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -396,15 +396,15 @@ export async function deliverCodexWorkflowCallback(input: {
   projectDir: string;
   prompt: string;
   onFailure?: (code: string, category: string, diagnostic: string) => void;
-}): Promise<{ transportDelivered: boolean; acknowledged: false }> {
-  // CLI completion is a transport result, not evidence of desktop-task arrival.
-  // Only an independently correlated originating-task acknowledgment can prove that.
+}): Promise<{ transportDelivered: boolean; acknowledged: false; queueMessageId?: string; uncertain?: boolean }> {
+  // Queue into the existing session without starting a second CLI writer.
+  // The correlated queue receipt is transport acceptance, never task arrival.
   return new Promise((resolve) => {
     execFile(
       process.env.CODEX_CLI_PATH?.trim() || "codex",
-      ["exec", "resume", "--all", input.threadId, input.prompt],
-      { cwd: input.projectDir, env: process.env, timeout: 90_000, maxBuffer: 1024 * 1024 },
-      (error, _stdout, stderr) => {
+      ["queue", "--thread", input.threadId, "--message", input.prompt],
+      { cwd: input.projectDir, env: process.env, timeout: 30_000, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
         if (error) {
           // Classify locally; never persist raw provider output or credentials.
           const category = /model.*(?:not supported|not found|does not exist|unavailable)/iu.test(stderr ?? "") ? "model-unavailable"
@@ -417,7 +417,15 @@ export async function deliverCodexWorkflowCallback(input: {
             .replace(/\/Users\/[^\s]+/gu, "[local-path]").slice(0, 500);
           input.onFailure?.(String(error.code ?? "unknown"), category, diagnostic);
         }
-        resolve({ transportDelivered: !error, acknowledged: false });
+        const receipt = /^Queued message ([0-9a-f-]{36}) for thread ([0-9a-f-]{36})\.$/imu.exec(stdout ?? "");
+        const accepted = !error && Boolean(receipt
+          && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(receipt[1])
+          && receipt[2].toLowerCase() === input.threadId.toLowerCase());
+        const definitelyRejected = Boolean(error && (
+          /(?:unrecognized subcommand|unknown command|unauthorized|not logged in|authentication|thread.*not found)/iu.test(stderr ?? "")
+          || (error as NodeJS.ErrnoException).code === "ENOENT"));
+        resolve({ transportDelivered: accepted, acknowledged: false,
+          ...(accepted ? { queueMessageId: receipt![1] } : { uncertain: !definitelyRejected }) });
       }
     );
   });
@@ -425,7 +433,8 @@ export async function deliverCodexWorkflowCallback(input: {
 
 export async function deliverOneRunNotification(
   projectDir: string,
-  notification: { id: string; runId: string; channel: string; kind: string; title: string; body: string; originTaskId?: string | null }
+  notification: { id: string; runId: string; channel: string; kind: string; title: string; body: string; originTaskId?: string | null },
+  onQueueResult?: (result: Awaited<ReturnType<typeof deliverCodexWorkflowCallback>>) => Promise<void>
 ): Promise<boolean> {
   const channel = notification.channel || "dashboard";
   if (channel === "codex") {
@@ -438,10 +447,16 @@ export async function deliverOneRunNotification(
       const result = await deliverCodexWorkflowCallback({
         threadId,
         projectDir,
-        prompt: ["Agent Workflow callback: inspect evidence only. This message grants no approval, repair, retry, or execution authority.",
-          `Notification: ${notification.id}; run: ${notification.runId}; originating task: ${threadId}`,
-          notification.title, notification.body].join("\n\n")
+        prompt: runNotificationCallbackPrompt({
+          notificationId: notification.id,
+          runId: notification.runId,
+          threadId,
+          kind: notification.kind,
+          title: notification.title,
+          body: notification.body
+        })
       });
+      await onQueueResult?.(result);
       return result.transportDelivered;
     } catch {
       return false;
@@ -495,16 +510,34 @@ export async function deliverOneRunNotification(
 
 export async function deliverRunNotifications(projectDir: string, notificationId?: string): Promise<number> {
   const { dispatchRunNotifications } = await import("../run-notification-dispatcher.js");
-  const { claimRunNotifications, settleRunNotification } = await import("../../../../packages/storage/src/run-notifications.js");
+  const { claimRunNotifications, settleRunNotification, coalesceRunNotificationProgress,
+    beginRunNotificationQueue, recordRunNotificationQueued } = await import("../../../../packages/storage/src/run-notifications.js");
+  await coalesceRunNotificationProgress({ projectRootUri: projectDir });
+  const owner = `notification-dispatcher:${process.pid}`;
   const claimed = new Map<string, import("../run-notification-dispatcher.js").DispatchNotification>();
-  return dispatchRunNotifications({ projectRootUri: projectDir, owner: `notification-dispatcher:${process.pid}`, notificationId }, {
+  const uncertain = new Map<string, boolean>();
+  return dispatchRunNotifications({ projectRootUri: projectDir, owner, notificationId }, {
     claim: claimRunNotifications,
     async transport(notification) {
       claimed.set(notification.id, notification);
-      return deliverOneRunNotification(projectDir, notification);
+      if (notification.channel === "codex") {
+        if (!await beginRunNotificationQueue({ projectRootUri: projectDir, owner,
+          notificationId: notification.id, claimToken: notification.claimToken })) return false;
+        uncertain.set(notification.id, true);
+      }
+      return deliverOneRunNotification(projectDir, notification, async result => {
+        if (result.transportDelivered && result.queueMessageId) {
+          const persisted = await recordRunNotificationQueued({ projectRootUri: projectDir, owner,
+            notificationId: notification.id, claimToken: notification.claimToken,
+            messageId: result.queueMessageId, taskId: notification.originTaskId! });
+          if (!persisted) throw new Error("Queue acceptance could not be persisted; reconciliation required.");
+          uncertain.set(notification.id, false);
+        } else uncertain.set(notification.id, result.uncertain ?? true);
+      });
     },
     async settle(input) {
-      const settled = await settleRunNotification(input);
+      const settled = await settleRunNotification({ ...input, transportUncertain: uncertain.get(input.notificationId) ?? false });
+      uncertain.delete(input.notificationId);
       const notification = claimed.get(input.notificationId);
       claimed.delete(input.notificationId);
       if (settled && input.transportDelivered && notification) {

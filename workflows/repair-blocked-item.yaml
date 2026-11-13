@@ -1,0 +1,47 @@
+id: repair-blocked-item
+name: Repair and independently verify a blocked source item
+description: Produce a tested source candidate, commit its exact footprint, and verify the committed revision in a fresh declared environment. Original product acceptance remains separate.
+lead: workflow-orchestrator
+execution:
+  kind: source-change
+default_autonomy: 3
+triggers:
+  manual: true
+stages:
+  - id: repair
+    checkpoint_after: true
+    agent: implementation-agent
+    goal: Repair only the authorized source and tests, preserve unrelated work, and execute the underlying declared behavioral test command. The worker creates the candidate commit from passing source-bound environment evidence; do not run Git commits or environment management commands yourself. Report remaining original acceptance gaps.
+    pattern:
+      type: react
+      max_iterations: 12
+      requires_verifier: false
+      promotion_gate: none
+    context:
+      load: [AGENTS.md, prior_stage_artifacts]
+      max_tokens: 8000
+    output: repair_candidate
+  - id: verify
+    agent: test-engineer
+    goal: Independently inspect the candidate and its regression coverage read-only, then execute the declared behavioral test command in a fresh environment. Consume actual collection, failures and skips. The worker verifies the clean exact candidate commit and matching environment. Do not edit source or tests, request environment management, deploy, or claim installed or product acceptance.
+    pattern:
+      type: verifier
+      max_iterations: 6
+      requires_verifier: false
+      promotion_gate: none
+    context:
+      load: [AGENTS.md, prior_stage_artifacts]
+      max_tokens: 7000
+    output: independent_source_verification
+  - id: integrate
+    agent: workflow-orchestrator
+    runtime_operation: integrate-source
+    goal: Publish only the independently verified source delta through current project policy, exact file approvals and fenced local commit handling. Preserve original acceptance and all unrelated work.
+    pattern:
+      type: executor
+      requires_verifier: false
+      promotion_gate: none
+    context:
+      load: [prior_stage_artifacts]
+      max_tokens: 2000
+    output: integrated_source_candidate

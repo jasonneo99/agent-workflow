@@ -2,6 +2,8 @@ id: code-review
 name: Code Review
 description: Deep single-file code review for optimizations, risks, and smells. Findings are exported for dashboard proposals; nothing is ever auto-applied.
 lead: technical-architect
+execution:
+  kind: read-only
 default_autonomy: 2
 triggers:
   manual: true

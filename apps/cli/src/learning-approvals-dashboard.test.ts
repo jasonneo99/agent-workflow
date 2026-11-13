@@ -5,7 +5,8 @@ import test from "node:test";
 test("learning approvals resolve the local project before rendering action forms", () => {
   const source = readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
   const start = source.indexOf("function renderLearningReportHtml(");
-  const renderer = source.slice(start);
+  const end = source.indexOf("function renderLearningFailureTriageHtml(", start);
+  const renderer = source.slice(start, end === -1 ? undefined : end);
   const declaration = renderer.indexOf("const localProjectDir =");
   const approvalRows = renderer.indexOf("const learningRows =");
 

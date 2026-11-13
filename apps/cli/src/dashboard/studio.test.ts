@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { renderStudioHtml } from "./studio.js";
 
 const workflows = [
@@ -9,8 +10,11 @@ const workflows = [
 
 test("studio renders the task-first governed workflow surface", () => {
   const html = renderStudioHtml({ workflows, defaultProject: "templates/project" });
+  assert.match(html, /Archive from active views/);
+  assert.match(html, /Restore to active views/);
 
   assert.match(html, /Agent Workflow Studio/);
+  assert.match(html, /href="\/#dashboard-question-heading">Queue Partner<\/a>/);
   assert.match(html, /href="\/assets\/agent-workflow-favicon\.png"/);
   assert.match(html, /src="\/assets\/agent-workflow-mark\.png"/);
   assert.doesNotMatch(html, /class="brand-mark"/);
@@ -61,6 +65,9 @@ test("studio renders the task-first governed workflow surface", () => {
   assert.match(html, /Reply with what’s missing/);
   assert.match(html, /history\.replaceState/);
   assert.match(html, /id="project-switcher"/);
+  assert.match(html, /Guide evidence/);
+  assert.match(html, /learning\?view=diagnostics&amp;project=templates%2Fproject#guide-evidence-integrity/);
+  assert.match(html, /updateGuideEvidenceLink\(run\.projectRootUri/);
   assert.doesNotMatch(html, /Automatic Only/);
 });
 
@@ -69,4 +76,15 @@ test("studio escapes configured project paths", () => {
 
   assert.match(html, /projects\/&lt;private&gt;&amp;&quot;demo&quot;/);
   assert.doesNotMatch(html, /projects\/<private>/);
+});
+
+test("coordinator history is exposed consistently by CLI, MCP, dashboard, and Studio", () => {
+  const cli=readFileSync(new URL("../commands/runs.ts",import.meta.url),"utf8");
+  const mcp=readFileSync(new URL("../../../mcp/src/index.ts",import.meta.url),"utf8");
+  const dashboard=readFileSync(new URL("../commands/daemon.ts",import.meta.url),"utf8");
+  assert.match(cli,/coordinator-history-\$\{action\}/);assert.match(cli,/\["archive", "restore"\]/);
+  assert.match(cli,/COORDINATOR_HISTORY_ARCHIVE_CONFIRMATION/);assert.match(cli,/executionAuthorityGranted:false/);
+  assert.match(mcp,/agentflow_coordinator_history/);assert.match(mcp,/Exact human-approved obsolete run list/);
+  assert.match(dashboard,/\/api\/coordinator-history/);assert.match(dashboard,/Archive from active views/);
+  assert.match(dashboard,/runs = historyRuns[\s\S]+\.filter\(\(run\) => !run\.dismissed\)[\s\S]+\.filter\(\(run\) => run\.workflowId === workflow\.id\)/);
 });

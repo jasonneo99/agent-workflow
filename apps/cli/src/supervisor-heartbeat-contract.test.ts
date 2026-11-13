@@ -14,3 +14,14 @@ test("heartbeat pruning runs at startup and during supervision", () => {
   const calls = source.match(/await pruneDeadWorkerHeartbeatRegistry\(\)/gu) ?? [];
   assert.ok(calls.length >= 2);
 });
+
+test("supervisor keeps Queue Partner running with capacity for its seven-item stretch target", () => {
+  assert.match(source, /AGENTFLOW_WORKER_CONCURRENCY \?\? "7"/u);
+  assert.match(source, /AGENTFLOW_WORKER_PER_PROJECT_CONCURRENCY \?\? "7"/u);
+  assert.match(source, /AGENTFLOW_QUEUE_PARTNER !== "0"/u);
+  assert.match(source, /AGENTFLOW_QUEUE_PARTNER_INTERVAL_MS \?\? "5000"/u);
+  assert.match(source, /function startQueuePartner\(\)/u);
+  assert.match(source, /"queue-coordinator"[\s\S]+"--all-queued-projects"[\s\S]+"--execute"[\s\S]+"--watch"/u);
+  assert.match(source, /if \(queuePartnerEnabled && !children\.has\("queue-partner"\)\)/u);
+  assert.match(source, /queuePartnerManaged/u);
+});

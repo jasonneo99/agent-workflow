@@ -36,7 +36,7 @@ const source = [
   }
 }).join("\n");
 const stylesSource = readFileSync(new URL("./dashboard/styles.ts", import.meta.url), "utf8");
-const questionChatSource = readFileSync(new URL("./dashboard/question-chat.ts", import.meta.url), "utf8");
+const questionChatSource = ["./dashboard/question-chat.ts", "./dashboard/partner-chat-client.ts"].map(file => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
 
 test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /requestUrl\.pathname === "\/activity"/u);
@@ -46,19 +46,37 @@ test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /\["activity", "\/activity", "Activity", "list"\]/u);
 });
 
+test("queue watcher preserves exact project baseline and updates cards without replacing Partner",()=>{
+ assert.match(source,/watcher\.postMessage\(\{ type: "start", project: \$\{serializeInlineScriptJson\(projectFilter \|\| null\)\}/u);
+ assert.match(source,/id="queue-watch-refresh" hidden/u);
+ assert.match(source,/queueCardRefreshScript\(\)/u);
+ assert.match(source,/if \(event\.data\.changed\) cards.request\(\)/u);
+ assert.match(source,/const fallback = window\.setInterval\(\(\) => cards\.request\(\), 10000\)/u);
+ assert.match(source,/clearInterval\(fallback\); watcher\.postMessage\(\{ type: "stop" \}\)/u);
+ assert.match(source,/data-queue-live-region="cards"/u);
+ assert.match(source,/buildQueueCardTitle\(item\)/u);
+ assert.match(source,/<strong>Version set<\/strong>[^\n]+versionSetId/u);
+ assert.match(source,/requestUrl\.searchParams\.get\("_queue_snapshot"\) === "fresh"/u);
+ assert.match(source,/loadQueueCardSnapshot\(projectRootUri, freshSnapshot\)/u);
+ assert.match(source,/listWorkflowQueue\(100, \{ projectRootUri, latestRelated: true \}\)/u);
+});
+
 test("home human intervention renders as a compact keyboard-scrollable list", () => {
   assert.match(source, /class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0"/u);
   assert.match(stylesSource, /\.ops-approval-list \{ display: grid; align-content: start; max-height: 268px; overflow-y: auto/u);
   assert.match(stylesSource, /\.ops-approval-row \{[^}]+min-height: 40px; padding: 5px 2px/u);
 });
 
-test("home exposes a bounded governed question chat", () => {
-  assert.match(source, /renderDashboardQuestionPanel\(health\.projects, process\.env\.AGENTFLOW_DASHBOARD_PROJECT \?\? ctx\.rootDir\)/u);
+test("home omits the conversation while queue and run surfaces retain governed Partner chat", () => {
+  const home=source.slice(source.indexOf('function renderDashboardHtml('),source.indexOf('\n  function ',source.indexOf('function renderDashboardHtml(')+1));
+  assert.doesNotMatch(home,/renderDashboardQuestionPanel\(/u);
   assert.match(questionChatSource, /id="dashboard-question-form"/u);
   assert.match(questionChatSource, /id="dashboard-question-thread"[^>]+role="log"/u);
-  assert.match(questionChatSource, /fetch\("\/api\/server-conversation"/u);
-  assert.match(questionChatSource, /capabilityMode:\s*"conversation"/u);
-  assert.match(questionChatSource, /This request needs the governed/u);
+  assert.match(questionChatSource, /fetch\('\/api\/queue-partner-message'/u);
+  assert.match(questionChatSource, /'x-agentflow-queue-partner':'1'/u);
+  assert.match(questionChatSource, /conversationId:chat\.id/u);
+  assert.match(questionChatSource, /proposalFor\(chat\)/u);
+  assert.match(source, /createPartnerChatAdapter\(projectId, root/u);
   assert.match(questionChatSource, /isTrustedLocalDashboardRequest/u);
   assert.match(stylesSource, /\.ops-question-thread \{[^}]+max-height: 320px; overflow-y: auto/u);
   assert.match(stylesSource, /\.ops-question-form \{[^}]+grid-template-columns/u);
@@ -162,12 +180,21 @@ test("run detail clearly links checkpoint continuation runs in both directions",
 });
 
 test("queue presents active recovery chains without counting source failures twice", () => {
+  assert.match(source, /queue-family-attempts/u);
+  assert.match(source, /All \$\{formatNumber\(item.familyAttempts.length\)\} attempts in this version set/u);
+  assert.match(source, /Open family in new window/u);
+  assert.match(source, /attempt.approvals.map/u);
+  assert.match(source, /escapeHtml\(redactApprovalCardText\(attempt.blocker,2000\)\)/u);
+  assert.match(source, /approval record\(s\) need review/u);
   assert.match(source, /const recovering = queue\.filter/u);
   assert.match(source, /<strong>Recovering<\/strong>/u);
   assert.match(source, /Recovery in Progress/u);
   assert.match(source, /recovery running/u);
   assert.match(source, /!recoveringRunIds\.has\(item\.runId\)/u);
-  assert.match(source, /\/runs\?runSet=\$\{encodeURIComponent\(item\.runSetId\)\}[\s\S]+Open set/u);
+  assert.match(source, /\/runs\?relatedTo=\$\{encodeURIComponent\(item\.runId\)\}/u);
+  assert.match(source, /Open history/u);
+  assert.match(source, /latestRelated: true/u);
+  assert.match(source, /Earlier attempts need review/u);
 });
 
 test("run history presents a concise summary while preserving the original request", () => {

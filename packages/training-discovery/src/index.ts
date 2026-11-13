@@ -23,7 +23,7 @@ export type TrainingDiscoveryProposal = TrainingDiscoverySource & {
   status: "proposed" | "changed";
 };
 
-export type TrainingProposalDecisionStatus = "pending" | "approved" | "rejected" | "stale" | "unsafe" | "evaluated" | "promoted";
+export type TrainingProposalDecisionStatus = "pending" | "approved" | "needs-evidence" | "rejected" | "stale" | "unsafe" | "evaluated" | "promoted";
 export type TrainingProposalInboxItem = {
   id: string;
   sourceId: string;
@@ -221,7 +221,7 @@ export async function linkTrainingProposalEvaluation(input: { projectDir: string
   const updatedAt = (input.now ?? new Date()).toISOString();
   const item = inbox.items.find((candidate) => candidate.id === input.id);
   if (!item) throw new Error(`Unknown training proposal: ${input.id}`);
-  if (item.status !== "approved") throw new Error(`Training proposal ${input.id} must be approved before evaluation can run.`);
+  if (!["approved", "needs-evidence"].includes(item.status)) throw new Error(`Training proposal ${input.id} must be approved or need evidence before evaluation can run.`);
   item.evaluation = { runId: input.runId, startedAt: updatedAt };
   item.updatedAt = updatedAt;
   item.reviewer = input.reviewer;

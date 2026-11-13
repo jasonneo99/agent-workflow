@@ -39,6 +39,8 @@ test("legacy pending and transport delivery never become acknowledged implicitly
   assert.equal(normalizeNotificationDeliveryState("pending"), "queued");
   assert.equal(normalizeNotificationDeliveryState("delivered"), "delivered");
   assert.equal(normalizeNotificationDeliveryState("acknowledged"), "acknowledged");
+  assert.equal(normalizeNotificationDeliveryState("coalesced"), "coalesced");
+  assert.equal(normalizeNotificationDeliveryState("delivery_uncertain"), "delivery_uncertain");
   assert.throws(() => normalizeNotificationDeliveryState("read"));
 });
 

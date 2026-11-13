@@ -32,6 +32,14 @@ test("release rollback and reliability SLOs fail closed", () => {
   assert.deepEqual(evaluateReliabilityFailureScenarios().map((entry) => entry.status), reliabilityFailureScenarios.map(() => "unknown"));
 });
 
+test('glob scopes inhibit overlapping writers without conflicting with disjoint source families',()=>{
+ const conflict=(a:string,b:string)=>workIntentsConflict({owner:'first',objectiveHash:'a',fileScopes:[a]},{owner:'second',objectiveHash:'b',fileScopes:[b]});
+ assert.equal(conflict('src/**','src/example.ts'),true);
+ assert.equal(conflict('packages/runtime*','packages/runtime.test.ts'),true);
+ assert.equal(conflict('src/**','tests/example.ts'),false);
+ assert.equal(conflict('.agent-workflow/runtime/**','.agent-workflow/project.yaml'),false);
+});
+
 test("the deterministic failure matrix covers every reliability boundary", () => {
   assert.deepEqual(new Set(reliabilityFailureScenarios), new Set([
     "worker_killed_after_side_effect", "lease_expires_during_execution", "daemon_restarts_mid_sweep",

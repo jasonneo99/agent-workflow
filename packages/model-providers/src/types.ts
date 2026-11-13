@@ -60,6 +60,8 @@ export interface StageExecutionInput {
   agentName: string;
   agentPrompt: string;
   stageGoal: string;
+  /** Source-phase context only; execution authority remains with runtime gates. */
+  executionPipeline?: { required: boolean; sourceChanges: boolean };
   stagePattern?: {
     type: string;
     maxIterations?: number;
@@ -71,6 +73,10 @@ export interface StageExecutionInput {
   modelTier?: ModelTier;
   providerOverride?: string | null;
   modelOverride?: string;
+  /** Cooperative provider cancellation; runtime policy, never model authority. */
+  abortSignal?: AbortSignal;
+  /** Provider-side output ceiling for bounded advisory calls. */
+  maxOutputTokens?: number;
   priorReceipts: Array<{
     agentId: string;
     actionType: string;

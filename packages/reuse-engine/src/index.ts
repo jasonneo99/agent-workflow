@@ -42,6 +42,8 @@ export interface ReuseMemoryCandidate {
   summary: string;
   kind: string;
   updatedAt: string;
+  acceptanceVerified?: boolean;
+  outcome?: string | null;
 }
 
 export interface RankedReuseCandidate {
@@ -105,6 +107,7 @@ export function buildGovernedReusePlan(input: {
     .sort(compareRankedCandidates)
     .slice(0, input.maxCandidates ?? 5);
   const memory = (input.memory ?? [])
+    .filter((candidate) => candidate.kind !== "workflow_repair_learning" || (candidate.acceptanceVerified === true && candidate.outcome === "reinforce"))
     .map((candidate) => ({ ...candidate, similarity: semanticSimilarity(input.target.task, candidate.summary) }))
     .filter((candidate) => candidate.similarity >= 0.28)
     .sort((left, right) => right.similarity - left.similarity || right.updatedAt.localeCompare(left.updatedAt))

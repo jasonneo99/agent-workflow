@@ -1,7 +1,7 @@
 import escapeHtmlText from "escape-html";
 import { dashboardIcon } from "../dashboard/icons.js";
 import type { CliContext } from "./context.js";
-import type { AgentImprovementCandidate, AgentImprovementEval, AgentImprovementEvalPlan, AgentImprovementOutcomeWeight, AgentImprovementPatch, AgentImprovementPatchPlan, AgentImprovementPromotionDecisionResult, AgentImprovementPromotionItem, AgentImprovementPromotionQueue, AgentImprovementPromotionReceiptLog, AgentImprovementPromotionStatus, AgentImprovementReport, DashboardCandidateComparisonReport, DashboardEvaluationRun, DashboardEvaluationSuite, DashboardEvaluationVariant, DashboardFeedbackClassification, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardInfo, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalProviderEvidence, DashboardPromotionNoteFileSummary, DashboardPromotionRoutingNotePlan, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, FeedbackRating, LearningActionReceipt, LearningActionReceiptCompactionResult, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonHeartbeat, LearningDaemonMode, LearningReport, LearningRouteFeedbackSummary, LearningSettings, LocalHoldoutResultSummary, LocalHoldoutRoutingPromotion, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendComparison, LocalLlmCacheTrendPoint, LocalLlmCacheTrendReport, LocalLlmCostAssumptions, LocalLlmCostLedgerComparison, LocalLlmCostLedgerPoint, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendation, LocalLlmDownloadRecommendationReport, LocalLlmInstallationAction, LocalLlmInstallationPlanReport, LocalLlmInventoryCacheRoot, LocalLlmInventoryModel, LocalLlmInventoryReport, LocalLlmInventoryStorage, LocalLlmPruneAction, LocalLlmPrunePlanReport, LocalLlmRoutingRecommendation, LocalLlmRoutingRecommendationReport, LocalLlmRuntimeProbe, LocalLlmSetupChecklistItem, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, LocalLlmSmokeOutcome, LocalLlmSmokeOutcomeTrend, OfflineFallbackQueue, OfflineFallbackQueueAction, OfflineFallbackQueueItem, OfflineFallbackSyncResult, OfflineSyncSchedulerStatus, RoadmapSnapshotPublication, RouteDecisionFeedbackEvent, RouteDecisionFeedbackLog, RouteDecisionFeedbackRating, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeVersionMetadata , AgentImprovementPendingProject, AgentImprovementPendingSummary } from "./cli-types.js";
+import type { AgentImprovementCandidate, AgentImprovementEval, AgentImprovementEvalPlan, AgentImprovementOutcomeWeight, AgentImprovementPatch, AgentImprovementPatchPlan, AgentImprovementPromotionDecisionResult, AgentImprovementPromotionItem, AgentImprovementPromotionQueue, AgentImprovementPromotionReceiptLog, AgentImprovementPromotionStatus, AgentImprovementReport, DashboardCandidateComparisonReport, DashboardEvaluationRun, DashboardEvaluationSuite, DashboardEvaluationVariant, DashboardFeedbackClassification, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardInfo, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalProviderEvidence, DashboardModelHistoryBucket, DashboardModelHistoryRange, DashboardModelHistoryReport, DashboardPromotionNoteFileSummary, DashboardPromotionRoutingNotePlan, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, FeedbackRating, LearningActionReceipt, LearningActionReceiptCompactionResult, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonHeartbeat, LearningDaemonMode, LearningReport, LearningRouteFeedbackSummary, LearningSettings, LocalHoldoutResultSummary, LocalHoldoutRoutingPromotion, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendComparison, LocalLlmCacheTrendPoint, LocalLlmCacheTrendReport, LocalLlmCostAssumptions, LocalLlmCostLedgerComparison, LocalLlmCostLedgerPoint, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendation, LocalLlmDownloadRecommendationReport, LocalLlmInstallationAction, LocalLlmInstallationPlanReport, LocalLlmInventoryCacheRoot, LocalLlmInventoryModel, LocalLlmInventoryReport, LocalLlmInventoryStorage, LocalLlmPruneAction, LocalLlmPrunePlanReport, LocalLlmRoutingRecommendation, LocalLlmRoutingRecommendationReport, LocalLlmRuntimeProbe, LocalLlmSetupChecklistItem, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, LocalLlmSmokeOutcome, LocalLlmSmokeOutcomeTrend, OfflineFallbackQueue, OfflineFallbackQueueAction, OfflineFallbackQueueItem, OfflineFallbackSyncResult, OfflineSyncSchedulerStatus, RoadmapSnapshotPublication, RouteDecisionFeedbackEvent, RouteDecisionFeedbackLog, RouteDecisionFeedbackRating, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeVersionMetadata , AgentImprovementPendingProject, AgentImprovementPendingSummary } from "./cli-types.js";
 import { parseApprovalAutopilotRisk } from "./builders-approvals.js";
 import {buildStoredRoadmapSnapshot, countStrings, ensureProjectSubdir, execFileText, formatBytes, isExecutableApprovalAction, isRecord, loadCostQualityReport, mergeCounts, objectValue, pathExists, pathIsFile, redactDashboardUrl, safeDisplayUrl, safeErrorMessage, scanDirectorySize, shellQuote, stringValue, walk} from "./builders-shared.js";
 import { loadAgentRecords, loadProjectConfig, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
@@ -2678,7 +2678,7 @@ export function inferStageWorkflowId(runs: DashboardRunStatus[], reports: CostQu
 }
 
 export async function inspectOpenAICompatibleStatus(ctx: CliContext, input: {
-  providerId: "local" | "byo" | "openai-compatible" | "gemini" | "muse";
+  providerId: "local" | "byo" | "openai-compatible" | "deepseek" | "gemini" | "muse";
   label: string;
   baseUrl?: string;
   model?: string;
@@ -2957,8 +2957,102 @@ export async function loadCostQualityReportsForDashboardRuns(runs: DashboardRunS
   return reports.filter((report): report is CostQualityReport => report !== null);
 }
 
+const dashboardModelEvidenceCache = new Map<string, {
+  expiresAt: number;
+  promise: Promise<{ runs: DashboardRunStatus[]; reports: CostQualityReport[] }>;
+}>();
+
+async function loadDashboardModelEvidence(projectDir: string): Promise<{ runs: DashboardRunStatus[]; reports: CostQualityReport[] }> {
+  const key = path.resolve(projectDir);
+  const cached = dashboardModelEvidenceCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = listWorkflowRunsForProject({ projectRootUri: key, limit: 2000 }).then(async (runs) => ({
+    runs,
+    reports: await loadCostQualityReportsForDashboardRuns(runs)
+  }));
+  dashboardModelEvidenceCache.set(key, { expiresAt: Date.now() + 60_000, promise });
+  promise.catch(() => dashboardModelEvidenceCache.delete(key));
+  return promise;
+}
+
+export function buildDashboardModelHistory(input: {
+  reports: Array<{ startedAt: string; report: CostQualityReport }>;
+  bucket: DashboardModelHistoryBucket;
+  range: DashboardModelHistoryRange;
+  from?: string | null;
+  to?: string | null;
+  now?: Date;
+}): DashboardModelHistoryReport {
+  const rangeMs: Record<Exclude<DashboardModelHistoryRange, "all">, number> = {
+    "1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000, "7d": 604_800_000, "30d": 2_592_000_000,
+    "90d": 7_776_000_000, "180d": 15_552_000_000, "365d": 31_536_000_000
+  };
+  const parsedFrom = input.from ? Date.parse(input.from) : Number.NaN;
+  const parsedTo = input.to ? Date.parse(input.to) : Number.NaN;
+  const now = (input.now ?? new Date()).getTime();
+  const cutoff = Number.isFinite(parsedFrom) ? parsedFrom : input.range === "all" ? Number.NEGATIVE_INFINITY : now - rangeMs[input.range];
+  const ceiling = Number.isFinite(parsedTo) ? parsedTo : now;
+  const bucketStart = (iso: string): string => {
+    const date = new Date(iso);
+    if (input.bucket === "month") date.setUTCDate(1);
+    if (input.bucket === "week") date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+    if (input.bucket !== "hour" && input.bucket !== "minute") date.setUTCHours(0);
+    if (input.bucket !== "minute") date.setUTCMinutes(0);
+    date.setUTCSeconds(0, 0);
+    return date.toISOString();
+  };
+  const samples = input.reports.flatMap(({ startedAt, report }) => report.stages.map((stage) => ({
+    startedAt,
+    bucketStart: bucketStart(startedAt),
+    provider: stage.providerId,
+    model: stage.model || `${stage.providerId}/${stage.modelTier}`,
+    modelTier: stage.modelTier,
+    quality: stage.qualityScore,
+    latency: stage.latencyMs,
+    fallback: stage.fallbackUsed
+  }))).filter((sample) => Date.parse(sample.startedAt) >= cutoff && Date.parse(sample.startedAt) <= ceiling);
+  const summarize = (selected: typeof samples) => {
+    const quality = selected.map((item) => item.quality).filter((value): value is number => value !== null);
+    const latency = selected.map((item) => item.latency).filter((value): value is number => value !== null);
+    return {
+      samples: selected.length,
+      qualitySamples: quality.length,
+      averageQuality: quality.length ? Math.round(quality.reduce((sum, value) => sum + value, 0) / quality.length * 1000) / 1000 : null,
+      latencySamples: latency.length,
+      averageLatencyMs: latency.length ? Math.round(latency.reduce((sum, value) => sum + value, 0) / latency.length) : null,
+      fallbackRate: selected.length ? Math.round(selected.filter((item) => item.fallback).length / selected.length * 1000) / 1000 : 0
+    };
+  };
+  const identities = [...new Set(samples.map((item) => `${item.provider}\u0000${item.model}\u0000${item.modelTier}`))];
+  const models = identities.map((identity) => {
+    const [provider, model, modelTier] = identity.split("\u0000");
+    const selected = samples.filter((item) => item.provider === provider && item.model === model && item.modelTier === modelTier);
+    return { key: `${provider}/${model} · ${modelTier}`, provider, model, modelTier, ...summarize(selected), latestAt: selected.map((item) => item.startedAt).sort().at(-1) ?? "" };
+  }).sort((a, b) => b.samples - a.samples || a.key.localeCompare(b.key));
+  const points = models.flatMap((model) => [...new Set(samples.filter((item) => item.provider === model.provider && item.model === model.model && item.modelTier === model.modelTier).map((item) => item.bucketStart))].map((start) => {
+    const selected = samples.filter((item) => item.provider === model.provider && item.model === model.model && item.modelTier === model.modelTier && item.bucketStart === start);
+    return { bucketStart: start, key: model.key, provider: model.provider, model: model.model, modelTier: model.modelTier, ...summarize(selected) };
+  })).sort((a, b) => a.bucketStart.localeCompare(b.bucketStart) || a.key.localeCompare(b.key));
+  const dates = samples.map((item) => item.startedAt).sort();
+  return {
+    bucket: input.bucket,
+    range: input.range,
+    availableFrom: dates[0] ?? null,
+    availableTo: dates.at(-1) ?? null,
+    windowFrom: Number.isFinite(cutoff) ? new Date(cutoff).toISOString() : null,
+    windowTo: new Date(ceiling).toISOString(),
+    samples: samples.length,
+    models,
+    points
+  };
+}
+
 export async function loadDashboardCandidateComparisonReport(input: {
   projectDir: string;
+  bucket?: DashboardModelHistoryBucket;
+  range?: DashboardModelHistoryRange;
+  from?: string | null;
+  to?: string | null;
 }): Promise<DashboardCandidateComparisonReport> {
   const projectDir = path.resolve(process.cwd(), input.projectDir);
   const modelPlanPath = path.join(projectDir, ".agent-workflow", "model-improvement", "model-improvement-plan.json");
@@ -2979,8 +3073,15 @@ export async function loadDashboardCandidateComparisonReport(input: {
     };
   });
   const evaluationSuites = comparisonPlan ? await loadDashboardEvaluations(500) : [];
-  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
-  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns);
+  const { runs: projectRuns, reports: recentRouteReports } = await loadDashboardModelEvidence(projectDir);
+  const reportByRunId = new Map(recentRouteReports.map((report) => [report.runId, report]));
+  const modelHistory = buildDashboardModelHistory({
+    reports: projectRuns.flatMap((run) => reportByRunId.has(run.id) ? [{ startedAt: run.startedAt, report: reportByRunId.get(run.id)! }] : []),
+    bucket: input.bucket ?? "day",
+    range: input.range ?? "90d",
+    from: input.from,
+    to: input.to
+  });
   const outcomes = (comparisonPlan?.suites ?? []).map((suite) => {
     const evaluation = evaluationSuites.find((item) => item.id === suite.id);
     const baseline = evaluation?.variants.find((variant) => variant.id.startsWith("baseline-")) ?? null;
@@ -3053,6 +3154,7 @@ export async function loadDashboardCandidateComparisonReport(input: {
     promotionNoteFiles,
     localHoldoutRouting,
     routeReceiptTrends: buildDashboardRouteReceiptTrends(projectDir, recentRouteReports),
+    modelHistory,
     readiness,
     nextCommands: [
       `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,

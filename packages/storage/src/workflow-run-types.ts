@@ -2,6 +2,42 @@ export interface WorkflowQueueItem {
   runId: string;
   runSetId: string;
   runSetSize: number;
+  relatedRunCount?: number | null;
+  relatedOpenRunCount?: number | null;
+  codeFixCallback?: {
+    notificationId: string;
+    state: "queued" | "delivery_failed" | "delivery_uncertain" | "transport_accepted" | "acknowledged";
+    createdAt: string;
+    transportAcceptedAt: string | null;
+    acknowledgedAt: string | null;
+  } | null;
+  failureOwnership?: {
+    owner: "agent-workflow-runtime" | "product-source" | "project-policy" | "external-native" | "unknown";
+    codeFix: boolean;
+    confidence: "high" | "medium" | "low";
+    reason: string;
+    evidenceRunId: string;
+    repairRoute: "agent-workflow-runtime" | "originating-product-repository" | "originating-project-policy" | "external-evidence-owner" | "manual-triage";
+    requiredWorkerCapability: string | null;
+  } | null;
+  runtimeRemedy?: {
+    requiredCapability: string;
+    state: "compatible-worker-active" | "awaiting-worker-rollout";
+    workerIds: string[];
+    checkedAt: string;
+    eligibilityReason: string;
+    latestProbe: {
+      status: "passed" | "failed";
+      checkedAt: string;
+      digest: string;
+      reason: string | null;
+      runtimeVersion: string;
+      workerId: string;
+      workerState: "active" | "stale" | "incompatible" | "stopped" | "untrusted";
+    } | null;
+  } | null;
+  versionSetId?: string | null;
+  familyAttempts?: Array<{id:string;status:string;blocker:string|null;approvals:Array<{id:string;status:string}>}>;
   workflowId: string;
   runStatus: string;
   task: string;
@@ -9,10 +45,17 @@ export interface WorkflowQueueItem {
   displayDescription?: string | null;
   projectName: string;
   projectRootUri: string;
+  projectIdentityId?: string | null;
+  projectIdentityGeneration?: number | null;
+  sourceRevision?: string | null;
   requester?: string | null;
   requesterChannel?: string | null;
   startedAt: string;
   finishedAt: string | null;
+  latestActivityAt: string;
+  approvalWait?: { taskId: string; stageId: string; since: string; approvals: Array<{
+    id: string; status: string; actionType: string; target: string; rationale: string; payload: Record<string, unknown>;
+  }> } | null;
   blockedReason?: string | null;
   failedReason?: string | null;
   totalTasks: number;

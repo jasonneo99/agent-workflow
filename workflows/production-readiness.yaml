@@ -2,6 +2,8 @@ id: production-readiness
 name: Production Readiness Review
 description: Single-pass production readiness assessment covering frontend, security, site quality, and final summary.
 lead: workflow-orchestrator
+execution:
+  kind: read-only
 default_autonomy: 2
 triggers:
   manual: true

@@ -1,17 +1,69 @@
 # Local Learning Daemon
 
+## Operator-pinned scoped repair
+
+Automatic repair requires both `AGENTFLOW_WORKFLOW_AUTO_REPAIR=1` and a valid
+operator-signed grant. Neither callback text, origin identity, nor that switch
+alone authorizes repair. Missing or invalid configuration fails closed.
+
+The operator's host config at `~/.config/agent-workflow/repair-authority.json`
+supplies absolute `AGENTFLOW_REPAIR_GRANT_FILE` and
+`AGENTFLOW_REPAIR_AUTHORITY_KEY_FILE` paths and pins the grant envelope's SHA-256
+in `AGENTFLOW_REPAIR_GRANT_SHA256`. These are JSON property names; production
+ignores similarly named environment variables because the CLI loads writable
+project dotenv files. Protect this external config from project/worker writes.
+Keep the
+Ed25519 private signing key outside the project and agent-writable locations;
+the runtime reads only the public key. The grant file is JSON with a `payload`
+string and a base64 detached `signature` over those exact UTF-8 payload bytes.
+The payload has version 1, enabled, projectRootUri, originTaskId, issuedAt,
+expiresAt, and explicit runs containing runId and canonical taskHash. Its
+lifetime is at most 24 hours. There are no wildcard project/run grants and no
+runtime grant-issuing endpoint. Operator configuration is a trust boundary,
+not a sandbox against arbitrary code running with the operator's OS identity.
+
+Every attempt rereads the signed bytes. Revoke by removing or replacing the
+grant, disabling repair, or changing the operator pin; an old signed file
+cannot replace a differently pinned revision. Do not change the pin from a
+callback. Existing action policy, approvals, ownership, finite reservations,
+backoff and repair-of-repair refusal still apply. Issuing a grant does not
+approve any pending action or automatically resume unrelated workflows.
+
+`callback-continuation --run <id> --notification <id>` uses the host's
+independently supplied `CODEX_THREAD_ID` and canonical database rows. It rejects
+approval requests, stale/duplicate events and open approvals, records a durable
+claim, and never dispatches or approves an action itself. The scoped daemon
+continues eligible existing work through its normal gates. Hosts must not copy
+receiver identity or operator trust settings from callback payloads. Transport
+acceptance and acknowledgment remain distinct from continuation authority.
+
 ## Roadmap suggestions
 
 Every daemon tick reads the project-relative roadmap configured as
-`project.roadmap_path`. Unchecked Markdown tasks (`- [ ] ...`) become advisory,
-ordered next-work suggestions in:
+`project.roadmap_path`. It combines unchecked Markdown tasks (`- [ ] ...`) with
+ranked, evidence-backed learning proposals from that project's runs, failures,
+evaluations, route feedback, and cost signals. Duplicate titles already present
+in the roadmap are suppressed. The advisory next-work suggestions are written to:
 
 - `.agent-workflow/learning/roadmap-suggestions.json`
 - `.agent-workflow/learning/roadmap-suggestions.md`
 
 The daemon records the roadmap path, status, open-item count, and suggestion
-count in its heartbeat. It never edits the roadmap or executes a suggested
-item; a user or workflow must explicitly select the work.
+count in its heartbeat. The dashboard surfaces the same set on each project
+page under **Suggested Next Work**, with evidence proposals linked to their
+learning-inbox review. It never edits the roadmap or executes a suggested item;
+a user or workflow must explicitly select the work.
+
+Project pages provide three explicit decisions: **Add to roadmap**, **Defer**,
+and **Dismiss**. Decisions are stored in
+`.agent-workflow/learning/roadmap-suggestion-decisions.json`. Approved and
+dismissed proposals are removed from later ranking; deferred proposals remain
+eligible behind fresh evidence. Approved evidence proposals are appended to the
+configured project roadmap with their priority, provenance, rationale, and a
+bounded evidence summary. The Projects page shows suggestion counts, new
+high-priority proposals produce an in-dashboard attention callout, and each
+project page reports daemon heartbeat age and the configured per-project time
+budget.
 
 Learning proposals shown on the dashboard can be approved into the configured
 project roadmap. This approval adds an unchecked item under `Agent Workflow
@@ -510,6 +562,12 @@ own `.agent-workflow/learning/` report, inbox, application plan, shape
 recommendations, and daemon heartbeat. A failed or unavailable project records a
 failed heartbeat for that project without stopping the daemon for the rest.
 
+Each project analysis also has an independent 120-second default budget. A
+project that exceeds `AGENTFLOW_LEARNING_PROJECT_TIMEOUT_MS` is isolated while
+its current operation settles; later cycles do not start overlapping work for
+that project, and the remaining project fleet continues to receive heartbeats
+and updates.
+
 Each project governs its all-projects participation in
 `.agent-workflow/learning/settings.json` with `daemonEnabled`, `daemonPaused`,
 `daemonMode`, and `daemonRunLimit`. These controls are also available on the
@@ -669,13 +727,103 @@ with an exact approval or policy requirement instead of becoming false success.
 Older history is an audit backlog and requires explicit operator review; the
 daemon does not walk backward through it and manufacture new work.
 
+### Queue Partner and bounded repair coordination
+
+The `queue-partner` operations agent is the conversational role for explaining
+family priorities, shared blockers, missing evidence and exact approval needs.
+Its scheduling advice never grants execution authority. The
+`queue-coordinator` CLI provides the bounded execution foundation: three repair
+lanes and one independent acceptance verifier. Run without `--execute` for a
+preview; `--initialize` creates additive reservation and immutable revision
+storage. Explicitly authorized `--execute --watch --project <roots...>` enables
+the bounded lanes for that process's initial reviewed inventory, not future
+backlog. Enrollment gaps remain visible; idle lanes never imply an empty queue.
+
+Queue Partner should act on already-authorized local repair work without repeated
+operator confirmation. Technical failures and missing historical evidence go to
+evidence recovery or a bounded Codex assistance handoff, not a generic approval
+question. A handoff must identify the canonical family, original requirements,
+current revision, precise error, receipt references, attempted fixes and permitted
+scope. It must reuse the existing checkpoint and deduplicate unchanged requests.
+Only a supported transport acknowledgement establishes that Codex was contacted;
+the agent prompt alone does not implement that transport. If unavailable, retain
+the technical hold explicitly. Ask the operator only for a specific missing
+permission, never to resolve an implementation uncertainty or waive unavailable
+proof. Existing policy and independent acceptance checks remain authoritative.
+
+The coordinator now records deduplicated technical-help messages on the original
+source run and uses the existing fenced Codex notification transport. Destinations
+come only from the original run's trusted Codex binding. Missing bindings are
+reported as unavailable, never replaced with a guessed thread. Each pass creates
+at most three new requests; unchanged requests retain their original outbox row.
+Transport acceptance is not arrival or completed help. Approval, evaluation,
+active-family and external-proof waits do not become technical repair requests.
+`--request-help` performs this bounded help pass without dispatching repairs;
+ordinary previews remain read-only. Execution mode uses the same help path while
+retaining three unrelated repair lanes and one independent verifier. Already
+running processes do not acquire new source code until an authorized reload.
+
+Legacy runs without an original typed enrollment require a separate explicit
+human authorization for a `legacy-current-baseline` record. The record preserves
+the full original task verbatim and all four acceptance gates, captures the real
+current manifest under an exact live work intent, and binds the independently
+approved offline provider/tier. It never backfills the original contract or
+claims the current baseline was a historical preimage. A chained authorization
+receipt must bind the exact original project, family, task hash, paths and route.
+`--enroll-legacy <file>` consumes at most three such authorized plans and cannot
+dispatch, watch or request help. Original metadata, overrides, approvals and
+statuses remain unchanged. Evaluation work and incomplete original receipt chains
+remain excluded. A no-change candidate is permitted only for this explicit legacy
+mode so already-correct source can receive independent verification without a
+manufactured diff; it still requires the full original gates and current-source
+proof. Durable family/lane claims and no-loop suppression continue to apply.
+
+Enrollment requires an original runtime-owned acceptance contract, a canonical
+execution scope, exact source paths, matching source evidence, current policy
+and a live fenced work intent. Display-only grouping is not execution authority.
+Pending approvals, active families, overlapping files, unchanged failures,
+recursive repairs and unavailable external proof stay held. Uncertain execution
+retains its reservation for reconciliation, rather than becoming an automatic
+retry. Evaluation/training work is excluded from these general repair lanes.
+
+Every assignment adds receipts without rewriting original failures. The verifier
+checks original requirements, current source and governed receipt chains;
+neither an agent report nor a completed repair child closes the original run.
+This initial coordinator does not automatically dismiss runs.
+
+The dashboard home includes a Queue Partner conversation using the registered
+agent and the existing provider connection. Each answer receives a fresh bounded
+snapshot filtered to the selected execution project; logical aliases do not
+transfer evidence access. Source counts, omissions, capture time, blockers,
+approval status and history links are included as untrusted evidence. Switching
+projects clears the conversation. Questions remain read-only; action requests
+hand back to governed review, while already-authorized autonomous repairs run
+through the coordinator. The conversation itself never approves, deploys or
+changes run state. The separate native Studio conversation surface is unchanged.
+
+A repair captures an immutable actual preimage before writing. A candidate is
+recorded only after the completed repair's governed write transitions account
+for the entire enrolled source manifest. A separate read-only verifier receives
+a new contract on that candidate's source hash, with exactly the original
+deliverable descriptions, required gates and advisory/severity settings. Four
+gates, current source, all receipt chains, original provider/tier, and family
+approval/activity holds are checked before appending an immutable attestation.
+The original contract and approvals are never replaced or inherited as authority.
+Later changes or new approvals invalidate current attestation checks; historical
+attestations remain intact. Missing historical preimages cannot be invented.
+
+Self-repair learning means proposing scrubbed lessons and regression cases from
+independently verified outcomes through the existing learning review process.
+It does not mean silent model training, policy changes, promotion or new paid
+evaluations. Those remain separately governed decisions.
+
 Runs launched from Codex retain the originating Codex task identifier in local
 run metadata. When a new approval remains pending or a new failure cannot be
 self-healed, the daemon resumes that exact Codex task with a bounded callback.
 Approval callbacks instruct Codex to ask the user for approve-and-execute,
-approve-only, reject, or dismiss; they never grant approval themselves. Failure
-callbacks ask whether Codex should inspect and repair, retry, or dismiss the
-run. Successful callback delivery is recorded as an idempotent
+approve-only, reject, or dismiss the approval request; they never grant approval
+themselves. Failure callbacks may continue only separately authorized work,
+otherwise they ask for direction. Successful callback delivery is recorded as an idempotent
 `codex_attention_delivered` receipt, so daemon polling cannot repeatedly message
 the same task. Callback identifiers are removed from scrubbed run exports.
 
@@ -684,10 +832,122 @@ receipt on the original source run after reviewing a stale or externally
 superseded lineage. The supervisor treats that original receipt as a permanent
 stop condition and cancels any still-active automatic repair linked to it.
 
-Before queueing or continuing a repair, the supervisor also reconciles the run
-against bounded project-local completion and delivery receipts. A receipt must
-contain completion plus executed verification evidence and match the task by an
-exact lineage identifier or several distinctive task terms; plans and
-inspection-only receipts cannot qualify. Matching evidence cancels an active
-duplicate repair and dismisses the stale source as superseded. Already dismissed
+Before dismissal, the supervisor requires exact project/task and requirement
+equivalence with an independently accepted completed replacement. Narrative
+delivery files, fuzzy task terms, plans, inspection-only receipts and a queued
+replacement cannot establish that proof. Recovery preserves its unfinished
+source and immutable lineage until independent acceptance. Already dismissed
 history is never eligible for another repair.
+
+## Autonomous Queue Partner recovery
+
+Partner owns technical recovery across registered queued projects using the
+configured model/provider and governed worker, not a technical-help callback to
+a separate coding chat. Enable `--autonomous-recovery` on the existing
+`queue-coordinator --execute --manage-self-repair` owner, using explicit
+`--project` roots or `--all-queued-projects`. Add `--watch` for rolling refill;
+keep only one watch. Read-only previews never execute actors. The legacy
+`--request-help` option sends no chat handoff from this coordinator.
+
+The target is 3-5 genuinely working items, aiming for five. Ordinary repairs,
+autonomous recovery and the single independent verifier share the same total
+capacity, durable family/lane indexes, source overlap checks and uncertain-claim
+fences. A held card is not active work, and a recovery lifecycle completion is
+not acceptance of the original product.
+
+Missing old acceptance enrollment does not prevent model-backed investigation.
+Without a safe exact scope, the first turn is read-only and returns
+`artifact.proposedSourcePaths`: at most 40 exact existing project-relative
+source/test paths. A subsequent turn revalidates canonical ownership, current
+disk policy and source hashes and acquires the exact source intent before
+repair. A suggestion selects work inside current permissions; it cannot create
+a grant, transfer approval, invent a historical preimage or rewrite a contract.
+Scoped actors can execute allowed commands/writes and inspect actual results.
+Command recipes are narrowed to focused, scope-bound checks. An existing broad
+Python grant can produce an exact in-scope unittest recipe; an exact or blocked
+grant is never widened. Inspect tests for live effects before execution: write
+containment does not establish offline behavior or network/secret isolation. The actor
+snapshot sets `actions.isolate_command_writes: true`: on supported macOS hosts,
+the existing system sandbox denies project/host file writes by commands and
+their subprocesses, permitting only per-command scratch output. Source edits
+still use governed file tools. Other hosts fail closed for these commands until
+a supported containment backend exists; there is no unsandboxed fallback.
+Omitting this optional field preserves ordinary project command behavior.
+Suggested scopes require both an exact current reservation receipt segment and
+a completed child's output bound to its verified receipt chain. This does not
+repair or certify missing historical provenance.
+
+Every turn retains a semantic fingerprint and a durable five-turn lifetime budget;
+earlier reservations remain counted, including reservations made under an older
+limit. Protocol, command-contract and actual source/effect changes are relevant;
+clocks, generated ids and changing model prose do not rearm unchanged failures. Refused or
+already-investigated rows do not starve later eligible items. Shutdown prevents
+new reservations and drains owned work without cancellation or lease reset.
+Uncertain effects remain fenced for supported reconciliation.
+
+Fresh actors receive bounded authenticated prior owned command/write facts,
+including failed checks, so missing handoff context does not erase actual
+results. Historical passes are not acceptance of changed source. A queued
+checkpoint can wait briefly on the same child and exact live intent/assignment
+fences; foreign leases, lost ownership and exhausted continuation bounds remain
+uncertain rather than triggering another run.
+
+A terminal read-only discovery that lost its outcome observation can be closed
+through `reconcileReadOnlyPartnerChild` without replay. This requires an audited
+prospective operator authorization, a new exact live scope intent after the old
+owner expires, canonical/current-policy checks, an authentic protocol reservation,
+a verified child receipt chain, bound terminal task outputs, explicitly empty
+frozen approval rules, and no pending, approved or executing actions on child
+or original. Approval absence is rechecked at the final state effect. Writers
+and queued/checkpointed children are refused.
+Only the reservation becomes held: original results, acceptance, budgets and prior
+uncertainty receipts remain unchanged.
+
+An interrupted strictly read-only child can instead use
+`handoffReadOnlyPartnerChild` under a fresh, receipt-bound operator authorization.
+The exact old task/run leases and intent must be expired, and the operator must
+independently verify prior-worker quiescence. Current canonical project/policy,
+the exact new intent, task generation, bounded checkpoint/effect observations,
+the original reservation and preceding handoff proofs, a complete child receipt
+chain, and a strict read-only receipt allowlist are required. Frozen command,
+write-path and approval-rule arrays must all be empty; pending, approved or
+executing child/original actions prevent delegation. Two handoffs per assignment
+is a durable ceiling, not a budget reset.
+
+The handoff preserves the reservation ID, fence and lane, immutable run/task/policy
+snapshots and consumed recovery budget. Only its owner/intent changes. Installed
+SQL claim fences reject the old worker; ordinary claim APIs give the new exact
+worker a fresh task/run lease generation. A new observation of an older checkpoint
+does not invent historical payload provenance. Write-capable interruptions need a
+separately supported effect-reconciliation path, never a read-only API or generic
+cancellation/replay workaround.
+
+Model discovery responses carry `proposedSourcePaths` as a top-level JSON array
+of at most 40 exact project-relative source/test paths. The portable normalizer
+stores this in artifact metadata; Codex CLI's strict schema supports the field.
+References to `artifact.proposedSourcePaths` mean its stored location, not a
+free-form JSON envelope. A JSON proposal embedded only in findings remains
+narrative and is never promoted into structured scope. Malformed proposals are
+omitted as a whole. Current project/path/policy checks still govern any later
+action; a proposal is not permission, an executable request or acceptance.
+
+The nullable `memoryInfluence` field similarly carries at most 12 bounded
+comparison IDs, known influence classifications and reasons. Attribution must
+still refer to comparisons actually supplied to the task. Neither field can copy
+grants between projects or waive an existing owner, source or acceptance guard.
+
+Initialize the normal CLI runtime before any live worker invocation. A
+database-only test bootstrap does not configure the model. Record the actual
+executed route: a mock completion is synthetic lifecycle evidence, not genuine
+autonomous reasoning or product acceptance. Preserve and disclose a misrouted
+result rather than relabeling it or refunding its consumed recovery budget.
+
+Partner requests a human decision only for genuinely missing permission/access,
+a material choice, unavailable physical proof or an exact exhausted recovery
+boundary. Technical uncertainty, missing evidence and routine failed tests are
+work for its own configured model, not instructions for another chat to solve.
+Source, installed/deployed, native and human acceptance remain distinct.
+Explicit current operator authorization can cover high-risk actions; the risk
+label alone is not another approval requirement. This does not create grants
+from model output, transfer project permissions, remove audit or independent
+verification, or bypass another owner's claims.

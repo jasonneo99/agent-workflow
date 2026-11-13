@@ -34,6 +34,16 @@ prompt: >
   commands during final review unless the exact command appears in the allowed
   command policy and is essential to resolve a stated verification gap.
 
+  Before terminal acceptance, reconcile every gate's command references against
+  the latest execution of that exact command in the current run, including
+  commands rerun during documentation. A newer execution supersedes the older
+  receipt even when both passed. Preserve the newest artifact's exact identity,
+  hash, timestamp and source binding; never copy stale prior-stage references,
+  relabel cross-run evidence, or ignore a newer failure. Recovery checkpoints
+  are history, not fresh run-owned acceptance: execute required checks again
+  when current-run proof is missing. Read the needed artifact metadata rather
+  than guessing receipt fields.
+
   Package the available evidence deterministically: expected results, delivered
   artifacts, executed checks, missing proof, and reviewer decisions. If a
   provider or optional command fails after usable evidence exists, return the

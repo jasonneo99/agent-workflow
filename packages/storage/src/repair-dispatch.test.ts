@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { repairEvidenceChanged, repairFingerprint } from "./repair-dispatch.js";
+import { coordinatorAllowsRepair, repairEvidenceChanged, repairFingerprint } from "./repair-dispatch.js";
 
 test("failure fingerprint ignores run identity and whitespace, not changed diagnosis", () => {
   assert.equal(repairFingerprint("Build product", "Missing source for 00000000-0000-4000-8000-000000000001"),
@@ -26,4 +26,37 @@ test("successful-looking counters without governed checks cannot rearm repair", 
   const evidence = await validatedRepairEvidence(client, "synthetic-run");
   assert.deepEqual(evidence, []);
   assert.equal(repairEvidenceChanged([], evidence), false);
+});
+
+test("all repair producers respect active coordinator family and live matching claim", async () => {
+  const input = { runId: "source", projectId: "project", runSetId: "family" };
+  let available = true;
+  let rows: Array<{id:string; fence:string; sourceRunId:string; live:boolean}> = [];
+  const client = { query: async (sql:string, values?:unknown[]) => {
+    if(sql.includes("a.kind='queue_partner_repair_management'"))return {rowCount:0,rows:[]};
+    if (sql.includes("to_regclass")) return {rows:[{name:available ? "queue_coordinator_assignments" : null}]};
+    assert.deepEqual(values,["project","project:family"]);
+    assert.ok(sql.includes("i.fencing_token::text=a.intent_fence and i.expires_at>now()"));
+    assert.ok(sql.includes("'uncertain'"));
+    return {rows};
+  }} as unknown as Parameters<typeof coordinatorAllowsRepair>[0];
+  assert.equal(await coordinatorAllowsRepair(client,input),true);
+  const coordinatorClaim={id:"claim",fence:"7"};
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim}),false);
+  rows=[{id:"claim",fence:"7",sourceRunId:"source",live:true}];
+  assert.equal(await coordinatorAllowsRepair(client,input),false);
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim}),true);
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim:{id:"claim",fence:"6"}}),false);
+  rows[0].live=false;
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim}),false);
+  rows[0].live=true;rows[0].sourceRunId="other";
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim}),false);
+  available=false;
+  assert.equal(await coordinatorAllowsRepair(client,input),true);
+  assert.equal(await coordinatorAllowsRepair(client,{...input,coordinatorClaim}),false);
+});
+
+test('Partner managed family cannot fall back to a legacy dispatcher between repairs',async()=>{
+ const client={query:async(sql:string)=>{assert.match(sql,/queue_partner_repair_management/);return {rowCount:1,rows:[{}]};}} as unknown as Parameters<typeof coordinatorAllowsRepair>[0];
+ assert.equal(await coordinatorAllowsRepair(client,{runId:'source',projectId:'project',runSetId:'family'}),false);
 });

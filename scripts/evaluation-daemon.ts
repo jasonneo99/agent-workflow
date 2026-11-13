@@ -18,7 +18,9 @@ import { spawn, execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import { evaluationSuiteSchema } from "../packages/evaluation/src/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,12 +51,30 @@ export interface SuiteInfo {
   path: string; // absolute suite path
 }
 
+/** Report identity comes from YAML, never from the filename. */
+export async function resolveSuiteIdentities(suites: SuiteInfo[]): Promise<SuiteInfo[]> {
+  const seen = new Set<string>();
+  const resolved: SuiteInfo[] = [];
+  for (const suite of suites) {
+    const parsed = evaluationSuiteSchema.parse(YAML.parse(await fs.readFile(suite.path, "utf8")));
+    const id: unknown = parsed?.id;
+    if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id)) {
+      throw new Error(`Invalid evaluation suite id in ${path.basename(suite.path)}`);
+    }
+    if (seen.has(id)) throw new Error(`Duplicate evaluation suite id: ${id}`);
+    seen.add(id);
+    resolved.push({ ...suite, name: id });
+  }
+  return resolved;
+}
+
 export interface ResultFile {
   name: string;
   mtimeMs: number;
 }
 
 export interface SuiteOutcome {
+  skipped?: boolean;
   suite: string;
   ok: boolean;
   durationMs: number;
@@ -99,7 +119,7 @@ export function findDueSuites(
     const prefix = `${suite.name}-`;
     let newest = -1;
     for (const r of results) {
-      if (r.name.startsWith(prefix) && r.name.endsWith(".json") && r.mtimeMs > newest) {
+      if (r.name.startsWith(prefix) && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.json$/.test(r.name.slice(prefix.length)) && r.mtimeMs > newest) {
         newest = r.mtimeMs;
       }
     }
@@ -151,21 +171,34 @@ export async function runWithConcurrency<T>(
 }
 
 export async function loadConfig(configPath: string): Promise<DaemonConfig> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(configPath, "utf8");
-    const parsed = (YAML.parse(raw) ?? {}) as Partial<DaemonConfig>;
-    return { ...DEFAULT_CONFIG, ...parsed };
-  } catch {
+    raw = await fs.readFile(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await fs.mkdir(path.dirname(configPath), { recursive: true });
     await fs.writeFile(configPath, YAML.stringify(DEFAULT_CONFIG), "utf8");
     return { ...DEFAULT_CONFIG };
   }
+  const parsed: unknown = YAML.parse(raw) ?? {};
+  if (typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid evaluation daemon configuration");
+  const config = { ...DEFAULT_CONFIG, ...parsed } as DaemonConfig;
+  for (const key of ["interval_hours", "timeout_minutes"] as const) {
+    if (!Number.isFinite(config[key]) || config[key] <= 0) throw new Error(`Invalid ${key}`);
+  }
+  if (!Number.isInteger(config.max_concurrent) || config.max_concurrent < 1) throw new Error("Invalid max_concurrent");
+  if (!Number.isInteger(config.hour) || config.hour < 0 || config.hour > 23) throw new Error("Invalid hour");
+  if (!Number.isInteger(config.minute) || config.minute < 0 || config.minute > 59) throw new Error("Invalid minute");
+  if (typeof config.suite_glob !== "string" || !config.suite_glob) throw new Error("Invalid suite_glob");
+  if (typeof config.project !== "string" || !config.project) throw new Error("Invalid project");
+  if (typeof config.skip_index !== "boolean") throw new Error("Invalid skip_index");
+  return config;
 }
 
 function newestResultJson(evalsDir: string, suiteName: string, entries: string[]): string | null {
   const prefix = `${suiteName}-`;
   const match = entries
-    .filter((e) => e.startsWith(prefix) && e.endsWith(".json"))
+    .filter((e) => e.startsWith(prefix) && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.json$/.test(e.slice(prefix.length)))
     .sort()
     .pop();
   return match ? path.join(evalsDir, match) : null;
@@ -193,6 +226,7 @@ export interface TickDeps {
   tokenLogPath: string;
   notifyScript: string;
   nowMs?: number;
+  spawnProcess?: typeof spawn;
 }
 
 export interface TickResult {
@@ -202,7 +236,7 @@ export interface TickResult {
   outcomes: SuiteOutcome[];
 }
 
-async function notifyFailure(deps: TickDeps, suite: string, detail: string): Promise<void> {
+export async function notifyFailure(deps: TickDeps, suite: string, detail: string): Promise<void> {
   const payload = {
     notificationId: `eval-daemon-${Date.now()}`,
     runId: "evaluation-daemon",
@@ -211,10 +245,13 @@ async function notifyFailure(deps: TickDeps, suite: string, detail: string): Pro
     body: detail.slice(0, 1000),
   };
   try {
-    const child = spawn(process.execPath, [deps.notifyScript], { stdio: ["pipe", "ignore", "ignore"] });
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-    await new Promise((resolve) => child.on("close", resolve));
+    const child = (deps.spawnProcess ?? spawn)("python3", [deps.notifyScript], { stdio: ["pipe", "ignore", "ignore"] });
+    await new Promise<void>((resolve) => {
+      child.once("error", () => resolve());
+      child.once("close", () => resolve());
+      child.stdin?.once("error", () => resolve());
+      child.stdin?.end(JSON.stringify(payload));
+    });
   } catch {
     // Notification is best-effort; the failure is already logged.
   }
@@ -227,9 +264,9 @@ async function runSuite(
 ): Promise<SuiteOutcome> {
   const started = Date.now();
   const outDir = deps.evalsDir;
+  const previousReports = new Set(await fs.readdir(outDir).catch(() => [] as string[]));
   const args = [
-    "tsx",
-    "apps/cli/src/index.ts",
+    path.join(deps.repoRoot, "dist", "apps", "cli", "src", "index.js"),
     "evaluate",
     "-s",
     suite.path,
@@ -248,7 +285,7 @@ async function runSuite(
     costSummary: null,
   };
   try {
-    const proc = spawn("npx", args, { cwd: deps.repoRoot, stdio: "ignore" });
+    const proc = (deps.spawnProcess ?? spawn)(process.execPath, args, { cwd: deps.repoRoot, stdio: "ignore" });
     const timeoutMs = config.timeout_minutes * 60 * 1000;
     const exitCode: number | null = await new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -265,6 +302,7 @@ async function runSuite(
       });
     });
     outcome.exitCode = exitCode;
+    outcome.skipped = exitCode === 75;
     outcome.ok = exitCode === 0;
   } catch (err) {
     outcome.error = err instanceof Error ? err.message : String(err);
@@ -272,7 +310,7 @@ async function runSuite(
   outcome.durationMs = Date.now() - started;
   try {
     const entries = await fs.readdir(deps.evalsDir);
-    outcome.resultJson = newestResultJson(deps.evalsDir, suite.name, entries);
+    outcome.resultJson = outcome.skipped ? null : newestResultJson(deps.evalsDir, suite.name, entries.filter((entry) => !previousReports.has(entry)));
     outcome.costSummary = await extractCostSummary(outcome.resultJson);
   } catch {
     // best-effort
@@ -289,22 +327,40 @@ export async function tick(deps: TickDeps): Promise<TickResult> {
   const nowMs = deps.nowMs ?? Date.now();
   const config = await loadConfig(deps.configPath);
 
-  const existingLock = await readLock(deps.lockPath);
-  if (existingLock && !lockIsStale(existingLock)) {
-    return { skipped: true, skipReason: `lock held by pid ${existingLock.pid}`, due: [], outcomes: [] };
-  }
-
   await fs.mkdir(path.dirname(deps.lockPath), { recursive: true });
-  await fs.writeFile(
-    deps.lockPath,
-    JSON.stringify({ pid: process.pid, startedAt: new Date(nowMs).toISOString() }),
-    "utf8",
-  );
+  const acquisitionPath = `${deps.lockPath}.acquiring`;
+  try {
+    await fs.mkdir(acquisitionPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return { skipped: true, skipReason: "lock acquisition in progress; inspect orphaned acquisition directory if persistent", due: [], outcomes: [] };
+    }
+    throw error;
+  }
+  try {
+    const existingLock = await readLock(deps.lockPath);
+    if (existingLock && !lockIsStale(existingLock)) {
+      return { skipped: true, skipReason: `lock held by pid ${existingLock.pid}`, due: [], outcomes: [] };
+    }
+    if (existingLock) await fs.unlink(deps.lockPath);
+    await fs.writeFile(
+      deps.lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: new Date(nowMs).toISOString() }),
+      { encoding: "utf8", flag: "wx" },
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return { skipped: true, skipReason: "lock already exists", due: [], outcomes: [] };
+    }
+    throw error;
+  } finally {
+    await fs.rmdir(acquisitionPath);
+  }
 
   const result: TickResult = { skipped: false, due: [], outcomes: [] };
   try {
     const entries = await fs.readdir(deps.evalsDir);
-    const suites = listSuites(deps.evalsDir, config.suite_glob, entries);
+    const suites = await resolveSuiteIdentities(listSuites(deps.evalsDir, config.suite_glob, entries));
     const results: ResultFile[] = [];
     for (const e of entries) {
       if (e.endsWith(".json") || e.endsWith(".md")) {
@@ -329,9 +385,14 @@ export async function tick(deps: TickDeps): Promise<TickResult> {
         exitCode: outcome.exitCode,
         durationMs: outcome.durationMs,
         costSummary: outcome.costSummary,
+        tokenUsage: {
+          status: "unknown",
+          totalTokens: null,
+          reason: "The existing evaluation report does not expose measured token usage",
+        },
         error: outcome.error ?? null,
       });
-      if (!outcome.ok) {
+      if (!outcome.ok && !outcome.skipped) {
         await notifyFailure(
           deps,
           suite.name,
@@ -349,6 +410,7 @@ export async function tick(deps: TickDeps): Promise<TickResult> {
           outcomes: result.outcomes.map((o) => ({
             suite: o.suite,
             ok: o.ok,
+            skipped: o.skipped ?? false,
             exitCode: o.exitCode,
             durationMs: o.durationMs,
           })),
@@ -385,7 +447,8 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const repoRoot = args.repo ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const repoRoot = args.repo ?? (path.basename(scriptRoot) === "dist" ? path.dirname(scriptRoot) : scriptRoot);
   const agentflowDir = path.join(repoRoot, ".agent-workflow");
   const deps: TickDeps = {
     repoRoot,
@@ -398,11 +461,11 @@ async function main(): Promise<void> {
   };
   const result = await tick(deps);
   console.log(JSON.stringify(result, null, 2));
-  const failed = result.outcomes.filter((o) => !o.ok).length;
+  const failed = result.outcomes.filter((o) => !o.ok && !o.skipped).length;
   if (failed > 0) process.exitCode = 1;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));

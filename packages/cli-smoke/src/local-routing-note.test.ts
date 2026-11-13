@@ -212,7 +212,10 @@ test("learning daemon applies route-feedback recommendation refresh with receipt
     return;
   }
 
-  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-route-feedback-daemon-"));
+  const projectDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-route-feedback-daemon-")));
+  t.after(() => fs.rm(projectDir, { recursive: true, force: true }));
+  await fs.mkdir(path.join(projectDir, '.agent-workflow'));
+  await fs.writeFile(path.join(projectDir, '.agent-workflow/project.yaml'), 'project:\n  name: synthetic-route-feedback\n', 'utf8');
   for (const rating of ["costly", "costly"] as const) {
     const result = runAgentflow([
       "local-route-feedback",
@@ -250,7 +253,7 @@ test("learning daemon applies route-feedback recommendation refresh with receipt
     "--reviewer", "test",
     "--note", "approved for test"
   ]);
-  assert.equal(approve.status, 0, approve.stderr);
+  assert.equal(approve.status, 0, `${approve.stderr}\nProposal pass: ${propose.stdout}\n${propose.stderr}`);
 
   const daemon = runAgentflow([
     "learning-daemon",

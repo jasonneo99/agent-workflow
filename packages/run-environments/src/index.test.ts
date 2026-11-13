@@ -1,0 +1,380 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
+import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
+import { dockerfileFor, ENVIRONMENT_COMMAND, planRunEnvironment, prepareRunEnvironment, runEnvironmentCommand, runProcess, selectEnvironment,
+  type ProcessResult, type ProcessRunner, type EnvironmentPlan } from "./index.js";
+import { environmentProfileSchema } from "./schema.js";
+import { testEvidence } from "./evidence.js";
+import { scopedChangeReviewPolicy } from "../../storage/src/scoped-change-review.js";
+
+const digest = "a".repeat(64), imageId = `sha256:${"b".repeat(64)}`;
+const tap = "# tests 2\n# suites 0\n# pass 2\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n";
+const ok = (stdout = "", overrides: Partial<ProcessResult> = {}): ProcessResult =>
+  ({ exitCode: 0, signal: null, stdout, stderr: "", timedOut: false, durationMs: 1, ...overrides });
+async function fixture() {
+  const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "run-environment-test-")));
+  await fs.mkdir(path.join(cwd, "src")); await fs.mkdir(path.join(cwd, "tests"));
+  await fs.writeFile(path.join(cwd, "src", "index.js"), "export const value = 1;\n");
+  await fs.writeFile(path.join(cwd, "tests", "index.test.js"), "import assert from 'node:assert/strict'; import test from 'node:test'; test('value', () => assert.equal(1, 1));\n");
+  await fs.writeFile(path.join(cwd, "package-lock.json"), '{"lockfileVersion":3}\n');
+  const project = projectConfigSchema.parse({ project: { name: "synthetic-project" }, execution: { environments: {
+    profiles: { test: { platform: "linux/amd64", image: `node@sha256:${digest}`, source_paths: ["src", "tests"],
+      dependency_paths: ["package-lock.json"], readiness: [{ argv: ["node", "--version"], expect_output: "v22" }],
+      verification: [{ commands: ["node --test tests/index.test.js"], format: "node-test", expected_tests: 2 }] } }, default_profile: "test"
+  } }, actions: { allowed_commands: [ENVIRONMENT_COMMAND, "node --test tests/index.test.js", "node --version"], command_timeout_ms: 30_000 } });
+  return { cwd, project, cleanup: () => fs.rm(cwd, { recursive: true, force: true }) };
+}
+function dockerMock(plan: EnvironmentPlan, options: { failReady?: boolean; truncateTest?: boolean; skipTest?: boolean; failCleanup?: boolean; cached?: boolean } = {}) {
+  const calls: string[][] = [], commands = new Map<string, string[]>();
+  let sequence = 0, ready = false;
+  const runner: ProcessRunner = async args => {
+    calls.push(args);
+    const command = args.slice(3);
+    if (command[0] === "image" && command[1] === "inspect") {
+      if (!ready && !options.cached) return ok("", { exitCode: 1 });
+      return ok(JSON.stringify({ Id: imageId, Os: "linux", Architecture: "amd64", Config: { Labels: {
+        "io.agentflow.recipe": plan.recipeHash, "io.agentflow.source": plan.sourceHash
+      } } }));
+    }
+    if (command[0] === "build") { ready = true; return ok("built"); }
+    if (command[0] === "create") {
+      const id = (++sequence).toString(16).padStart(64, "0");
+      commands.set(id, command); return ok(id);
+    }
+    if (command[0] === "start" && command[1] === "--attach") {
+      const argv = commands.get(command[2]!)!;
+      const isReady = argv.includes("--version");
+      if (isReady) return options.failReady ? ok("", { exitCode: 1, stderr: "missing dependency" }) : ok("v22.0.0");
+      return ok(options.skipTest ? tap.replace("# pass 2", "# pass 1").replace("# skipped 0", "# skipped 1") : tap, options.truncateTest ? { outputTruncated: true } : {});
+    }
+    if (command[0] === "inspect") return ok(JSON.stringify({ Running: false, ExitCode: 0, OOMKilled: false, Error: "" }));
+    if (command[0] === "rm") return options.failCleanup ? ok("", { exitCode: 1, stderr: "engine unavailable" }) : ok();
+    return ok();
+  };
+  return { runner, calls, commands };
+}
+
+test("preview is deterministic, source-bound and has no Docker or filesystem side effects", async () => {
+  const f = await fixture(); try {
+    const plan = await planRunEnvironment({ ...f, context: { runId: "repair-1" } });
+    assert.equal(plan.recipeHash, (await planRunEnvironment({ ...f, context: { runId: "repair-2" } })).recipeHash);
+    assert.deepEqual(plan.sourceFiles.map(file => file.path), ["package-lock.json", "src/index.js", "tests/index.test.js"]);
+    await assert.rejects(fs.access(path.join(f.cwd, ".agent-workflow")));
+    await fs.writeFile(path.join(f.cwd, "src/index.js"), "export const value = 2;\n");
+    const next = await planRunEnvironment({ ...f, context: { runId: "repair-1" } });
+    assert.equal(next.recipeHash, plan.recipeHash); assert.notEqual(next.sourceHash, plan.sourceHash); assert.notEqual(next.imageTag, plan.imageTag);
+  } finally { await f.cleanup(); }
+});
+
+test('only exact nested context fixtures can enter tests; root context and secret files remain private',async()=>{
+ const f=await fixture();try{
+  await fs.mkdir(path.join(f.cwd,'fixtures/example/.agent-workflow'),{recursive:true});await fs.mkdir(path.join(f.cwd,'.agent-workflow'));
+  await fs.writeFile(path.join(f.cwd,'fixtures/example/.agent-workflow/project.yaml'),'project: {name: synthetic}\n');
+  await fs.writeFile(path.join(f.cwd,'fixtures/example/.agent-workflow/.env'),'PRIVATE=example\n');
+  await fs.writeFile(path.join(f.cwd,'.agent-workflow/project.yaml'),'project: {name: owning-project}\n');
+  const profile=f.project.execution.environments!.profiles.test!;profile.fixture_paths=['fixtures/example/.agent-workflow/project.yaml'];
+  const plan=await planRunEnvironment({...f,context:{runId:'fixture'}});assert.ok(plan.sourceFiles.some(file=>file.path===profile.fixture_paths![0]));
+  for(const denied of ['.agent-workflow/project.yaml','fixtures/example/.agent-workflow/.env']){profile.fixture_paths=[denied];await assert.rejects(planRunEnvironment({...f,context:{runId:'fixture'}}),/Private or generated/);}
+ }finally{await f.cleanup();}
+});
+
+test("profiles are selected per run, workflow, stage and command without changing command authority", async () => {
+  const f = await fixture(); try {
+    const env = f.project.execution.environments!;
+    env.profiles.other = { ...env.profiles.test!, readiness: [{ argv: ["node", "--version"], attempts: 1, interval_ms: 250 }] };
+    env.selectors = [{ profile: "other", workflow: "build-feature", stage: "verify", command: "node --test *" }];
+    assert.equal(selectEnvironment(f.project, { runId: "r", workflowId: "build-feature", stageId: "verify" }, "node --test tests/index.test.js"), "other");
+    assert.equal(selectEnvironment(f.project, { runId: "r", stageId: "repair" }, "node --version"), "test");
+    await assert.rejects(executeAllowedCommand({ ...f, commandLine: "node forbidden.js", environmentContext: { runId: "r" } }), /not allowed/u);
+  } finally { await f.cleanup(); }
+});
+
+test("a narrowed read-only review executes its declared environment and rejects nested runner invocation", async () => {
+  const f = await fixture(); try {
+    const command = "node --test tests/index.test.js";
+    const project = projectConfigSchema.parse({ ...f.project, execution: { environments: { default_profile: "review", profiles: { review: {
+      kind: "native", platform: `${process.platform}/${process.arch === "x64" ? "amd64" : process.arch}`,
+      source_paths: ["src", "tests"], readiness: [{ argv: ["node", "--test", "tests/index.test.js"] }],
+      verification: [{ commands: [command], format: "node-test", expected_tests: 1 }]
+    } } } } });
+    const narrowed = scopedChangeReviewPolicy(project, [command]);
+    const result = await executeAllowedCommand({ cwd: f.cwd, project: narrowed, commandLine: command,
+      environmentContext: { runId: "scoped-review", requireVerification: true } });
+    assert.equal(result.environment?.status, "ready", result.stderr);
+    assert.equal(result.verificationRecipe?.passed, 1);
+    assert.equal(result.verificationRecipe?.skipped, 0);
+    await assert.rejects(executeAllowedCommand({ cwd: f.cwd, project: narrowed,
+      commandLine: "npm run agentflow -- environments --command unrelated",
+      environmentContext: { runId: "scoped-review" } }), /nested agent command/u);
+    await assert.rejects(executeAllowedCommand({ cwd: f.cwd, project: narrowed,
+      commandLine: "node unrelated.js", environmentContext: { runId: "scoped-review" } }), /not allowed/u);
+  } finally { await f.cleanup(); }
+});
+
+test("schema rejects floating images, impossible platforms and native automatic installation", () => {
+  const profile = { platform: "linux/amd64", image: "node:latest", source_paths: ["src"], readiness: [{ argv: ["node", "--version"] }] };
+  assert.equal(environmentProfileSchema.safeParse(profile).success, false);
+  assert.equal(environmentProfileSchema.safeParse({ ...profile, image: `node@sha256:${digest}`, platform: "darwin/arm64" }).success, false);
+  assert.equal(environmentProfileSchema.safeParse({ ...profile, image: undefined, kind: "native", setup: [["npm", "install"]] }).success, false);
+  assert.equal(environmentProfileSchema.safeParse({ ...profile, image: `node@sha256:${digest}`, source_paths: ["../secret"] }).success, false);
+});
+
+test("snapshot blocks secrets, symlink escapes, missing inputs and byte limits", async () => {
+  const f = await fixture(); try {
+    await fs.writeFile(path.join(f.cwd, "src/.env"), "PRIVATE_TOKEN=hidden");
+    let plan = await planRunEnvironment({ ...f, context: { runId: "r" } });
+    assert.ok(!plan.sourceFiles.some(file => file.path.includes(".env")));
+    f.project.execution.environments!.profiles.test!.dependency_paths.push("src/.env");
+    await assert.rejects(planRunEnvironment({ ...f, context: { runId: "r" } }), /Private/u);
+    f.project.execution.environments!.profiles.test!.dependency_paths.pop();
+    await fs.symlink("/etc/hosts", path.join(f.cwd, "src/escape"));
+    await assert.rejects(planRunEnvironment({ ...f, context: { runId: "r" } }), /symlink/u);
+    await fs.unlink(path.join(f.cwd, "src/escape"));
+    f.project.execution.environments!.profiles.test!.limits.max_source_bytes = 1;
+    await assert.rejects(planRunEnvironment({ ...f, context: { runId: "r" } }), /limit/u);
+    plan = { ...plan }; assert.ok(plan.sourceHash);
+  } finally { await f.cleanup(); }
+});
+
+test('readiness-only admission uses the real lifecycle without running or accepting candidate tests',async()=>{
+ const f=await fixture();try{
+  const context={runId:'readiness-only',taskId:'task-1'},plan=await planRunEnvironment({...f,context}),mock=dockerMock(plan);
+  const before=await fs.readFile(path.join(f.cwd,'tests/index.test.js'),'utf8');
+  const evidence=await prepareRunEnvironment({...f,context,runner:mock.runner});
+  assert.equal(evidence.status,'ready');assert.equal(evidence.phase,'readiness');assert.equal(evidence.cleanup,'complete');
+  assert.equal(mock.calls.filter(args=>args[3]==='create').length,1);
+  assert.ok(mock.calls.filter(args=>args[3]==='create').every(args=>args.includes('--version')&&!args.includes('--test')));
+  for(const id of evidence.resources.containers)assert.ok(mock.calls.some(args=>args[3]==='rm'&&args.at(-1)===id));
+  const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));
+  assert.equal(receipt.operation,'readiness');assert.equal(receipt.commandLine,undefined);assert.equal(receipt.result.verificationRecipe,undefined);
+  assert.equal(await fs.readFile(path.join(f.cwd,'tests/index.test.js'),'utf8'),before);
+  const actual=await runEnvironmentCommand({...f,context,commandLine:'node --test tests/index.test.js',argv:['node','--test','tests/index.test.js'],runner:mock.runner});
+  assert.equal(actual.verificationRecipe?.status,'passed');assert.notEqual(actual.environment.receiptPath,evidence.receiptPath);
+ }finally{await f.cleanup();}
+});
+test('readiness failure retains diagnostics, cleans owned resources and never runs a candidate test',async()=>{
+ for(const failCleanup of [false,true]){
+  const f=await fixture();try{
+   const context={runId:'failed-readiness'},plan=await planRunEnvironment({...f,context}),mock=dockerMock(plan,{failReady:true,failCleanup});
+   const evidence=await prepareRunEnvironment({...f,context,runner:mock.runner});
+   assert.equal(evidence.status,'blocked');assert.equal(evidence.cleanup,failCleanup?'failed':'complete');
+   assert.equal(mock.calls.filter(args=>args[3]==='create').length,1);
+   const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));
+   assert.equal(receipt.result.verificationRecipe,undefined);assert.notEqual(receipt.result.exitCode,0);
+  }finally{await f.cleanup();}
+ }
+});
+test('declared baseline dependencies block readiness before any runner invocation',async()=>{
+ const f=await fixture();try{
+  f.project.execution.environments!.profiles.test!.dependency_paths.push('missing-lock.json');let calls=0;
+  await assert.rejects(prepareRunEnvironment({...f,context:{runId:'missing-input'},runner:async()=>{calls++;return ok();}}),/ENOENT/);
+  assert.equal(calls,0);
+ }finally{await f.cleanup();}
+});
+test('native readiness observations cannot carry acceptance metadata or expand command authority',async()=>{
+ const f=await fixture();try{
+  f.project.execution.environments!.profiles.test=environmentProfileSchema.parse({kind:'native',platform:`${process.platform}/${process.arch==='x64'?'amd64':process.arch}`,source_paths:['tests'],readiness:[{argv:['node','--version']}]});
+  let calls=0;
+  const evidence=await prepareRunEnvironment({...f,context:{runId:'native-readiness'},nativeRunner:async argv=>{calls++;assert.deepEqual(argv,['node','--version']);return {...ok('v22'),verificationRecipe:{status:'passed',cases:999}} as ProcessResult;}});
+  assert.equal(calls,1);assert.equal(evidence.status,'ready');assert.equal((evidence.readiness[0]!.result as any).verificationRecipe,undefined);
+  const receipt=JSON.parse(await fs.readFile(evidence.receiptPath!,'utf8'));assert.equal(receipt.result.verificationRecipe,undefined);
+  f.project.actions.allowed_commands=[];
+  await assert.rejects(prepareRunEnvironment({...f,context:{runId:'revoked-capability'},nativeRunner:async()=>{throw Error('Must not run');}}),/exact project capability/);
+ }finally{await f.cleanup();}
+});
+
+test("fresh containers run dependency readiness before tests, retain evidence and clean only owned IDs", async () => {
+  const f = await fixture(); try {
+    const context = { runId: "repair-1", taskId: "task-1" }, commandLine = "node --test tests/index.test.js";
+    const plan = await planRunEnvironment({ ...f, context }), mock = dockerMock(plan);
+    const result = await runEnvironmentCommand({ ...f, context, commandLine, argv: ["node", "--test", "tests/index.test.js"], runner: mock.runner });
+    assert.equal(result.environment.status, "ready"); assert.equal(result.environment.imageId, imageId);
+    assert.equal(result.environment.phase, "command"); assert.equal(result.verificationRecipe?.passed, 2);
+    assert.equal(result.environment.cleanup, "complete");
+    const build = mock.calls.find(args => args[3] === "build")!;
+    assert.ok(build.includes("--force-rm"));
+    assert.equal(build[build.indexOf("--platform") + 1], plan.platform);
+    assert.equal(build[build.indexOf("--network") + 1], plan.spec.build_network);
+    assert.ok(build.includes("--pull=false"));
+    const creates = mock.calls.filter(args => args[3] === "create"); assert.equal(creates.length, 2);
+    assert.ok(creates[0]!.includes("--version")); assert.ok(creates[1]!.includes("--test"));
+    for (const args of creates) {
+      assert.ok(args.includes("none")); assert.ok(args.includes("no-new-privileges"));
+      assert.ok(!args.includes("--privileged")); assert.ok(!args.includes("--mount")); assert.ok(!args.includes("--volume"));
+      assert.ok(args.includes(imageId));
+    }
+    assert.equal(mock.calls.filter(args => args[3] === "rm").length, 2);
+    const receipt = JSON.parse(await fs.readFile(result.environment.receiptPath!, "utf8"));
+    assert.equal(receipt.result.environment.sourceHash, plan.sourceHash);
+    assert.equal(receipt.result.verificationRecipe.status, "passed");
+    assert.match(dockerfileFor(plan), /COPY dependencies[\s\S]*COPY source/u);
+    const verifier = await runEnvironmentCommand({ ...f, context: { runId: "verify-1", reuseRunId: "repair-1", requireVerification: true },
+      commandLine, argv: ["node", "--test", "tests/index.test.js"], runner: dockerMock(plan, { cached: true }).runner });
+    assert.equal(verifier.environment.recipeHash, result.environment.recipeHash);
+    assert.equal(verifier.environment.imageId, imageId); assert.notEqual(verifier.environment.attemptId, result.environment.attemptId);
+  } finally { await f.cleanup(); }
+});
+
+for (const failure of [
+  { name: "timeout", result: ok("Step 8/9 : USER 10001:10001\nowned-build-progress", { exitCode: null, signal: "SIGTERM", timedOut: true, stderr: "DEPRECATED: The legacy builder is deprecated" }) },
+  { name: "truncated output", result: ok("x".repeat(1800) + "stdout-tail", { outputTruncated: true, stderr: "y".repeat(1800) + "stderr-tail" }) },
+  { name: "nonzero exit", result: ok("owned-build-progress", { exitCode: 23, stderr: "build failed after warning" }) }
+]) test(`build ${failure.name} retains bounded process diagnostics and never starts task containers`, async () => {
+  const f = await fixture(); try {
+    let buildDirectory = "";
+    const calls: string[][] = [];
+    const runner: ProcessRunner = async args => {
+      calls.push(args);
+      if (args[3] === "image") return ok("", { exitCode: 1 });
+      assert.equal(args[3], "build");
+      assert.ok(args.includes("--force-rm"));
+      buildDirectory = args.at(-1)!;
+      return failure.result;
+    };
+    const result = await runEnvironmentCommand({ ...f, context: { runId: "failed-build" },
+      commandLine: "node --test tests/index.test.js", argv: ["node", "--test", "tests/index.test.js"], runner });
+    assert.equal(result.environment.status, "blocked");
+    assert.equal(result.environment.phase, "build");
+    assert.equal(result.exitCode, 126);
+    assert.equal(result.timedOut, failure.result.timedOut);
+    assert.equal(result.signal, failure.result.signal);
+    assert.equal(Boolean(result.outputTruncated), Boolean(failure.result.outputTruncated));
+    assert.equal(result.stdout, failure.result.stdout);
+    const reason = result.environment.reason!;
+    assert.ok(reason.length <= 4000);
+    assert.ok(reason.includes(`exitCode=${failure.result.exitCode}`));
+    assert.ok(reason.includes(`timedOut=${failure.result.timedOut}`));
+    assert.ok(reason.includes(`outputTruncated=${Boolean(failure.result.outputTruncated)}`));
+    assert.ok(reason.includes(failure.result.stdout.slice(-100)));
+    assert.ok(reason.includes(failure.result.stderr.slice(-100)));
+    assert.deepEqual(calls.map(args => args[3]), ["image", "build"]);
+    await assert.rejects(fs.stat(buildDirectory), { code: "ENOENT" });
+    const receipt = JSON.parse(await fs.readFile(result.environment.receiptPath!, "utf8"));
+    assert.equal(receipt.result.timedOut, failure.result.timedOut);
+    assert.equal(receipt.result.environment.reason, reason);
+  } finally { await f.cleanup(); }
+});
+
+test("missing dependencies stop before the requested command and do not invoke a native fallback", async () => {
+  const f = await fixture(); try {
+    const context = { runId: "repair-1" }, plan = await planRunEnvironment({ ...f, context }), mock = dockerMock(plan, { failReady: true });
+    let nativeCalls = 0;
+    const result = await runEnvironmentCommand({ ...f, context, commandLine: "node --test tests/index.test.js", argv: ["node", "--test", "tests/index.test.js"], runner: mock.runner,
+      nativeRunner: async () => { nativeCalls++; return ok(); } });
+    assert.equal(result.environment.status, "blocked"); assert.match(result.environment.reason!, /readiness/u);
+    assert.equal(nativeCalls, 0); assert.equal(mock.commands.size, 1); assert.equal(result.exitCode, 126);
+  } finally { await f.cleanup(); }
+});
+
+test("frozen dependency drift, profile changes, symlinked evidence and invalid identities fail closed", async () => {
+  const f = await fixture(); try {
+    const context = { runId: "repair-1" }, plan = await planRunEnvironment({ ...f, context });
+    await runEnvironmentCommand({ ...f, context, commandLine: "node --version", argv: ["node", "--version"], runner: dockerMock(plan).runner });
+    await fs.writeFile(path.join(f.cwd, "package-lock.json"), '{"lockfileVersion":2}\n');
+    await assert.rejects(runEnvironmentCommand({ ...f, context, commandLine: "node --version", argv: ["node", "--version"], runner: async () => { throw Error("must not execute"); } }), /drift/u);
+    await assert.rejects(planRunEnvironment({ ...f, context: { runId: "../escape" } }), /identity/u);
+    await fs.rm(path.join(f.cwd, ".agent-workflow/runtime/run-environments"), { recursive: true });
+    await fs.symlink(os.tmpdir(), path.join(f.cwd, ".agent-workflow/runtime/run-environments"));
+    const freshPlan = await planRunEnvironment({ ...f, context: { runId: "fresh" } });
+    await assert.rejects(runEnvironmentCommand({ ...f, context: { runId: "fresh" }, commandLine: "node --version", argv: ["node", "--version"], runner: dockerMock(freshPlan).runner }), /owned directory/u);
+  } finally { await f.cleanup(); }
+});
+
+test("cached image provenance and platform are checked before starting containers", async () => {
+  const f = await fixture(); try {
+    let calls = 0;
+    const result = await runEnvironmentCommand({ ...f, context: { runId: "r" }, commandLine: "node --version", argv: ["node", "--version"], runner: async () => { calls++; return ok(JSON.stringify({ Id: imageId, Os: "linux", Architecture: "arm64" })); } });
+    assert.equal(result.environment.status, "blocked"); assert.match(result.environment.reason!, /binding/u); assert.equal(calls, 1);
+  } finally { await f.cleanup(); }
+});
+
+test("skipped, truncated, empty and unknown collections cannot pass verification", async () => {
+  const f = await fixture(); try {
+    const declaration = f.project.execution.environments!.profiles.test!.verification[0]!;
+    for (const stdout of ["", "everything passed", tap.replaceAll("2", "0"), tap + tap, tap.replace("# skipped 0", "# skipped 1")]) {
+      assert.equal(testEvidence(ok(stdout), declaration).status, "failed");
+    }
+    assert.equal(testEvidence(ok(tap, { outputTruncated: true }), declaration).status, "failed");
+    assert.equal(testEvidence(ok(tap), declaration).status, "passed");
+    const unittest = { ...declaration, format: "unittest" as const };
+    assert.equal(testEvidence(ok("Ran 2 tests in 0.01s\n\nOK\n"), unittest).status, "passed");
+    assert.equal(testEvidence(ok("Ran 2 tests in 0.01s\n\nOK (skipped=2)\n"), unittest).status, "failed");
+    const pytest = { ...declaration, format: "pytest" as const };
+    assert.equal(testEvidence(ok("================= 2 passed in 0.01s =================\n"), pytest).status, "passed");
+    assert.equal(testEvidence(ok("1 passed, 1 skipped in 0.01s\n"), pytest).status, "failed");
+    assert.equal(testEvidence(ok("2 passed, 1 deselected in 0.01s\n"), pytest).status, "failed");
+  } finally { await f.cleanup(); }
+});
+
+test('pytest warnings and successful subtests preserve primary counts without admitting failures or ambiguity',()=>{
+ const rule={commands:['python3 -m pytest tests -q'],format:'pytest' as const,minimum_tests:37,expected_tests:37};
+ const summary='37 passed, 1 warning, 83 subtests passed in 0.25s\n';
+ assert.deepEqual(testEvidence(ok(summary),rule),{status:'passed',cases:37,passed:37,skipped:0,reason:null});
+ assert.equal(testEvidence(ok('37 passed, 2 warnings in 1.0s\n'),rule).status,'passed');
+ for(const token of ['1 subtests failed','1 subtests skipped','1 subtests xfailed','1 subtests xpassed','1 subtests error','1 subtests deselected','1 unknown']){
+  assert.equal(testEvidence(ok(`37 passed, ${token} in 1.0s\n`),rule).status,'failed',token);
+ }
+ for(const text of [summary+summary,'37 passed, 37 passed in 1.0s\n','37 passed, 1 warning, 2 warnings in 1.0s\n','37 subtests passed in 1.0s\n'])assert.equal(testEvidence(ok(text),rule).status,'failed',text);
+ assert.equal(testEvidence(ok(summary),{...rule,expected_tests:2994}).status,'failed','Subtests cannot fill a primary collection requirement');
+ for(const patch of [{exitCode:1},{timedOut:true},{outputTruncated:true}])assert.equal(testEvidence(ok(summary,patch),rule).status,'failed');
+});
+test('declared native wrapper and absolute interpreter use the selected pytest rule for both evidence paths',async()=>{
+ const f=await fixture();try{
+  await fs.mkdir(path.join(f.cwd,'scripts'));
+  const script=path.join(f.cwd,'scripts/check_behavior.mjs');
+  const commands=['node scripts/check_behavior.mjs',`${JSON.stringify(process.execPath)} scripts/check_behavior.mjs`];
+  f.project.execution.environments!.profiles.test=environmentProfileSchema.parse({kind:'native',platform:`${process.platform}/${process.arch==='x64'?'amd64':process.arch}`,source_paths:['scripts','tests'],readiness:[{argv:['node','--version']}],verification:[{commands,format:'pytest',minimum_tests:2,expected_tests:2}]});
+  f.project.actions.allowed_commands=[ENVIRONMENT_COMMAND,'node --version',...commands];
+  f.project.actions.verification_recipes=[{source_paths:['scripts/check_behavior.mjs','tests/index.test.js'],test_paths:['tests/index.test.js'],commands,output_paths:[]}];
+  let attempt=0;
+  for(const commandLine of commands)for(const mode of ['pass','process-failure','skip','wrong-count','truncated','wrong-format']){
+   const stdout=mode==='skip'?'1 passed, 1 skipped in 0.01s\n':mode==='wrong-count'?'3 passed in 0.01s\n':mode==='truncated'?'x'.repeat(2000)+'\n2 passed in 0.01s\n':'2 passed in 0.01s\n';
+   // The owned wrapper executes assertions before emitting its declared format.
+   await fs.writeFile(script,`import assert from 'node:assert/strict';assert.equal(1+1,2);assert.equal('two'.length,3);process.stdout.write(${JSON.stringify(stdout)});process.exitCode=${mode==='process-failure'?1:0};\n`);
+   f.project.actions.max_output_chars=mode==='truncated'?256:30000;
+   f.project.execution.environments!.profiles.test!.verification[0]!.format=mode==='wrong-format'?'unittest':'pytest';
+   const result=await executeAllowedCommand({...f,commandLine,environmentContext:{runId:'declared-wrapper-'+attempt++,requireEnvironment:true,requireVerification:true}});
+   assert.equal(result.verificationRecipe?.status,mode==='pass'?'passed':'failed',commandLine+' '+mode);
+   if(mode==='pass'){assert.equal(result.verificationRecipe?.cases,2);assert.equal(result.environment?.status,'ready');}
+  }
+ }finally{await f.cleanup();}
+});
+
+test("cleanup failure remains visible and cannot be reported as a successful run", async () => {
+  const f = await fixture(); try {
+    const context = { runId: "r" }, plan = await planRunEnvironment({ ...f, context });
+    const result = await runEnvironmentCommand({ ...f, context, commandLine: "node --version", argv: ["node", "--version"], runner: dockerMock(plan, { failCleanup: true }).runner });
+    assert.equal(result.environment.cleanup, "failed"); assert.equal(result.environment.status, "blocked"); assert.notEqual(result.exitCode, 0);
+  } finally { await f.cleanup(); }
+});
+
+test("native runner is explicit, platform-matched and readiness remains allowlisted", async () => {
+  const f = await fixture(); try {
+    f.project.execution.environments!.profiles.test = environmentProfileSchema.parse({ kind: "native", platform: `${process.platform}/${process.arch === "x64" ? "amd64" : process.arch}`,
+      source_paths: ["tests"], readiness: [{ argv: ["node", "--version"] }] });
+    const result = await executeAllowedCommand({ ...f, commandLine: "node --test tests/index.test.js", environmentContext: { runId: "native-1" } });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.environment?.status, "ready"); assert.equal(result.environment?.imageId, null);
+    f.project.actions.allowed_commands = [ENVIRONMENT_COMMAND, "node --test tests/index.test.js"];
+    const blocked = await executeAllowedCommand({ ...f, commandLine: "node --test tests/index.test.js", environmentContext: { runId: "native-2" } });
+    assert.equal(blocked.environment?.status, "blocked"); assert.match(blocked.stderr, /not allowed/u);
+    f.project.execution.environments!.profiles.test!.platform = process.platform === "darwin" ? "linux/amd64" : "darwin/arm64";
+    const mismatch = await executeAllowedCommand({ ...f, commandLine: "node --test tests/index.test.js", environmentContext: { runId: "native-3" } });
+    assert.match(mismatch.stderr, /matching native runner/u);
+  } finally { await f.cleanup(); }
+});
+
+test("process runner limits output and does not inherit host secrets", async () => {
+  const original = process.env.AGENTFLOW_TEST_SECRET;
+  process.env.AGENTFLOW_TEST_SECRET = "private-test-value";
+  try {
+    const result = await runProcess([process.execPath, "-e", "process.stdout.write(String(process.env.AGENTFLOW_TEST_SECRET))"], { cwd: os.tmpdir(), timeoutMs: 3000, maxOutputChars: 1000 });
+    assert.equal(result.stdout, "undefined");
+    const bounded = await runProcess([process.execPath, "-e", "process.stdout.write('x'.repeat(10000))"], { cwd: os.tmpdir(), timeoutMs: 3000, maxOutputChars: 500 });
+    assert.equal(bounded.stdout.length, 500); assert.equal(bounded.outputTruncated, true);
+  } finally { if (original === undefined) delete process.env.AGENTFLOW_TEST_SECRET; else process.env.AGENTFLOW_TEST_SECRET = original; }
+});

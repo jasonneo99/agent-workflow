@@ -2,6 +2,8 @@ id: data-migration
 name: Data Migration
 description: Design, preview, approve, execute, and verify a reversible schema or data migration.
 lead: database-engineer
+execution:
+  kind: source-change
 default_autonomy: 1
 triggers:
   manual: true

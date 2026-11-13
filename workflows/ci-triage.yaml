@@ -2,6 +2,8 @@ id: ci-triage
 name: CI Triage
 description: Classify CI failures, isolate their cause, prepare a focused correction, and verify the affected checks.
 lead: auto-ci-triage
+execution:
+  kind: source-change
 default_autonomy: 3
 triggers:
   manual: true

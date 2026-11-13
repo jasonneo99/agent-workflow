@@ -56,6 +56,10 @@ test("discovered evidence enters a governed inbox and decisions are durable", as
   assert.equal(decided.items[0].status, "approved");
   const linked = await linkTrainingProposalEvaluation({ projectDir, id: inbox.items[0].id, runId: "00000000-0000-4000-8000-000000000001", reviewer: "test" });
   assert.equal(linked.items[0].evaluation?.runId, "00000000-0000-4000-8000-000000000001");
+  const needsEvidence = await decideTrainingProposal({ projectDir, id: inbox.items[0].id, status: "needs-evidence", reviewer: "test", note: "measured report missing" });
+  assert.equal(needsEvidence.items[0].status, "needs-evidence");
+  const retried = await linkTrainingProposalEvaluation({ projectDir, id: inbox.items[0].id, runId: "00000000-0000-4000-8000-000000000002", reviewer: "test" });
+  assert.equal(retried.items[0].evaluation?.runId, "00000000-0000-4000-8000-000000000002");
   assert.match(await fs.readFile(path.join(projectDir, ".agent-workflow", "learning", "training-discovery", "receipts.jsonl"), "utf8"), /"event":"decision"/u);
   assert.match(await fs.readFile(path.join(projectDir, ".agent-workflow", "learning", "training-discovery", "receipts.jsonl"), "utf8"), /"event":"evaluation_queued"/u);
 });

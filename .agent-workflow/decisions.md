@@ -48,3 +48,46 @@
 - Use latency reports for tuning only after direct-baseline comparison and coverage of concurrent, retry, and missing-receipt cases. Do not equate task overlap with useful speedup.
 - Change MCP repository code only when fresh reproducible evidence identifies a client-facing boundary the repository can address.
 - Update roadmap claims only from verified evidence. Keep raw runtime/fleet evidence in the access-controlled companion; durable public context contains portable constraints, scrubbed summaries, and source pointers only, consistent with `docs/open-source-boundary.md`.
+
+## 2026-10-22 — Project Evidence Graph source architecture
+
+Project context is a versioned read-only projection over existing project_files,
+workflow_runs, artifacts and workflow_tasks. Structured Markdown evidence is
+backfilled through normal indexing metadata. Typed relationships retain record
+provenance; they never satisfy approval or grant execution authority. Studio's
+native and browser surfaces share this portable engine contract. Existing
+approval, receipt, learning, provider metrics and history stores remain the
+integration points for subsequent slices. First-slice acceptance remains open
+until pinned sidecar reconciliation and an independent packaged walkthrough.
+See docs/project-context-center.md for tests and limits.
+
+## 2026-10-22 — Source-pinned native acceptance and context influence
+
+Preserve the dirty shared definition manifest; local native validation uses a
+reviewed source snapshot with the signed baseline definitions. Studio pins code
+identity separately from the definition checksum. Do not infer packaged code
+identity from a matching version or definition checksum alone.
+
+Influence records are append-only canonical action receipts and artifacts, not
+a new knowledge/receipt store. They identify supplied context and link outcomes;
+they do not claim causal model reasoning or grant authority. Preserve historical
+hashes on replay, leave unknown provenance explicit, and stop provider invocation
+when required attribution cannot be recorded. Native graph acceptance and the
+first influence slice now have local macOS evidence in the context-center guide.
+
+## 2026-11-03 — Strengthen v1; retain v2 as a learning experiment
+
+The owner ended active v2 development and directed future effort toward
+strengthening and improving v1. Retain the experiment and its evidence without
+completing its abandoned milestones or importing its architecture wholesale.
+The seven long-term goals, reliable execution objective, provider independence,
+current Codex CLI preference, UI model onboarding and open-source/security
+requirements carry forward as product direction.
+
+Use the existing runtime, queue, management interface and Studio contracts.
+Prioritize executable task admission, exact candidate verification, independent
+acceptance and bounded recovery. Changes require current scoped authority and
+evidence; the direction change grants no blanket execution, deployment,
+history-rewrite or credential authority. V2 storage, executor-loop, isolation,
+UI and numerical pilot proposals remain separate implementation decisions.
+See [the current improvement plan](../docs/v1-improvement-plan.md).

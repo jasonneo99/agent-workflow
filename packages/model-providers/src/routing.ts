@@ -234,7 +234,7 @@ export function autoProviderCandidates(modelTier: ModelTier, workflowId?: string
     ? splitProviderList(process.env.AGENTFLOW_SMOKE_PROVIDERS)
     : [];
   if (workflowId === "provider-smoke") {
-    return unique([...(smokeConfigured.length ? smokeConfigured : ["openai", "anthropic", "gemini", "codex-cli", "local", "byo", "bedrock", "openai-compatible", "muse", "kiro"]), "mock"]);
+    return unique([...(smokeConfigured.length ? smokeConfigured : ["openai", "anthropic", "gemini", "codex-cli", "deepseek", "local", "byo", "bedrock", "openai-compatible", "muse", "kiro"]), "mock"]);
   }
   const configured = splitProviderList(process.env.AGENTFLOW_AUTO_PROVIDERS);
   if (configured.length) {
@@ -242,12 +242,12 @@ export function autoProviderCandidates(modelTier: ModelTier, workflowId?: string
   }
 
   if (modelTier === "fast") {
-    return ["local", "byo", "bedrock", "openai-compatible", "gemini", "codex-cli", "openai", "anthropic", "muse", "kiro", "mock"];
+    return ["local", "byo", "bedrock", "openai-compatible", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "kiro", "mock"];
   }
   if (modelTier === "reasoning") {
-    return ["codex-cli", "openai", "anthropic", "gemini", "muse", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
+    return ["codex-cli", "openai", "anthropic", "gemini", "deepseek", "muse", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
   }
-  return ["local", "byo", "bedrock", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  return ["local", "byo", "bedrock", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
 }
 
 function splitProviderList(value?: string): string[] {

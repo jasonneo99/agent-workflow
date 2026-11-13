@@ -3,6 +3,20 @@ import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { retainedVerificationEvidence, completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, workflowAcceptanceTask } from "./quality.js";
 
+test('only runtime-verified legacy no-change evidence waives change-only prose, not real missing delivery',()=>{
+ const recovery={...input,workflowId:'agent-task-implementation-agent',workflowTask:'Inspect and repair the original sanitizer requirements',agentId:'implementation-agent',stageId:'implementation'};
+ const output:StageExecutionOutput={outcome:'completed',summary:'Existing implementation verified; no files changed.',artifact:{summary:'Existing implementation verified; no files changed.'},requestedCommands:[],requestedFileWrites:[]};
+ assert.ok(unfulfilledCompletionReason(recovery,output));
+ assert.ok(unfulfilledCompletionReason(recovery,{...output,artifact:{...output.artifact,verifiedNoChangeRecovery:true}}));
+ assert.equal(unfulfilledCompletionReason(recovery,output,{verifiedNoChangeRecovery:true}),null);
+ assert.ok(unfulfilledCompletionReason(recovery,{...output,summary:'Implementation remains incomplete; no files changed.'},{verifiedNoChangeRecovery:true}));
+ const pinned={...recovery,workflowId:'build-feature',workflowTask:'BUILD a working application'};
+ assert.ok(unfulfilledCompletionReason(pinned,output,{verifiedNoChangeRecovery:true}));
+ const verifier={...recovery,workflowId:'build-feature',stageId:'verify',agentId:'auto-test-runner'};
+ assert.ok(unfulfilledCompletionReason(verifier,{...output,summary:'No tests were executed; verification remains pending.'},{verifiedNoChangeRecovery:true}));
+ assert.match(verificationCompletionReason(verifier,[{commandLine:'npm test',exitCode:1,timedOut:false}])??'',/failed/);
+});
+
 test("reviewed prior command receipts survive verifier completion and checkpoint acceptance", () => {
   const verifier = { ...input, stageId: "verify", agentId: "auto-test-runner", priorStageArtifacts: [{
     stageId: "implement", agentId: "implementation-agent", summary: "Built and tested",
@@ -532,6 +546,35 @@ test("passing checks cannot hide an unresolved failing test suite", () => {
     assert.match(verificationCompletionReason(verifierInput, [failed, { commandLine: "npm run validate-boundary", exitCode: 0 }]) ?? "", /Verification command failed/u);
     assert.equal(verificationCompletionReason(verifierInput, [failed, { commandLine, exitCode: 0 }]), null);
   }
+});
+
+test("custom read-only reviews cannot complete after failed Python or declared environment tests", () => {
+  const review = { ...input, workflowId: "scoped-geometry-review", stageId: "verify", agentId: "test-engineer",
+    workflowTask: "Observe one existing regression without accepting the original product" } as StageExecutionInput;
+  const commandLine = "python3 -m unittest discover -s tests -p test_geometry.py -v";
+  const failed = { commandLine, exitCode: 1, timedOut: false, artifactUri: "db://synthetic/failed-command",
+    environment: { status: "ready" }, verificationRecipe: { status: "failed", cases: null, passed: null, skipped: null } };
+  assert.match(verificationCompletionReason(review, [failed]) ?? "", /exit code 1.*db:\/\/synthetic\/failed-command/u);
+  assert.match(verificationCompletionReason(review, [failed, { commandLine: "git diff --check", exitCode: 0 }]) ?? "", /Verification command failed/u);
+  assert.match(verificationCompletionReason(review, [failed, { commandLine, exitCode: 0 }]) ?? "", /declared test collection/u);
+  const passed = { ...failed, exitCode: 0, verificationRecipe: { status: "passed", cases: 4, passed: 4, skipped: 0 } };
+  assert.equal(verificationCompletionReason(review, [failed, passed]), null);
+  for (const command of ["python -m pytest tests/test_geometry.py", "python3 -B -m unittest tests.test_geometry", "python3 -m compileall src"]) {
+    assert.match(verificationCompletionReason(review, [{ commandLine: command, exitCode: 1 }]) ?? "", /Verification command failed/u);
+  }
+});
+
+test("exit zero does not override skipped, empty, unknown or truncated declared collections", () => {
+  const review = { ...input, workflowId: "scoped-source-review", stageId: "verify", agentId: "test-engineer" } as StageExecutionInput;
+  const passed = { commandLine: "project-test-runner", exitCode: 0, verificationRecipe: { status: "passed", cases: 4, passed: 4, skipped: 0 } };
+  assert.equal(verificationCompletionReason(review, [passed]), null);
+  for (const verificationRecipe of [
+    { status: "failed", cases: 4, passed: 0, skipped: 4 },
+    { status: "passed", cases: 0, passed: 0, skipped: 0 },
+    { status: "passed", cases: null, passed: null, skipped: null },
+    { status: "unknown", cases: 4, passed: 4, skipped: 0 }
+  ]) assert.match(verificationCompletionReason(review, [{ ...passed, verificationRecipe }]) ?? "", /declared test collection/u);
+  assert.match(verificationCompletionReason(review, [{ ...passed, outputTruncated: true }]) ?? "", /truncated output/u);
 });
 
 test("pending implementation diagnostics defer only the pre-execution completion gate", () => {

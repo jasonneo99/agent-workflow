@@ -115,7 +115,11 @@ test("adapter enforces timeout and bounded output", async () => {
   const noisy = path.join(directory, "noisy.sh");
   await writeFile(noisy, "#!/bin/sh\nprintf '123456789012345678901234567890'\n", "utf8");
   await chmod(noisy, 0o700);
-  const bounded = await executeExecutorSnapshot(fixture({ timeout_ms: 1000 }), { executable: noisy });
+  // Output truncation must not depend on startup latency under full-suite load.
+  // The sleepy fixture below still checks the short timeout independently.
+  const bounded = await executeExecutorSnapshot(fixture({ timeout_ms: 10_000 }), { executable: noisy });
+  assert.equal(bounded.timedOut, false);
+  assert.equal(bounded.exitCode, 0);
   assert.match(bounded.stdout, /truncated/);
   assert.ok(bounded.stdout.length < 80);
   const sleepy = path.join(directory, "sleepy.sh");

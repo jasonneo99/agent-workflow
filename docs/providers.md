@@ -36,6 +36,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `codex-cli` | Trusted local workflows billed through an authenticated Codex/ChatGPT entitlement | Codex CLI login, optional `CODEX_CLI_MODEL` |
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
+| `deepseek` | DeepSeek Flash through the hosted OpenAI-compatible API | `DEEPSEEK_API_KEY`, optional `DEEPSEEK_MODEL` |
 | `gemini` | Google Gemini through the official OpenAI-compatible endpoint | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
 | `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
@@ -69,36 +70,45 @@ CODEX_CLI_MODEL=
 CODEX_CLI_MODEL_FAST=gpt-6-luna
 CODEX_CLI_MODEL_STANDARD=gpt-6.1-sol
 CODEX_CLI_MODEL_REASONING=gpt-6-astra
-AGENTFLOW_CODEX_SESSION_REUSE=1
-AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION=0
 ```
 
-Stage-scoped Codex session reuse is enabled by default. It preserves bounded
-read/retry context without replaying every previous stage into later turns.
-Direct checkout inspection is disabled by default: the provider consumes the
-compiled brief and uses governed `requestedFileReads` for exact missing source.
-Set `AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION=1` only when a workflow explicitly
-needs Codex's read-only repository exploration.
+The adapter requires Codex CLI **0.160.0** and checks compatibility before
+inference. Unsupported or unrecognized versions fail closed; upgrading the CLI
+requires a new compatibility qualification.
 
-The runtime stores only a mode-0600 stage-to-thread pointer under the operating
-system temporary directory, expires it after 24 hours, and never places prompt
-content in that pointer. Set `AGENTFLOW_CODEX_SESSION_REUSE=0` for strict
-one-process/one-session isolation.
+Every call starts a fresh ephemeral session in an owned temporary directory.
+Native repository inspection and session reuse are disabled. The legacy
+`AGENTFLOW_CODEX_SESSION_REUSE` and `AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION`
+settings are deprecated and ignored, including when set to `1`. The provider
+consumes the compiled brief and requests missing source through governed
+`requestedFileSearches` and `requestedFileReads`.
 
 The tier pins select OpenAI's current efficient, balanced coding, and strongest
 reasoning models. Update them when the deployment's Codex entitlement exposes a
 new generation; remove them to inherit the Codex CLI default instead. The
-adapter invokes `codex exec` with a read-only sandbox, temporary schema and
-output files, and a strict JSON output contract. Workflow runs retain their
-Codex session only for bounded same-stage continuation; standalone summaries remain
-ephemeral. It does not read or copy the
-Codex credential cache, and it removes `OPENAI_API_KEY` and `OPENAI_ADMIN_KEY`
-from the child environment so an API credential cannot silently replace the
-requested ChatGPT authentication path. The default readiness check requires
+adapter invokes `codex exec` with strict configuration, a named read-only
+permission profile, temporary schema and output files, and a strict JSON output
+contract. It does not use the legacy `--sandbox` selector. Native shell commands,
+the code mode host, delegation, web search, apps, plugins, hooks, image tools,
+and other optional capabilities are disabled. Repository instructions are not
+loaded into the neutral working directory. File reads, searches, writes, and
+commands requested in the JSON response remain subject to Agent Workflow's
+controller-owned policy and receipt handling.
+
+The child receives an explicit minimal environment containing platform
+essentials and the existing `HOME` and `CODEX_HOME` authentication locations.
+Storage, runtime, provider API credentials, and unknown environment variables
+are not inherited. Agent Workflow does not read or copy the Codex credential
+cache. The default readiness check requires
 `codex login status` to report ChatGPT authentication. Enterprise operators may
 set `CODEX_CLI_AUTH_MODE=access-token` after configuring a trusted Codex access
 token; `any` is available only when the deployment intentionally accepts either
 Codex authentication method.
+
+These controls do not make a read-only sandbox a process-lifecycle guarantee
+or establish qualification on every operating system. CLI compatibility,
+native tool denial, cancellation, and governed workflow delivery require
+separate evidence.
 
 This provider is intended for trusted private development automation. It is not
 an OAuth proxy and must not expose Codex execution to untrusted or public
@@ -129,6 +139,34 @@ Then verify readiness with:
 ```bash
 npm run agentflow -- provider-check
 ```
+
+### DeepSeek provider
+
+Use `deepseek` for bounded hosted DeepSeek Flash stages. The dedicated adapter
+keeps its credentials, usage, quality evidence, and circuit state separate from
+generic BYO gateways:
+
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key
+# Optional; these are the defaults.
+# DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-flash
+DEEPSEEK_MODEL_FAST=deepseek-flash
+DEEPSEEK_MODEL_STANDARD=deepseek-flash
+DEEPSEEK_MODEL_REASONING=deepseek-flash
+```
+
+```bash
+npm run agentflow -- provider-use deepseek --check
+npm run agentflow -- contract-test --provider deepseek --live-provider
+```
+
+Install the secret only on governed worker hosts that actually make provider
+calls. Do not copy it into Studio clients or presentation surfaces. Start with
+comparison or explicitly scoped low-risk work; promote it into normal adaptive
+routing only after representative holdouts establish its quality, latency,
+cost, structured-output, and fallback behavior. Hosted requests remain subject
+to each project's external-provider and data-egress policy.
 
 ### Google Gemini provider
 
@@ -205,7 +243,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding

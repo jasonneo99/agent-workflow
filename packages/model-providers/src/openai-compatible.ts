@@ -102,8 +102,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
       ],
       response_format: { type: "json_object" },
-      temperature: 0.2
-      });
+      temperature: 0.2,
+      ...(input.maxOutputTokens?{max_tokens:input.maxOutputTokens}:{})
+      },input.abortSignal?{signal:input.abortSignal}:undefined);
     } catch (error) {
       logEgress({
         providerId: this.id,

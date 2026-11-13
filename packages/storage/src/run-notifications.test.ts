@@ -3,7 +3,7 @@ import test from "node:test";
 import pg from "pg";
 import { databaseUrl } from "./client.js";
 import { replayRunLifecycleEvents } from "./lifecycle-event.js";
-import { acknowledgeClientRunNotification, acknowledgeRunNotification, claimRunNotifications, enqueueRunNotification, runNotificationOutboxSchemaSql, settleRunNotification } from "./run-notifications.js";
+import { acknowledgeClientRunNotification, acknowledgeRunNotification, claimRunNotifications, enqueueRunNotification, runNotificationOutboxSchemaSql, settleRunNotification, coalesceRunNotificationProgress, beginRunNotificationQueue, recordRunNotificationQueued } from "./run-notifications.js";
 
 test("invalid claim bounds reject before database acquisition", async () => {
   const scope = { projectRootUri: "/synthetic/project-a", owner: "synthetic-owner" };
@@ -33,6 +33,7 @@ test("isolated outbox preserves event, project, claim, retry and acknowledgment 
     await client.query("create temporary table workflow_runs (id uuid primary key, project_id uuid, requester_channel text, evaluation_metadata jsonb)");
     await client.query("create temporary table workflow_run_transitions (run_id uuid, state_version bigint, from_status text, to_status text, created_at timestamptz default now(), reason text)");
     await client.query("create temporary table run_notifications (id uuid primary key default gen_random_uuid(), run_id uuid, channel text, kind text, title text, body text, status text default 'pending', created_at timestamptz default now(), delivered_at timestamptz)");
+    await client.query("create temporary table action_receipts (run_id uuid, receipt_hash text, action_type text, metadata_serialization_version integer)");
     await client.query(runNotificationOutboxSchemaSql);
     await client.query("insert into projects values ($1,$2),($3,$4)", [runA, scope.projectRootUri, runB, "/synthetic/project-b"]);
     await client.query("insert into workflow_runs values ($1,$1,'dashboard',$3::jsonb),($2,$2,'dashboard',$3::jsonb)", [runA, runB, JSON.stringify({ codexThreadId: taskId })]);
@@ -123,6 +124,118 @@ test("isolated outbox preserves event, project, claim, retry and acknowledgment 
     assert.equal(await acknowledgeClientRunNotification(portableAck), true);
     assert.deepEqual((await client.query("select acknowledged_at from run_notifications where id=$1", [portableId])).rows[0].acknowledged_at, arrival);
     await assert.rejects(enqueueRunNotification(client, { ...intent, eventKey: " " }), /identity/u);
+    await client.query("begin");
+    const orderedIds = [];
+    for (let i=0;i<4;i++) orderedIds.push(await enqueueRunNotification(client,{...intent,eventKey:`ordered:${i}`}));
+    const ordered = (await client.query("select id,created_at from run_notifications where id=any($1::uuid[]) order by created_at,id",[orderedIds])).rows;
+    assert.deepEqual(ordered.map(row=>row.id),orderedIds);
+    for(let i=1;i<ordered.length;i++) assert.ok(ordered[i].created_at.getTime()>ordered[i-1].created_at.getTime());
+    await enqueueRunNotification(client,{...intent,eventKey:"ordered:0"});
+    assert.equal((await client.query("select created_at from run_notifications where id=$1",[orderedIds[0]])).rows[0].created_at.getTime(),ordered[0].created_at.getTime());
+    await client.query("rollback");
+    // Flood regression: retain every event, protect actionable notices and active claims.
+    const progress: string[] = [];
+    for (let i=0;i<3;i++) progress.push(await enqueueRunNotification(client,{...intent,
+      kind:"progress",eventKey:`flood:${i}`,title:"stage started",body:`original-${i}`}));
+    const held = (await claimRunNotifications({...scope,notificationId:progress[2]}))[0];
+    const protectedIds: string[]=[];
+    for (const kind of ["blocked","approval_needed","action_needed","completed","failed"] as const)
+      protectedIds.push(await enqueueRunNotification(client,{...intent,kind,eventKey:`protected:${kind}`}));
+    const semanticBlock=await enqueueRunNotification(client,{...intent,kind:"progress",title:"stage blocked",eventKey:"semantic-block"});
+    const foreignProgress=await enqueueRunNotification(client,{...intent,runId:runB,kind:"progress",eventKey:"foreign-progress"});
+    await enqueueRunNotification(client,{...intent,runId:runB,kind:"completed",eventKey:"foreign-terminal"});
+    const beforeCount=(await client.query("select count(*)::int as n from run_notifications")).rows[0].n;
+    const preview=await coalesceRunNotificationProgress({...scope,dryRun:true});
+    assert.ok(preview.some(r=>r.id===progress[0]));
+    assert.ok(!preview.some(r=>[progress[2],semanticBlock,...protectedIds,foreignProgress].includes(r.id)));
+    assert.equal((await client.query("select status from run_notifications where id=$1",[progress[0]])).rows[0].status,"pending");
+    await coalesceRunNotificationProgress(scope);
+    assert.deepEqual((await client.query("select status,body,coalesced_reason,acknowledged_at from run_notifications where id=$1",[progress[0]])).rows[0],
+      {status:"coalesced",body:"original-0",coalesced_reason:"superseded-progress",acknowledged_at:null});
+    assert.equal((await client.query("select count(*)::int as n from run_notifications")).rows[0].n,beforeCount);
+    assert.deepEqual(await claimRunNotifications({...scope,notificationId:progress[0]}),[]);
+    assert.equal(await settleRunNotification({...scope,notificationId:held.id,claimToken:held.claimToken,transportDelivered:false}),true);
+
+    // Queue acceptance survives dispatcher death before settlement and never implies ACK.
+    const queued=await enqueueRunNotification(client,{...intent,eventKey:"queue-receipt"});
+    const q=(await claimRunNotifications({...scope,notificationId:queued}))[0];
+    const fence={...scope,notificationId:q.id,claimToken:q.claimToken};
+    assert.equal(await beginRunNotificationQueue({...fence,owner:"foreign"}),false);
+    assert.equal(await beginRunNotificationQueue(fence),true);
+    assert.equal(await beginRunNotificationQueue(fence),false,"cannot start a second queue attempt");
+    const acceptance={...fence,messageId:"00000000-0000-4000-8000-000000000099",taskId};
+    assert.equal(await recordRunNotificationQueued({...acceptance,taskId:runB}),false);
+    assert.equal(await recordRunNotificationQueued(acceptance),true);
+    assert.equal(await settleRunNotification({...fence,transportDelivered:false}),false,"failure cannot undo known acceptance");
+    await client.query("update run_notifications set claim_expires_at=now()-interval '1 second' where id=$1",[queued]);
+    assert.deepEqual(await claimRunNotifications({...scope,owner:"restarted",notificationId:queued}),[]);
+    const persisted=(await client.query("select status,transport_message_id,acknowledged_at from run_notifications where id=$1",[queued])).rows[0];
+    assert.deepEqual(persisted,{status:"delivered",transport_message_id:acceptance.messageId,acknowledged_at:null});
+
+    const ambiguous=await enqueueRunNotification(client,{...intent,eventKey:"uncertain-queue"});
+    const u=(await claimRunNotifications({...scope,notificationId:ambiguous}))[0];
+    const uncertainFence={...scope,notificationId:u.id,claimToken:u.claimToken};
+    assert.equal(await beginRunNotificationQueue(uncertainFence),true);
+    assert.equal(await settleRunNotification({...uncertainFence,transportDelivered:false,transportUncertain:true}),true);
+    await client.query("update run_notifications set available_at=now()-interval '1 hour',claim_expires_at=now()-interval '1 second' where id=$1",[ambiguous]);
+    assert.deepEqual(await claimRunNotifications({...scope,notificationId:ambiguous}),[],"ambiguous queue requires reconciliation, not duplicate retry");
+    assert.equal(await acknowledgeRunNotification({...acknowledgment,notificationId:ambiguous}),false);
+    // Receipt-backed dismissals group across runs, with independent destination and action groups.
+    const runC = "00000000-0000-4000-8000-000000000004";
+    await client.query("insert into workflow_runs values ($1,$2,'dashboard',$3::jsonb)", [runC,runA,JSON.stringify({codexThreadId:taskId})]);
+    let receiptIndex = 0;
+    const dismissal = async (runId: string, action = "failed_run_dismissed", channel = "codex") => {
+      const hash = (++receiptIndex).toString(16).padStart(64,"0");
+      await client.query("insert into action_receipts values ($1,$2,$3,2)",[runId,hash,action]);
+      return enqueueRunNotification(client,{runId,kind:"progress",eventKey:`receipt:${hash}`,title:"Historical notice",body:"unchanged audit",channel});
+    };
+    const stale = await dismissal(runA);
+    const approvalDismissal = await dismissal(runA,"action_approval_dismissed");
+    const foreignDestination = await dismissal(runA);
+    await client.query("update run_notifications set origin_task_id=$2 where id=$1",[foreignDestination,runB]);
+    const foreignProject = await dismissal(runB);
+    const foreignChannel = await dismissal(runA,"failed_run_dismissed","dashboard");
+    const actionableReceipt = await dismissal(runA,"stage_blocked");
+    const startedDismissal = await dismissal(runA);
+    const acceptedDismissal = await dismissal(runA);
+    await client.query("update run_notifications set transport_started_at=now() where id=$1",[startedDismissal]);
+    await client.query("update run_notifications set transport_accepted_at=now(),status='failed' where id=$1",[acceptedDismissal]);
+    const latest = await dismissal(runC);
+    await client.query("update run_notifications set created_at=now()+interval '1 day' where id=$1",[latest]);
+    const auditBefore = (await client.query("select * from action_receipts order by receipt_hash")).rows;
+    const protectedDismissals = [approvalDismissal,foreignDestination,foreignProject,foreignChannel,actionableReceipt,startedDismissal,acceptedDismissal,latest];
+    const previewDismissals = await coalesceRunNotificationProgress({...scope,dryRun:true});
+    assert.ok(previewDismissals.some(row=>row.id===stale && row.into===latest));
+    assert.ok(!previewDismissals.some(row=>protectedDismissals.includes(row.id)));
+    await coalesceRunNotificationProgress(scope);
+    assert.deepEqual((await client.query("select status,body,acknowledged_at,coalesced_into from run_notifications where id=$1",[stale])).rows[0],{status:"coalesced",body:"unchanged audit",acknowledged_at:null,coalesced_into:latest});
+    assert.deepEqual((await client.query("select * from action_receipts order by receipt_hash")).rows,auditBefore);
+    assert.ok(!(await coalesceRunNotificationProgress(scope)).some(row=>row.id===stale));
+    for (const notificationId of [stale,startedDismissal,acceptedDismissal]) {
+      assert.deepEqual(await claimRunNotifications({...scope,owner:"restarted-dismissal-dispatcher",notificationId}),[]);
+      assert.deepEqual(await claimRunNotifications({...scope,owner:"repeated-dismissal-dispatcher",notificationId}),[]);
+    }
+    // Canonical routine receipt events coalesce, never actionable/unknown ones.
+    const created = await dismissal(runC, "workflow_created");
+    const leased = await dismissal(runC, "stage_leased");
+    const started = await dismissal(runC, "stage_started");
+    const checkpoint = await dismissal(runC, "stage_continuation_scheduled");
+    const blocker = await dismissal(runC, "stage_blocked");
+    const approval = await dismissal(runC, "action_approval_created");
+    const completion = await dismissal(runC, "stage_completed");
+    const unknown = await dismissal(runC, "unknown_event");
+    const latestProgress = await dismissal(runC, "stage_started");
+    const lifecycleAudit = (await client.query("select * from action_receipts order by receipt_hash")).rows;
+    const lifecyclePreview = await coalesceRunNotificationProgress({...scope,dryRun:true});
+    for (const id of [created,leased,started,checkpoint]) {
+      assert.ok(lifecyclePreview.some(row=>row.id===id && row.into===latestProgress));
+    }
+    for (const id of [blocker,approval,completion,unknown,latestProgress]) {
+      assert.ok(!lifecyclePreview.some(row=>row.id===id));
+    }
+    await coalesceRunNotificationProgress(scope);
+    assert.deepEqual((await client.query("select * from action_receipts order by receipt_hash")).rows,lifecycleAudit);
+    assert.deepEqual(await claimRunNotifications({...scope,notificationId:created}),[]);
   } finally {
     pg.Pool.prototype.connect = originalConnect;
     await client.end();

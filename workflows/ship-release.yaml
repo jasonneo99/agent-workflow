@@ -2,6 +2,8 @@ id: ship-release
 name: Ship Release
 description: Check release readiness, prepare notes, and coordinate deployment approval.
 lead: release-manager
+execution:
+  kind: read-only
 default_autonomy: 4
 triggers:
   manual: true

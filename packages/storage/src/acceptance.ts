@@ -2,11 +2,14 @@ import type pg from "pg";
 import { createHash } from "node:crypto";
 import { structuredAcceptanceDecision } from "../../model-providers/src/quality.js";
 import type { AcceptanceGate, StructuredAcceptanceContract } from "../../model-providers/src/types.js";
+import {verificationRecipeEvidence} from '../../local-tools/src/verification-recipe-evidence.js';
+import type {ProjectConfig} from '../../agent-registry/src/schemas.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 
 export function acceptanceGate(stage: string): AcceptanceGate | null {
   if (/^(implement(?:ation)?|fix|backend|frontend|database)(?:$|[-_])/u.test(stage)) return "implementation";
-  if (/^(verify|test|validation)(?:$|[-_])/u.test(stage)) return "verification";
-  if (/^(package|deliver|release)(?:$|[-_])/u.test(stage)) return "packaging";
+  if (/^(verify|verification|test|validation)(?:$|[-_])/u.test(stage)) return "verification";
+  if (/^(package|packaging|deliver|release)(?:$|[-_])/u.test(stage)) return "packaging";
   if (/^(supervise|supervision|supervisor)(?:$|[-_])/u.test(stage)) return "supervision";
   return null;
 }
@@ -108,12 +111,14 @@ async function resolveStoredAcceptance(
   client: Pick<pg.Client, "query">, runId: string, gate: AcceptanceGate,
   artifact: Record<string, unknown>, completedAt?: string
 ): Promise<StoredAcceptanceDecision> {
-  const run = await client.query<{ projectId: string; task: string; metadata: Record<string, unknown> }>(
-    `select project_id::text as "projectId", task, evaluation_metadata as metadata from workflow_runs where id=$1`, [runId]
+  const run = await client.query<{ projectId: string; task: string; metadata: Record<string, unknown>;policy?:ProjectConfig }>(
+    `select project_id::text as "projectId", task, evaluation_metadata as metadata,to_jsonb(workflow_runs)->'policy_snapshot' as policy from workflow_runs where id=$1`, [runId]
   );
   const row = run.rows[0];
   if (!row) return { mode: "structured", reason: "Acceptance run identity is unavailable." };
-  const frozen = row.metadata?.acceptanceContract as StructuredAcceptanceContract | undefined;
+  const {reconciledExecutionContract}=await import('./existing-assignment-reconciliation.js');
+  const frozen = await reconciledExecutionContract(client,runId,row.metadata??{})
+    ?? row.metadata?.acceptanceContract as StructuredAcceptanceContract | undefined;
   if (!frozen) return { mode: "legacy", reason: artifact.acceptanceContract ? "Provider cannot enroll or replace a runtime acceptance contract." : null };
   const proposed = acceptanceProposal(frozen, artifact.acceptanceContract as StructuredAcceptanceContract);
   if (!proposed || frozen.projectId !== row.projectId || frozen.taskHash !== acceptanceDigest(row.task)) {
@@ -121,6 +126,7 @@ async function resolveStoredAcceptance(
   }
   // Until ancestry is explicitly attested, cross-run evidence fails closed.
   if (frozen.originRunId !== runId) return { mode: "structured", reason: "Acceptance ancestry requires explicit revalidation." };
+  const verifiedRecipeCommands=new Set<string>();
   const decision = await structuredAcceptanceDecision(proposed, gate, async (reference) => {
     const result = await client.query<{
       runId: string; taskId: string; stageId: string; projectId: string;
@@ -135,6 +141,14 @@ async function resolveStoredAcceptance(
     // Accept only executed command results, not provider-authored stage outputs.
     const content = evidence.content;
     if (typeof content.commandLine !== "string" || !content.commandLine.trim()) return null;
+    const environment=content.environment as {profile?:unknown}|undefined;
+    const profile=typeof environment?.profile==='string'?row.policy?.execution?.environments?.profiles[environment.profile]:undefined;
+    const rules=profile?.verification.filter(rule=>rule.commands.some(pattern=>verificationCommandMatches(content.commandLine as string,pattern)))??[];
+    const declaration=rules.length===1?{...rules[0]!,commands:[content.commandLine]}:undefined;
+    if(row.policy?.execution?.environments&&row.policy.actions.verification_recipes?.some(recipe=>recipe.commands.includes(content.commandLine as string))&&!declaration)return null;
+    const recipe=verificationRecipeEvidence({commandLine:content.commandLine,stdout:String(content.stdout??''),stderr:String(content.stderr??''),
+      exitCode:typeof content.exitCode==='number'?content.exitCode:null,timedOut:content.timedOut===true,outputTruncated:content.outputTruncated===true},row.policy?.actions?.verification_recipes,declaration);
+    if(recipe?.status==='failed'||(content.verificationRecipe as {status?:string}|undefined)?.status==='failed')return null;
     if (typeof content.commandLine === "string") {
       const latest = await client.query<{ uri: string }>(
         `select uri from artifacts where run_id=$1 and kind='command_output'
@@ -148,6 +162,7 @@ async function resolveStoredAcceptance(
     }
     if (frozen.sourcePaths && (acceptanceDigest(content.sourcePaths ?? null) !== acceptanceDigest(frozen.sourcePaths)
       || content.sourceBefore !== frozen.subjectHash || content.sourceAfter !== frozen.subjectHash)) return null;
+    if(recipe?.status==='passed')verifiedRecipeCommands.add(content.commandLine);
     return {
       ...reference, kind: "command_output", runId: evidence.runId, taskId: evidence.taskId, stageId: evidence.stageId,
       projectId: evidence.projectId, contentHash: acceptanceDigest(content),
@@ -156,5 +171,11 @@ async function resolveStoredAcceptance(
       passed: content.exitCode === 0 && content.timedOut === false
     };
   });
+  if(gate==='verification'&&decision.reason===null){
+    const expected=[...new Set((row.policy?.actions?.verification_recipes??[])
+      .filter(r=>[...r.source_paths,...r.test_paths].some(p=>frozen.sourcePaths?.includes(p)))
+      .flatMap(r=>r.commands).filter(c=>row.policy?.actions?.allowed_commands?.includes(c)))];
+    if(expected.some(c=>!verifiedRecipeCommands.has(c)))return {mode:'structured',reason:'Verification omits a required scoped recipe or its complete non-skipped test evidence.',findings:decision.findings};
+  }
   return { mode: "structured", ...decision };
 }

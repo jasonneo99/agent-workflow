@@ -15,6 +15,7 @@ import { resolveAgent, resolveWorkflow } from "../reference-resolution.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {projectContextArtifactPaths} from '../../../../packages/run-environments/src/pipeline.js';
 
 export async function assessRunStaleInputs(ctx: CliContext, runId: string): Promise<RunStaleInputReport> {
   const details = await getWorkflowRunDetails(runId);
@@ -104,12 +105,16 @@ export async function assessRunStaleInputs(ctx: CliContext, runId: string): Prom
 }
 
 export function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {
+  const canEditProjectFiles = agent.can.some((capability) => /^edit_[a-z0-9_]*files$/u.test(capability));
   return {
     id: `agent-task-${agent.id}`,
     name: `Agent Task - ${agent.display_name}`,
     description: `Run ${agent.display_name} directly as a one-stage specialist task.`,
     lead: agent.id,
     default_autonomy: agent.autonomy,
+    execution: ['context-curator','auto-memory-summarizer'].includes(agent.id)
+      ? {kind:'project-artifacts',artifact_paths:[...projectContextArtifactPaths]}
+      : {kind:canEditProjectFiles?'source-change':'read-only'},
     triggers: {
       manual: true,
       events: []

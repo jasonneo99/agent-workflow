@@ -366,8 +366,36 @@ export type DashboardCandidateComparisonReport = {
   promotionNoteFiles: DashboardPromotionNoteFileSummary[];
   localHoldoutRouting: DashboardLocalHoldoutRoutingStatus;
   routeReceiptTrends: DashboardRouteReceiptTrendReport;
+  modelHistory: DashboardModelHistoryReport;
   readiness: string[];
   nextCommands: string[];
+};
+
+export type DashboardModelHistoryBucket = "minute" | "hour" | "day" | "week" | "month";
+export type DashboardModelHistoryRange = "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "180d" | "365d" | "all";
+export type DashboardModelHistoryPoint = {
+  bucketStart: string;
+  key: string;
+  provider: string;
+  model: string;
+  modelTier: string;
+  samples: number;
+  qualitySamples: number;
+  averageQuality: number | null;
+  latencySamples: number;
+  averageLatencyMs: number | null;
+  fallbackRate: number;
+};
+export type DashboardModelHistoryReport = {
+  bucket: DashboardModelHistoryBucket;
+  range: DashboardModelHistoryRange;
+  availableFrom: string | null;
+  availableTo: string | null;
+  windowFrom: string | null;
+  windowTo: string | null;
+  samples: number;
+  models: Array<Omit<DashboardModelHistoryPoint, "bucketStart"> & { latestAt: string }>;
+  points: DashboardModelHistoryPoint[];
 };
 
 export type DashboardEvaluationRun = {
@@ -959,7 +987,15 @@ export type DashboardWorkerStatus = {
   heartbeatPath: string;
   configured: boolean;
   workerId: string | null;
+  hostId?: string | null;
+  runtimeBuildDigest?: string | null;
+  heartbeatTrustState?: "trusted-local" | "trusted-remote" | "unsigned" | "unknown-host" | "disabled-host" | "invalid" | "expired" | "future" | "replayed" | "runtime-mismatch";
+  heartbeatTrustReason?: string | null;
   projectRootUri: string | null;
+  projectId?: string | null;
+  projectIdentityId?: string | null;
+  projectIdentityGeneration?: number | null;
+  sourceRevision?: string | null;
   concurrency: number | null;
   perProjectConcurrency: number | null;
   status: "running" | "stale" | "stopped" | "missing";
@@ -977,6 +1013,30 @@ export type DashboardWorkerStatus = {
   command: string;
   providerIds?: string[];
   unavailableProviderIds?: string[];
+  executionCapabilities?: string[];
+  executionCapabilityProbes?: Array<{
+    id: string;
+    status: "passed" | "failed";
+    checkedAt: string;
+    digest: string;
+    reason: string | null;
+    runtimeVersion: string;
+  }>;
+  remoteFleetTrust?: Array<{
+    hostId:string;
+    state:"trusted"|"not-delivered"|"transport-delayed"|"worker-stale"|"untrusted"|"disabled";
+    trustState:string;
+    trustReason:string;
+    sequence:string|null;
+    acceptedAt:string|null;
+    transportFreshnessMs:number|null;
+    deliveryLagMs:number|null;
+    workerFreshnessMs:number|null;
+    runtimeBuildDigest:string|null;
+    activeKeys:number;
+    keyLifecycle:"current"|"expiring"|"expired"|"disabled";
+    nextKeyExpiryAt:string|null;
+  }>;
   lanes: DashboardWorkerLane[];
 };
 

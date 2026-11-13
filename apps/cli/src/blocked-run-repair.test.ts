@@ -104,7 +104,8 @@ test("learning daemon supervises recent delivery failures without expanding poli
   assert.match(source, /approvals\.some\(isOpenApproval\)/u);
   assert.match(source, /missingExistingEvidence/u);
   assert.match(source, /workflowDeliveryRepairReason\(run, outputs\)/u);
-  assert.match(source, /findSupersedingDeliveryReceipt\(run\.task, deliveryReceipts\)/u);
+  assert.match(source, /findLaterCompletedEquivalentRun\(runs, repairSource \?\? run\)/u);
+  assert.match(source, /await authorizedRepairRun\(run.id\)/u);
   assert.match(source, /!item\.dismissed/u);
   assert.match(source, /workflow_supervisor_repair_suppressed/u);
   // The daemon must use the claimed outbox, not the legacy direct-send path.
@@ -120,4 +121,26 @@ test("learning diagnostics exposes direct blocker resolution", () => {
   assert.match(source, /failedRunRows[\s\S]{0,800}resolve-blocker[\s\S]{0,200}Resolve Blocker/u);
   assert.match(source, /<h2>Recent Failed Runs<\/h2>/u);
   assert.match(source, /resume the same durable run without creating a repair chain/u);
+});
+
+test("persisted repair pause survives failure, retry, restart, and callback observations", async (t) => {
+  const { mkdtemp, readFile, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { workflowAutomaticRecoverySuppressed } = await import("./workflow-supervision.js");
+  const dir = await mkdtemp(join(tmpdir(), "synthetic-repair-pause-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, "receipts.json");
+  await writeFile(file, JSON.stringify([{ actionType: "workflow_supervisor_repair_suppressed" }]));
+  for (const observation of ["failed", "retry", "restart", "callback"]) {
+    const loaded: string[] = [];
+    const suppressed = await workflowAutomaticRecoverySuppressed("successor", async (id) => {
+      loaded.push(id);
+      return id === "successor"
+        ? { run: { evaluationMetadata: { source: "workflow-root-repair", sourceRunId: "original", observation } }, receipts: [] }
+        : { run: { evaluationMetadata: {} }, receipts: JSON.parse(await readFile(file, "utf8")) };
+    });
+    assert.equal(suppressed, true, observation);
+    assert.deepEqual(loaded, ["successor", "original"]);
+  }
 });

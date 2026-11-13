@@ -136,6 +136,46 @@ startup_timeout_sec = 120
 
 Restart Codex after changing MCP configuration.
 
+### Workflow callbacks
+
+For local Codex plugin calls, Agent Workflow binds each CLI child to the host's
+MCP request `_meta.threadId`. Tool arguments and project configuration cannot
+choose this binding. Concurrent calls keep separate origins; calls without host
+metadata do not inherit a chat ID from the shared MCP process. Invalid host IDs
+fail before execution. This routing identity grants no approval authority.
+
+After updating the plugin runtime, reload the client's MCP connections before
+testing callbacks. A previously running server retains its loaded code. Verify
+the run's recorded origin, callback arrival in that same chat, and durable
+acknowledgment separately; a successful CLI-only test does not validate the
+plugin path.
+
+For an unpublished local runtime fix, build an isolated reviewed engine package
+and pass its tarball with `AGENTFLOW_PLUGIN_RUNTIME_TARBALL` to the plugin's
+`scripts/bundle-runtime.mjs`. The installed package must match the runtime pin
+and contain the request-origin adapter. Keep build provenance in local receipts;
+this does not publish a release or adopt unrelated checkout changes.
+
+Codex callbacks preserve the requesting thread identity and use `codex queue`
+to enqueue an evidence-inspection message into that session. The adapter
+validates the returned message UUID and destination thread before recording
+transport acceptance. It does not start a second CLI writer.
+
+Queue acceptance, arrival in the originating task, and durable acknowledgment
+are separate evidence. A successful process exit or `requester_notified`
+receipt does not establish acknowledgment. Correlate the notification, run and
+originating task when inspecting arrival and recording acknowledgment.
+
+The installed Codex CLI must support `queue` and its correlated receipt format.
+Missing capability, failed delivery or an invalid receipt leaves transport
+unconfirmed for retry. Keep heartbeat fallback until live arrival is accepted
+for the target environment; local desktop evidence does not establish support
+on every operating system. Measure host-turn latency separately from durable
+acknowledgment latency and record timestamp precision and restart overhead.
+
+Callbacks grant no approval, repair, retry or execution authority. Automatic
+repair requires its separate explicit activation; callback delivery cannot enable it.
+
 ## Example Prompts
 
 ```text
@@ -169,3 +209,24 @@ For review requests from Codex, VS Code, or Cursor, prefer run-and-watch behavio
 - The MCP client is only the control surface. The model provider is configured in Agent Workflow's `.env`.
 - BYO works the same from VS Code, Cursor, Codex, terminal, or automation.
 - Keep reusable agents and workflows in Agent Workflow. Keep project-specific context in each target project's `AGENTS.md` and `.agent-workflow/`.
+# Callback flood protection
+
+Codex outbound delivery coalesces obsolete, unclaimed progress for the same run,
+channel and originating task. Original rows, event identities and bodies remain
+in storage with `coalesced_at`, `coalesced_into` and a reason. Blockers, failures,
+approval/action-required notices and completion notifications are retained.
+Active claims and other projects or destinations are not coalesced.
+
+Before calling the non-idempotent queue transport, delivery is durably marked
+`delivery_uncertain`. A valid queue receipt is persisted immediately with its
+message identity and acceptance timestamp; dispatcher settlement is separate.
+Known accepted deliveries are not sent again even if the dispatcher dies before
+settlement. Queue acceptance never proves originating-task acknowledgment.
+
+A definite transport rejection may retry with backoff. An ambiguous timeout,
+malformed response or crash after transport begins requires reconciliation;
+it is not automatically retried. Operators must independently establish arrival
+or definite non-delivery before resolving that state. This favors avoiding
+duplicate sends and does not claim exactly-once delivery from a queue transport
+without an idempotency or lookup capability. These fields and states are added
+by the normal storage bootstrap migration; no notification history is deleted.

@@ -1,5 +1,7 @@
 import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
 import { withClient } from "./client.js";
+import { registerProjectIdentityScope } from "./project-identity.js";
+import { projectRegistrationRoot } from "./project-registration-root.js";
 
 export interface ProjectFileSearchHit { path: string; contentHash: string; indexedAt: string }
 
@@ -25,7 +27,10 @@ export async function searchProjectFileIndex(projectRoot: string, query: string)
 }
 
 export async function upsertProject(input: { name: string; rootUri: string; profile: string; config: unknown }): Promise<string> {
+  const location=await projectRegistrationRoot(input.rootUri);
   return withClient(async (client) => {
+    await client.query("begin");
+    try {
     const result = await client.query<{ id: string }>(
       `insert into projects (name, root_uri, profile, config, updated_at)
        values ($1, $2, $3, $4, now())
@@ -34,7 +39,10 @@ export async function upsertProject(input: { name: string; rootUri: string; prof
        returning id`,
       [input.name, input.rootUri, input.profile, JSON.stringify(input.config)]
     );
+    await registerProjectIdentityScope(client,result.rows[0].id,location.commonRoot);
+    await client.query("commit");
     return result.rows[0].id;
+    } catch(error) { await client.query("rollback"); throw error; }
   });
 }
 

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, realpath, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import { assertFilePathAllowed, normalizeRelativePath, sha256 } from "./file-writer.js";
@@ -7,6 +7,10 @@ import { executeAllowedFileWrite, type FileWriteResult } from "./file-writer.js"
 export interface FilePatchResult {
   relativePath: string;
   absolutePath: string;
+  projectRoot: string;
+  outcome: "applied" | "already_satisfied";
+  expectedHash: string;
+  patchHash: string;
   previousHash: string;
   nextHash: string;
   existed: true;
@@ -18,7 +22,10 @@ export interface FilePatchResult {
 export interface RequestedFileMutation { path: string; content?: string | null; patch?: string | null; expectedHash?: string | null }
 
 export function normalizeRequestedFileMutation(request: RequestedFileMutation): { isPatch: boolean; payload: string; expectedHash?: string; bytes: number; idempotencyPayload: string } | null {
-  const isPatch = typeof request.patch === "string" && typeof request.expectedHash === "string";
+  const hasPatchFields = typeof request.patch === "string" || typeof request.expectedHash === "string";
+  if (hasPatchFields && (typeof request.patch !== "string" || typeof request.expectedHash !== "string" || request.content != null)) return null;
+  if (!hasPatchFields && (typeof request.content !== "string" || request.patch != null || request.expectedHash != null)) return null;
+  const isPatch = hasPatchFields;
   const payload = isPatch ? request.patch! : request.content;
   if (typeof payload !== "string") return null;
   return { isPatch, payload, expectedHash: isPatch ? request.expectedHash! : undefined, bytes: Buffer.byteLength(payload, "utf8"), idempotencyPayload: isPatch ? JSON.stringify({ patch: payload, expectedHash: request.expectedHash }) : payload };
@@ -32,7 +39,9 @@ export async function executeAllowedFileMutation(input: { request: RequestedFile
 
 export function summarizeFileMutation(result: FilePatchResult | FileWriteResult, isPatch: boolean): string {
   return isPatch
-    ? `Patched \`${result.relativePath}\` with ${"hunksApplied" in result ? result.hunksApplied : 0} verified hunk(s). Verified the preimage hash before applying the patch.`
+    ? "outcome" in result && result.outcome === "already_satisfied"
+      ? `Patch for \`${result.relativePath}\` was already satisfied; reconstructed and verified the approved preimage without writing.`
+      : `Patched \`${result.relativePath}\` with ${"hunksApplied" in result ? result.hunksApplied : 0} verified hunk(s). Verified the preimage hash before applying the patch.`
     : `Wrote ${result.bytesWritten} bytes to \`${result.relativePath}\`. ${result.existed ? "Updated existing file." : "Created new file."}`;
 }
 
@@ -44,28 +53,52 @@ export async function executeAllowedFilePatch(input: {
   project: ProjectConfig;
 }): Promise<FilePatchResult> {
   const relativePath = assertFilePatchAllowed(input.relativePath, input.patch, input.expectedHash, input.project);
-  const projectRoot = path.resolve(input.cwd);
-  const absolutePath = path.resolve(projectRoot, relativePath);
-  if (!absolutePath.startsWith(`${projectRoot}${path.sep}`)) throw new Error("File patch rejected: path escapes the project root.");
-
-  let previous: Buffer;
-  try {
-    previous = await readFile(absolutePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`File patch rejected: target does not exist: ${relativePath}`);
+  const projectRoot = await realpath(path.resolve(input.cwd));
+  const unresolvedPath = path.resolve(projectRoot, relativePath);
+  const absolutePath = await realpath(unresolvedPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") throw new Error(`File patch rejected: target does not exist: ${relativePath}`);
     throw error;
-  }
+  });
+  if (!absolutePath.startsWith(`${projectRoot}${path.sep}`)) throw new Error("File patch rejected: path escapes the project root.");
+  if (absolutePath !== unresolvedPath) throw new Error('File patch rejected: exact scoped path must not be a symlink alias.');
+  const identity = await lstat(absolutePath);
+  if (!identity.isFile() || identity.nlink !== 1) throw new Error('File patch rejected: target must be an unshared regular file.');
+
+  const previous = await readFile(absolutePath);
+  if (previous.includes(0) || !Buffer.from(previous.toString('utf8'),'utf8').equals(previous)) throw new Error('File patch rejected: target must be valid UTF-8 text.');
   const previousHash = sha256(previous);
+  const expectedHash = input.expectedHash.toLowerCase();
+  const patchHash = sha256(Buffer.from(input.patch, "utf8"));
   if (previousHash !== input.expectedHash.toLowerCase()) {
-    throw new Error(`File patch rejected: stale preimage hash for ${relativePath}; expected ${input.expectedHash.toLowerCase()}, found ${previousHash}.`);
+    try {
+      const restored = applyUnifiedPatch(previous.toString("utf8"), reverseUnifiedPatch(input.patch));
+      if (sha256(Buffer.from(restored.content, "utf8")) === expectedHash) {
+        return {
+          relativePath, absolutePath, projectRoot, outcome: "already_satisfied",
+          expectedHash, patchHash, previousHash, nextHash: previousHash,
+          existed: true, patchBytes: Buffer.byteLength(input.patch, "utf8"),
+          bytesWritten: previous.byteLength, hunksApplied: restored.hunksApplied
+        };
+      }
+    } catch {
+      // A malformed, mismatched, or unrelated postimage remains stale below.
+    }
+    throw new Error(`File patch rejected: stale preimage hash for ${relativePath}; expected ${expectedHash}, found ${previousHash}.`);
   }
 
   const { content, hunksApplied } = applyUnifiedPatch(previous.toString("utf8"), input.patch);
   const next = Buffer.from(content, "utf8");
+  const live = await lstat(absolutePath);
+  if (await realpath(unresolvedPath) !== absolutePath || !live.isFile() || live.nlink !== 1 || live.ino !== identity.ino || live.dev !== identity.dev
+    || sha256(await readFile(absolutePath)) !== previousHash) throw new Error('File patch rejected: preimage changed before write.');
   await writeFile(absolutePath, next);
   return {
     relativePath,
     absolutePath,
+    projectRoot,
+    outcome: "applied",
+    expectedHash,
+    patchHash,
     previousHash,
     nextHash: sha256(next),
     existed: true,
@@ -73,6 +106,29 @@ export async function executeAllowedFilePatch(input: {
     bytesWritten: next.byteLength,
     hunksApplied
   };
+}
+
+/** A full replacement denial is not permission to widen paths or size limits.
+ * Return a recovery instruction only when this exact path is already allowed. */
+export function oversizedReplacementPatchHint(relativePath:string,content:string,project:ProjectConfig):string|null{
+  if(Buffer.byteLength(content,'utf8')<=project.actions.max_write_bytes)return null;
+  try{assertFilePathAllowed(relativePath,project);}catch{return null;}
+  return `Do not request a policy change or repeat the full replacement. Read a bounded exact range such as ${relativePath}#L1-L100 to obtain the full-file SHA-256 and exact hunk context. Return requestedFileWrites with the same path, content:null, a compact unified-diff patch, and expectedHash equal to that SHA-256. Patch bytes remain limited to ${project.actions.max_write_bytes}; exact scope, approvals, work intent, receipts and acceptance gates still apply.`;
+}
+
+/** Build the exact inverse used only to prove that a target is already the approved postimage. */
+export function reverseUnifiedPatch(patch: string): string {
+  return patch.replace(/\r\n/gu, "\n").split("\n").map((line) => {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/u.exec(line);
+    if (header) {
+      const oldCount = header[2] === undefined ? "" : `,${header[2]}`;
+      const newCount = header[4] === undefined ? "" : `,${header[4]}`;
+      return `@@ -${header[3]}${newCount} +${header[1]}${oldCount} @@${header[5]}`;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) return `-${line.slice(1)}`;
+    if (line.startsWith("-") && !line.startsWith("---")) return `+${line.slice(1)}`;
+    return line;
+  }).join("\n");
 }
 
 export function assertFilePatchAllowed(relativePathInput: string, patch: string, expectedHash: string, project: ProjectConfig): string {

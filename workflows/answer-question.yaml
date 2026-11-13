@@ -2,6 +2,8 @@ id: answer-question
 name: Answer Question
 description: Answer a read-only project question with current evidence, durable run history, and no side effects.
 lead: project-answerer
+execution:
+  kind: read-only
 default_autonomy: 1
 triggers:
   manual: true

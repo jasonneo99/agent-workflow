@@ -3,6 +3,7 @@ import path from "node:path";
 import { agentCardSchema, projectConfigSchema, workflowSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import { loadAgentRecords, loadProjectConfig, loadWorkflowRecords, loadYamlFile } from "../../agent-registry/src/loaders.js";
 import type { ModelProvider, StageExecutionInput } from "../../model-providers/src/index.js";
+import { missingRuntimeReceiptActors, runtimeReceiptActorReferences } from '../../agent-registry/src/runtime-actors.js';
 
 export interface ContractTestResult {
   id: string;
@@ -36,6 +37,15 @@ export async function runDefinitionContractTests(input: {
   results.push({ id: "workflows.load", status: workflows.length > 0 ? "pass" : "fail", detail: `${workflows.length} workflow definition(s)` });
   results.push(...uniqueIdResults("agents.unique", allAgents.map((record) => record.value.id)));
   results.push(...uniqueIdResults("workflows.unique", workflows.map((record) => record.value.id)));
+  const runtimeActors = await runtimeReceiptActorReferences(input.definitionsDir);
+  const missingActors = missingRuntimeReceiptActors(runtimeActors, agentIds);
+  results.push({
+    id: 'agents.runtime-receipt-closure',
+    status: missingActors.length ? 'fail' : 'pass',
+    detail: missingActors.length
+      ? missingActors.slice(0, 12).map(item => `${item.agentId} at ${item.sourcePath}:${item.line}`).join(', ')
+      : `${new Set(runtimeActors.map(item => item.agentId)).size} literal runtime receipt actor(s) registered`,
+  });
 
   for (const record of agents) {
     results.push({ id: `agent.schema.${record.value.id}`, status: schemaRoundTrip(record.value, agentCardSchema), detail: record.path });

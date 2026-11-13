@@ -67,13 +67,19 @@ export async function listWorkflowReuseEvidence(input: {
           limit $3`,
         [input.projectRootUri, input.workflowId ?? null, limit]
       ),
-      client.query<{ sourceUri: string; summary: string; kind: string; updatedAt: string }>(
+      client.query<ReuseMemoryCandidate>(
         `select mi.source_uri as "sourceUri", mi.summary,
                 coalesce(mi.metadata->>'kind', 'untyped') as kind,
+                coalesce(mi.metadata->'acceptanceVerified' = 'true'::jsonb, false) as "acceptanceVerified",
+                mi.metadata->>'outcome' as outcome,
                 mi.updated_at::text as "updatedAt"
            from memory_items mi
            join projects p on p.id = mi.project_id
           where p.root_uri = $1
+            and (coalesce(mi.metadata->>'kind', 'untyped') <> 'workflow_repair_learning'
+              or (mi.metadata->'acceptanceVerified' = 'true'::jsonb
+                and mi.metadata->>'outcome' = 'reinforce'
+                and nullif(mi.metadata->>'repairRunId', '') is not null))
             and not exists (select 1 from action_receipts rejection
               where rejection.action_type = 'workflow_acceptance_rejected'
                 and rejection.run_id::text = mi.metadata->>'repairRunId')

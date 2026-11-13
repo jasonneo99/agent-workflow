@@ -2,6 +2,8 @@ id: model-improvement
 name: Model Improvement
 description: Diagnose and plan quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.
 lead: workflow-orchestrator
+execution:
+  kind: read-only
 default_autonomy: 1
 triggers:
   manual: true

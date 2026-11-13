@@ -1,0 +1,19 @@
+import {loadProjectConfig} from '../../agent-registry/src/loaders.js';
+import {redactApprovalCardText} from '../../governance/src/high-risk-approval-inbox.js';
+import {checkServices,type ServiceCheck} from './doctor.js';
+import {withClient} from './client.js';
+import {projectEvidenceGraphInSnapshot} from './project-evidence.js';
+export async function readContextHealth(project:string,probe:()=>Promise<ServiceCheck[]>=checkServices){
+ const checkedAt=new Date().toISOString();
+ const [configuration,storage,services]=await Promise.all([
+  loadProjectConfig(project).then(p=>({status:'readable' as const,policyProfile:p.execution.policy_profile,autonomy:String(p.project.autonomy),roleEnforcement:p.team.enforcement,separationOfDuties:p.team.separation_of_duties.mode,defaultActorRole:p.team.default_actor_role,approvalRoleConfigured:!!p.team.roles.approver?.can_approve_actions,executionRoleConfigured:!!p.team.roles[p.team.default_actor_role]?.can_execute_approved_actions,allowedCommandRules:p.actions.allowed_commands.length,allowedWriteRules:p.actions.allowed_write_paths.length,requireReceipts:p.policies.require_receipts})).catch(()=>({status:'unavailable' as const})),
+  withClient(async c=>{await c.query('begin isolation level repeatable read read only');try{await c.query("set local statement_timeout='5000ms'");
+   const graph=await projectEvidenceGraphInSnapshot(c,project);const p=(await c.query('select id from projects where root_uri=$1',[project])).rows[0];
+   const approvals=await c.query(`select a.status,count(*)::int count from action_approvals a join workflow_runs r on r.id=a.run_id where r.project_id=$1 group by a.status order by a.status`,[p?.id??null]);
+   const recent=await c.query(`select a.id::text,a.run_id::text as "runId",a.action_type as "actionType",a.summary,a.receipt_hash as "receiptHash",a.created_at::text as "observedAt" from action_receipts a join workflow_runs r on r.id=a.run_id where r.project_id=$1 and (a.action_type ~ '^action_approval_' or a.action_type='context_correction_recorded' or a.action_type='command_executed' or a.action_type='file_written') order by a.created_at desc,a.id desc limit 21`,[p?.id??null]);
+   await c.query('commit');return {status:'available' as const,projectRegistered:!!p,index:{status:graph.status,sources:graph.nodes.filter(n=>n.kind==='source').length,facts:graph.nodes.filter(n=>['requirement','roadmap','decision'].includes(n.kind)).length,truncated:graph.truncated},approvals:Object.fromEntries(approvals.rows.map(r=>[r.status,r.count])),recent:recent.rows.slice(0,20).map(r=>({...r,summary:redactApprovalCardText(r.summary,1000)})),recentTruncated:recent.rows.length>20};
+  }catch(e){await c.query('rollback');throw e;}}).catch(()=>({status:'unavailable' as const,projectRegistered:null})),
+  probe().then(checks=>checks.map(c=>({name:c.endpoint.name,reachable:c.reachable}))).catch(()=>null)
+ ]);
+ return {schemaVersion:1,project,checkedAt,authority:'none',readOnly:true,executionAcceptance:'unverified',configuration,storage,services,unknowns:['Service checks establish TCP reachability only; they do not authenticate services or prove workflow execution.','Runtime discovery and recorded native grants are separate from OS permission checks and successful actions.','Project configuration describes constraints, not permission to execute a particular action. Existing approvals and action policy remain authoritative.','Indexed evidence is bounded and has not been compared to current disk contents. Historical failures and pending approvals do not establish a current blocker.','Provider authentication and model inference are not probed by this view. No paid model call, repair, retry, grant or policy mutation is performed.','Receipt references retain historical outcomes; their complete chains and feature acceptance are not independently verified by this read.']};
+}

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AgentCard, ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import type { ModelProvider, StageExecutionOutput } from "../../../packages/model-providers/src/types.js";
 import { mapWithConcurrency } from "./concurrency.js";
@@ -60,6 +62,103 @@ export type TrainingHoldoutReport = {
   failures: string[];
 };
 
+export const TRAINING_HOLDOUT_LIMITS = {
+  maxTargets: 4,
+  maxCases: 6,
+  maxCalls: 8,
+  maxTotalTokens: 80_000
+} as const;
+
+type TrainingProposalDesignInput = {
+  id: string;
+  targets: string[];
+  publisher: string;
+  claimedBenefit: string;
+  risks: string;
+  holdoutEvaluation: string;
+};
+
+export function buildTrainingHoldoutDesign(proposal: TrainingProposalDesignInput): TrainingHoldoutDesign {
+  const targets = [...new Set(proposal.targets)].slice(0, TRAINING_HOLDOUT_LIMITS.maxTargets);
+  const scope = `${proposal.publisher}: ${proposal.claimedBenefit}`;
+  return {
+    proposal: proposal.id,
+    targets,
+    fixture_contract: {
+      common_prompt: "Evaluate only the labeled synthetic evidence. A finding requires a cited evidence label. Missing evidence is not a finding.",
+      isolation: "Synthetic, read-only, no network access, commands, file reads, or file writes."
+    },
+    cases: [
+      {
+        id: "candidate-specific-risk",
+        provider: proposal.publisher,
+        label: "vulnerable",
+        input: ["E1: The artifact violates candidate-specific requirement R1, but does not name the omitted boundary.", `E2: Scope: ${scope}`],
+        expected: "Identify the violated candidate-specific check and cite E1.",
+        forbidden: "Pass the artifact or invent an unrelated control."
+      },
+      {
+        id: "candidate-specific-ambiguity",
+        provider: proposal.publisher,
+        label: "vulnerable",
+        input: ["E1: The artifact claims success but omits the candidate-specific evidence required by R1.", `E2: Known scope constraint: ${proposal.risks}`],
+        expected: "Identify the missing required evidence without overstating the claim.",
+        forbidden: "Treat absent evidence as proof of compliance."
+      },
+      {
+        id: "safe-supported-control",
+        provider: proposal.publisher,
+        label: "safe",
+        input: ["E1: The artifact includes direct evidence satisfying candidate-specific requirement R1.", "E2: No contradictory evidence is present."],
+        expected: "Return no finding.",
+        forbidden: "Flag a supported control."
+      },
+      {
+        id: "safe-out-of-scope-control",
+        provider: "Other provider",
+        label: "safe",
+        input: ["E1: The named provider and control do not apply to this artifact.", `E2: Scope limitation: ${proposal.risks}`],
+        expected: "Return no finding and preserve provider scope.",
+        forbidden: "Apply provider-specific guidance outside its scope."
+      }
+    ]
+  };
+}
+
+export async function persistTrainingHoldoutDesign(projectDir: string, design: TrainingHoldoutDesign): Promise<string> {
+  validateTrainingHoldoutDesign(design);
+  const outDir = path.join(projectDir, ".agent-workflow", "evaluations", safeSegment(design.proposal));
+  const designPath = path.join(outDir, "holdout-design.json");
+  await fs.mkdir(outDir, { recursive: true });
+  await fs.writeFile(designPath, `${JSON.stringify(design, null, 2)}\n`, { mode: 0o600 });
+  return designPath;
+}
+
+export function validateTrainingHoldoutDesign(design: TrainingHoldoutDesign): void {
+  if (!design.proposal.trim()) throw new Error("Training holdout design requires a proposal id.");
+  if (!design.targets.length || design.targets.length > TRAINING_HOLDOUT_LIMITS.maxTargets) {
+    throw new Error(`Training holdout design must contain 1-${TRAINING_HOLDOUT_LIMITS.maxTargets} targets.`);
+  }
+  if (design.cases.length < 2 || design.cases.length > TRAINING_HOLDOUT_LIMITS.maxCases) {
+    throw new Error(`Training holdout design must contain 2-${TRAINING_HOLDOUT_LIMITS.maxCases} cases.`);
+  }
+  if (!design.cases.some((item) => item.label === "vulnerable") || !design.cases.some((item) => item.label === "safe")) {
+    throw new Error("Training holdout design requires vulnerable and safe controls.");
+  }
+}
+
+export function isCompleteTrainingHoldoutReport(report: TrainingHoldoutReport | null | undefined): report is TrainingHoldoutReport {
+  return Boolean(report && report.plannedObservations > 0 && report.measuredObservations === report.plannedObservations && report.observations.length === report.plannedObservations);
+}
+
+export async function readTrainingHoldoutReport(projectDir: string, proposalId: string): Promise<TrainingHoldoutReport | null> {
+  try {
+    return JSON.parse(await fs.readFile(path.join(projectDir, ".agent-workflow", "evaluations", safeSegment(proposalId), "measured-holdout.json"), "utf8")) as TrainingHoldoutReport;
+  } catch {
+    return null;
+  }
+}
+
 export async function runTrainingHoldout(input: {
   design: TrainingHoldoutDesign;
   candidateContext: string;
@@ -69,9 +168,11 @@ export async function runTrainingHoldout(input: {
   provider: ModelProvider;
   concurrency?: number;
 }): Promise<TrainingHoldoutReport> {
+  validateTrainingHoldoutDesign(input.design);
   const targets = input.design.targets.map((id) => input.agents.find((agent) => agent.id === id)).filter((agent): agent is AgentCard => Boolean(agent));
   const failures = input.design.targets.filter((id) => !targets.some((agent) => agent.id === id)).map((id) => `Target agent is unavailable: ${id}`);
-  const batches: TargetBatch[] = targets.flatMap((target) => (["baseline", "candidate"] as const).flatMap((arm) => chunk(input.design.cases, 1).map((cases) => ({ target, arm, cases }))));
+  const batches: TargetBatch[] = targets.flatMap((target) => (["baseline", "candidate"] as const).map((arm) => ({ target, arm, cases: input.design.cases })));
+  if (batches.length > TRAINING_HOLDOUT_LIMITS.maxCalls) throw new Error(`Training holdout would exceed the ${TRAINING_HOLDOUT_LIMITS.maxCalls}-call budget.`);
   const usage = { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, costCoverage: 0 };
   const observations = (await mapWithConcurrency(batches, Math.max(1, input.concurrency ?? 2), async ({ target, arm, cases }) => {
     const response = await input.provider.executeStage(stageInput(input, target, arm, target.prompt, targetBatchPrompt(input.design, cases, arm, input.candidateContext)));
@@ -102,6 +203,7 @@ export async function runTrainingHoldout(input: {
   if (metrics.candidateProviderErrors) failures.push(`${metrics.candidateProviderErrors} candidate provider portability error(s).`);
   if (metrics.candidateUnsupportedFindings) failures.push(`${metrics.candidateUnsupportedFindings} candidate unsupported finding(s).`);
   if (metrics.baselineCorrectRegressions) failures.push(`${metrics.baselineCorrectRegressions} baseline-correct observation(s) regressed.`);
+  if (usage.totalTokens > TRAINING_HOLDOUT_LIMITS.maxTotalTokens) failures.push(`Token budget exceeded: ${usage.totalTokens}/${TRAINING_HOLDOUT_LIMITS.maxTotalTokens}.`);
   const complete = observations.length === expected && targets.length === input.design.targets.length;
   const verdict = !complete ? "INCONCLUSIVE" : failures.length ? "FAIL" : metrics.baselineErrorsImproved > 0 ? "PASS" : "INCONCLUSIVE";
   if (complete && !failures.length && metrics.baselineErrorsImproved === 0) failures.push("Candidate produced no measured improvement over the baseline ceiling.");
@@ -127,8 +229,8 @@ function stageInput(input: Parameters<typeof runTrainingHoldout>[0], agent: Agen
     runId: `training-holdout-${sha256(input.design.proposal).slice(0, 12)}`,
     taskId: randomUUID(), projectRootUri: input.projectRootUri, projectConfig: input.projectConfig,
     workflowId: "training-holdout", workflowTask: input.design.proposal, stageId: `${arm}-${agent.id}`,
-    agentId: agent.id, agentName: agent.display_name, agentPrompt, stageGoal: "Return the requested read-only blinded evaluation JSON. Do not request tools, commands, reads, or writes.",
-    compiledBrief, modelTier: agent.model_tier, priorReceipts: []
+    agentId: agent.id, agentName: agent.display_name, agentPrompt: compactAgentPrompt(agentPrompt), stageGoal: "Return the requested read-only blinded evaluation JSON. Do not request tools, commands, reads, or writes.",
+    compiledBrief, modelTier: "fast" as const, priorReceipts: []
   };
 }
 
@@ -208,4 +310,5 @@ function recordUsage(output: StageExecutionOutput, total: { calls: number; input
 
 function nonnegative(value: unknown): number { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0; }
 function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
-function chunk<T>(items: T[], size: number): T[][] { const result: T[][] = []; for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size)); return result; }
+function safeSegment(value: string): string { return value.replace(/[^a-zA-Z0-9._-]+/gu, "-"); }
+function compactAgentPrompt(value: string): string { return value.length <= 1_200 ? value : `${value.slice(0, 1_200)}\n[agent prompt truncated for bounded holdout]`; }

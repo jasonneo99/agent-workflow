@@ -11,8 +11,10 @@ test("approval expiry commits its event once and rolls back when event persisten
   try {
     await client.connect();
     await client.query("set search_path to pg_temp");
-    await client.query(`create temporary table workflow_runs(id uuid primary key, requester_channel text, evaluation_metadata jsonb default '{}');
-      create temporary table action_approvals(id uuid primary key, run_id uuid, agent_id text, target text, status text, updated_at timestamptz, expires_at timestamptz);
+    await client.query(`create temporary table workflow_runs(id uuid primary key, requester_channel text, evaluation_metadata jsonb default '{}', status text);
+      create temporary table workflow_tasks(id uuid primary key,run_id uuid,agent_id text,status text,available_at timestamptz,worker_id text,lease_expires_at timestamptz);
+      create temporary table artifacts(run_id uuid,task_id uuid,kind text,uri text unique,content jsonb);
+      create temporary table action_approvals(id uuid primary key, run_id uuid, task_id uuid, agent_id text, target text, status text, updated_at timestamptz, expires_at timestamptz);
       create temporary table action_receipts(run_id uuid, agent_id text, action_type text, target text, summary text, metadata jsonb, prev_hash text, receipt_hash text, created_at timestamptz, metadata_serialization_version integer);
       create temporary table run_notifications(id uuid primary key default gen_random_uuid(), run_id uuid, channel text, kind text, title text, body text, status text default 'pending', created_at timestamptz default now(), delivered_at timestamptz)`);
     await client.query(runNotificationOutboxSchemaSql);
@@ -20,7 +22,7 @@ test("approval expiry commits its event once and rolls back when event persisten
     pg.Pool.prototype.connect = (async () => isolated) as unknown as typeof original;
     const id = "00000000-0000-4000-8000-000000000001";
     await client.query("insert into workflow_runs(id,requester_channel) values($1,'synthetic')", [id]);
-    await client.query("insert into action_approvals values($1,$1,'test-agent','synthetic','pending',now(),now()-interval '1 minute')", [id]);
+    await client.query("insert into action_approvals(id,run_id,agent_id,target,status,updated_at,expires_at) values($1,$1,'test-agent','synthetic','pending',now(),now()-interval '1 minute')", [id]);
     assert.equal(await expireStaleApprovals(), 1);
     assert.equal(await expireStaleApprovals(), 0);
     const events = await client.query("select body from run_notifications");
@@ -35,7 +37,7 @@ test("approval expiry commits its event once and rolls back when event persisten
     await client.query("alter table run_notifications drop constraint reject_new_event");
     await client.query(`alter table workflow_runs add column project_id uuid, add column workflow_id text, add column task text;
       create temporary table projects(id uuid primary key, name text, root_uri text);
-      alter table action_approvals add column task_id uuid, add column stage_id text,
+      alter table action_approvals add column stage_id text,
       add column action_type text, add column rationale text, add column policy_decision jsonb,
       add column payload jsonb, add column idempotency_key text, add column decided_by text,
       add column decided_role text, add column decided_at timestamptz, add column executed_by text,
@@ -55,7 +57,7 @@ test("approval expiry commits its event once and rolls back when event persisten
     await client.query("alter table run_notifications drop constraint reject_claim_event");
     await client.query(`alter table action_approvals alter column id set default gen_random_uuid(), alter column status set default 'pending';
       create unique index approval_identity on action_approvals(run_id,task_id,action_type,idempotency_key);
-      create temporary table artifacts(run_id uuid,task_id uuid,kind text,uri text unique,content jsonb)`);
+      select 1`);
     const request = {runId:id,taskId:id,stageId:"verify",agentId:"synthetic",actionType:"local_command",target:"synthetic-check",
       rationale:"Synthetic approval",policyDecision:{},payload:{},idempotencyKey:"fresh",ttlMs:60000};
     const created = await requestActionApproval(request);

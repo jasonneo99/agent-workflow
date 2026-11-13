@@ -8,7 +8,7 @@ import { appendActionReceipt } from "./receipt-writer.js";
 import { chainReceipt } from "../../workflow-engine/src/receipt-chain.js";
 
 test("all operational receipt writers use the transactional chain append", async () => {
-  for (const file of ["postgres.ts", "run-transitions.ts", "run-supersession.ts", "action-approvals.ts"]) {
+  for (const file of ["postgres.ts", "workflow-task-authority.ts", "workflow-task-outcomes.ts", "run-transitions.ts", "run-supersession.ts", "action-approvals.ts"]) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     assert.doesNotMatch(source, /insert\s+into\s+action_receipts/i, file);
     assert.match(source, /appendActionReceipt/, file);

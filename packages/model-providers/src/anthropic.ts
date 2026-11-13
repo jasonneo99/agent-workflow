@@ -101,7 +101,7 @@ export class AnthropicProvider implements ModelProvider {
       "You are executing one stage in a durable agent workflow.",
       "Return one valid JSON object only.",
       "Do not claim that files, commands, or external systems changed unless the stage input explicitly includes that evidence."
-    ].join(" "), buildStagePrompt(input));
+    ].join(" "), buildStagePrompt(input),input.abortSignal,input.maxOutputTokens);
     const parsed = normalizeStageArtifact(extractJsonObject(messageText(response)) as StageJsonArtifact);
     return {
       ...buildStageExecutionOutput(input, parsed, {
@@ -146,8 +146,8 @@ export class AnthropicProvider implements ModelProvider {
   }
 }
 
-async function createMessage(model: string, system: string, prompt: string): Promise<AnthropicMessageResponse> {
-  return anthropicRequest<AnthropicMessageResponse>("/messages", buildAnthropicMessageRequest(model, system, prompt));
+async function createMessage(model: string, system: string, prompt: string,signal?:AbortSignal,maxTokens=4096): Promise<AnthropicMessageResponse> {
+  return anthropicRequest<AnthropicMessageResponse>("/messages", {...buildAnthropicMessageRequest(model, system, prompt),max_tokens:maxTokens},signal);
 }
 
 export function buildAnthropicMessageRequest(model: string, system: string, prompt: string): Record<string, unknown> {
@@ -159,7 +159,7 @@ export function buildAnthropicMessageRequest(model: string, system: string, prom
   };
 }
 
-async function anthropicRequest<T>(path: string, body?: unknown): Promise<T> {
+async function anthropicRequest<T>(path: string, body?: unknown,signal?:AbortSignal): Promise<T> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
   const url = `${process.env.ANTHROPIC_BASE_URL?.replace(/\/$/u, "") || ANTHROPIC_API_URL}${path}`;
@@ -175,7 +175,7 @@ async function anthropicRequest<T>(path: string, body?: unknown): Promise<T> {
         "content-type": "application/json",
         "x-api-key": apiKey
       },
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body: body === undefined ? undefined : JSON.stringify(body),signal
     });
   } catch (error) {
     logEgress({ providerId: "anthropic", host, endpoint, method, durationMs: Date.now() - egressStart, error: error instanceof Error ? error.message : String(error) });

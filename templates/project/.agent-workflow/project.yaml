@@ -37,6 +37,12 @@ storage:
     allow_restore_execution: false
     allow_prune_execution: false
 execution:
+  pipeline:
+    required: true
+    isolation: worktree
+  repair_commits:
+    enabled: true
+    stages: [repair, implement, fix]
   policy_profile: local
   policy_profiles: {}
   # Remote executors are opt-in. Register a fixed adapter here, then bind an
@@ -94,12 +100,17 @@ team:
       read_only: true
 actions:
   allowed_commands:
+    - npm run agentflow -- environments *
+    - npm run agentflow -- repair-checkpoint *
     - npm install
     - npm test
     - npm run typecheck
     - npm run lint
     - npm run build
     - npm run agentflow -- training-holdout *
+    # Enables only Agent Workflow's governed, project-owned Compose wrapper.
+    # Raw docker commands remain outside worker authority.
+    - npm run agentflow -- containers *
   blocked_commands:
     - rm *
     - git reset *

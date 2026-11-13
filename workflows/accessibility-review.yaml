@@ -2,6 +2,8 @@ id: accessibility-review
 name: Accessibility Review
 description: Audit accessibility, prioritize barriers, prepare remediation, and verify regressions.
 lead: ux-reviewer
+execution:
+  kind: source-change
 default_autonomy: 2
 triggers:
   manual: true

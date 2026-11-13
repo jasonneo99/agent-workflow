@@ -53,6 +53,17 @@ jobs:
 
       - name: Test packages
         run: npm test
+        env:
+          AGENTFLOW_TEST_EVIDENCE_DIR: .agent-workflow/test-evidence
+
+      - name: Upload PostgreSQL fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-fixture-evidence
+          path: .agent-workflow/test-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify package contents
         run: npm run pack:check

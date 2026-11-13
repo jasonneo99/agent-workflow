@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runEnvironmentsSchema, repairCommitPolicySchema, runPipelinePolicySchema } from "../../run-environments/src/schema.js";
 
 export const autonomyLevelSchema = z.union([
   z.literal(0),
@@ -75,6 +76,10 @@ const dynamicWorkflowMetadataSchema = z.object({
 });
 
 export const workflowSchema = z.object({
+  execution: z.object({
+    kind: z.enum(["source-change", "read-only", "project-artifacts"]),
+    artifact_paths: z.array(z.enum(["AGENTS.md", ".agent-workflow/context.md", ".agent-workflow/commands.md", ".agent-workflow/decisions.md", ".agent-workflow/memory.md", "project.roadmap_path"])).min(1).optional()
+  }).optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().min(1),
@@ -102,8 +107,12 @@ export const workflowSchema = z.object({
       type: z.enum(["single-shot", "planner", "executor", "react", "reflexive", "verifier", "finalizer"]).default("executor"),
       max_iterations: z.number().int().positive().max(25).optional(),
       requires_verifier: z.boolean().default(false),
+      // Admission requirement only: it never grants a write or changes old snapshots.
+      requires_source_writes: z.boolean().optional(),
       promotion_gate: z.enum(["none", "approval", "evaluation", "policy", "release"]).default("none"),
       stop_conditions: z.array(z.string()).default([])
+    }).superRefine((pattern,context)=>{
+      if(pattern.requires_source_writes && !['executor','react','reflexive'].includes(pattern.type))context.addIssue({code:'custom',message:'Source authoring requires a write-capable stage, separate from read-only verification.'});
     }).default({
       type: "executor",
       requires_verifier: false,
@@ -115,6 +124,8 @@ export const workflowSchema = z.object({
       max_tokens: z.number().int().positive().default(4000)
     }).default({ load: [], max_tokens: 4000 }),
     approval_required: z.boolean().default(false),
+    checkpoint_after: z.boolean().optional(),
+    runtime_operation: z.literal('integrate-source').optional(),
     executor: z.object({
       id: z.string().min(1),
       operation: z.enum(["typecheck", "validate", "test"])
@@ -281,6 +292,9 @@ export const projectConfigSchema = z.object({
     policy_profile: z.string().min(1).default("local"),
     policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({}),
     executor_adapters: z.record(z.string(), executorAdapterRegistrationSchema).optional(),
+    environments: runEnvironmentsSchema.optional(),
+    repair_commits: repairCommitPolicySchema.optional(),
+    pipeline: runPipelinePolicySchema.optional(),
     worker_pool: workerPoolSchema.optional()
   }).default({ policy_profile: "local", policy_profiles: {}, executor_adapters: {} }),
   policies: z.object({
@@ -320,6 +334,19 @@ export const projectConfigSchema = z.object({
     ]),
     command_timeout_ms: z.number().int().positive().default(120000),
     max_output_chars: z.number().int().positive().default(20000),
+    // Opt-in containment for autonomous scoped recovery commands. Unsupported
+    // hosts fail closed; omission preserves the existing project command path.
+    isolate_command_writes: z.boolean().optional(),
+    // Exact recipes only; opt-in does not authorize commands or unrelated PTYs.
+    scoped_native_pty_commands: z.array(z.string().min(1)).optional(),
+    // Declarations only. Admission still checks command policy and explicit
+    // approval rules; a recipe never grants writes or native execution.
+    verification_recipes: z.array(z.object({
+      source_paths: z.array(z.string().min(1)).min(1).max(40),
+      test_paths: z.array(z.string().min(1)).min(1).max(40),
+      commands: z.array(z.string().min(1)).min(1).max(8),
+      output_paths: z.array(z.string()).max(0).default([])
+    })).optional(),
     allowed_write_paths: z.array(z.string()).default([
       ".agent-workflow/**",
       "docs/**"

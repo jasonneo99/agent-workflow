@@ -17,6 +17,8 @@ interface SetupAnswers {
   openaiModel?: string;
   anthropicKey?: string;
   anthropicModel?: string;
+  deepseekApiKey?: string;
+  deepseekModel?: string;
   geminiApiKey?: string;
   geminiModel?: string;
   museApiKey?: string;
@@ -53,16 +55,17 @@ async function main(): Promise<void> {
   console.log("  2) mock          — No model calls. Good for testing workflows locally.");
   console.log("  3) openai        — OpenAI API with live model-catalog tier selection");
   console.log("  4) anthropic     — Anthropic Messages API with Claude");
-  console.log("  5) muse          — Meta Muse via the Meta Model API");
-  console.log("  6) gemini        — Google Gemini API");
-  console.log("  7) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
-  console.log("  8) byo           — Bring your own OpenAI-compatible model gateway");
-  console.log("  9) openai-compatible — Same as BYO, with legacy env names");
-  console.log(" 10) kiro          — Optional Kiro CLI adapter");
+  console.log("  5) deepseek      — DeepSeek Flash hosted API");
+  console.log("  6) muse          — Meta Muse via the Meta Model API");
+  console.log("  7) gemini        — Google Gemini API");
+  console.log("  8) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
+  console.log("  9) byo           — Bring your own OpenAI-compatible model gateway");
+  console.log(" 10) openai-compatible — Same as BYO, with legacy env names");
+  console.log(" 11) kiro          — Optional Kiro CLI adapter");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-10, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "anthropic", "5": "muse", "6": "gemini", "7": "bedrock", "8": "byo", "9": "openai-compatible", "10": "kiro", "": "auto" };
+  const providerChoice = await ask("  Provider [1-11, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "anthropic", "5": "deepseek", "6": "muse", "7": "gemini", "8": "bedrock", "9": "byo", "10": "openai-compatible", "11": "kiro", "": "auto" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -79,6 +82,13 @@ async function main(): Promise<void> {
     answers.anthropicKey = await ask("  Anthropic API key: ");
     const model = await ask("  Claude model [default auto]: ");
     answers.anthropicModel = model.trim() || "auto";
+  }
+
+  if (provider === "deepseek") {
+    console.log("");
+    answers.deepseekApiKey = await ask("  DeepSeek API key: ");
+    const model = await ask("  DeepSeek model [default deepseek-flash]: ");
+    answers.deepseekModel = model.trim() || "deepseek-flash";
   }
 
   if (provider === "muse") {
@@ -208,7 +218,7 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
 
   if (answers.provider === "auto") {
     lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
-    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
+    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,deepseek,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
     lines.push("AGENTFLOW_MODEL_POLICY=best-coding");
   }
 
@@ -220,6 +230,11 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
   if (answers.provider === "anthropic") {
     lines.push(`ANTHROPIC_API_KEY=${answers.anthropicKey ?? ""}`);
     lines.push(`ANTHROPIC_MODEL=${answers.anthropicModel ?? "auto"}`);
+  }
+
+  if (answers.provider === "deepseek") {
+    lines.push(`DEEPSEEK_API_KEY=${answers.deepseekApiKey ?? ""}`);
+    lines.push(`DEEPSEEK_MODEL=${answers.deepseekModel ?? "deepseek-flash"}`);
   }
 
   if (answers.provider === "muse") {
