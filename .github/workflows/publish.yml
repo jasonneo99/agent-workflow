@@ -11,20 +11,6 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     environment: npm-publish
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: agentflow
-          POSTGRES_PASSWORD: agentflow
-          POSTGRES_DB: agentflow
-        ports:
-          - 15432:5432
-        options: >-
-          --health-cmd "pg_isready -U agentflow -d agentflow"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -38,6 +24,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Start enterprise services
+        run: docker compose -f infra/docker-compose.yml up -d
 
       - name: Typecheck
         run: npm run typecheck
@@ -70,3 +59,7 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
+
+      - name: Stop enterprise services
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down
