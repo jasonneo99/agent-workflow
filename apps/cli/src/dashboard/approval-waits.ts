@@ -1,4 +1,5 @@
 import type { WorkflowQueueItem } from "../../../../packages/storage/src/workflow-run-types.js";
+import { dashboardIcon } from "./icons.js";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/gu, character =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
@@ -11,7 +12,7 @@ export function renderApprovalWait(wait: WorkflowQueueItem["approvalWait"], exec
     <button class="${style}" type="submit">${label}</button></form>`;
   return `<section class="queue-approval-wait" aria-label="Awaiting approval">
     <h3>Awaiting approval</h3><p>Progress is saved. Later stages are waiting. Approve the exact request below to continue ${escape(wait.stageId)}.</p>
-    ${wait.approvals.map(approval => `<div class="queue-card-callout warn"><div>
+    ${wait.approvals.map(approval => `<div class="queue-card-callout queue-approval-request warn">${dashboardIcon("warning", "Approval required")}<div>
       <p><strong>Allow this ${escape(approval.actionType.replaceAll("_", " "))}?</strong></p>
       <code>${escape(approval.target)}</code><p>${escape(approval.rationale)}</p>
       <details><summary>Exact request · ${escape(approval.id)}</summary><pre>${escape(JSON.stringify(approval.payload, null, 2))}</pre></details>

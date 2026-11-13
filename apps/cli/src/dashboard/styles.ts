@@ -239,6 +239,15 @@ export function dashboardCss(): string {
     .queue-card-callout strong, .queue-card-callout small { display: block; }
     .queue-card-callout strong { font-size: 13px; }
     .queue-card-callout small { margin-top: 2px; color: #64748b; font-size: 12px; line-height: 1.35; }
+    .queue-approval-wait { min-width: 0; }
+    .queue-approval-request { align-items: start; }
+    .queue-approval-request > div { min-width: 0; }
+    .queue-approval-request p { max-width: 76ch; }
+    .queue-approval-request code { display: block; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+    .queue-approval-request details { max-width: 100%; }
+    .queue-approval-request pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .queue-approval-request .actions { margin-top: 12px; }
+    .queue-approval-request .approval-form { margin: 0; }
     .queue-card-footer { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; min-width: 0; border-top: 1px solid #edf0f4; padding-top: 14px; }
     .queue-primary-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
     .queue-more-actions > summary { cursor: pointer; color: #1d4ed8; font-size: 13px; font-weight: 650; padding: 8px 0; }
