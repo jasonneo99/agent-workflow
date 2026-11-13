@@ -104,9 +104,15 @@ test("a narrowed read-only review executes its declared environment and rejects 
     const narrowed = scopedChangeReviewPolicy(project, [command]);
     const result = await executeAllowedCommand({ cwd: f.cwd, project: narrowed, commandLine: command,
       environmentContext: { runId: "scoped-review", requireVerification: true } });
-    assert.equal(result.environment?.status, "ready", result.stderr);
-    assert.equal(result.verificationRecipe?.passed, 1);
-    assert.equal(result.verificationRecipe?.skipped, 0);
+    if (process.platform === "darwin") {
+      assert.equal(result.environment?.status, "ready", result.stderr);
+      assert.equal(result.verificationRecipe?.passed, 1);
+      assert.equal(result.verificationRecipe?.skipped, 0);
+    } else {
+      assert.equal(result.environment?.status, "blocked");
+      assert.match(result.stderr, /write isolation is unavailable on this host/u);
+      assert.equal(result.exitCode, 126);
+    }
     await assert.rejects(executeAllowedCommand({ cwd: f.cwd, project: narrowed,
       commandLine: "npm run agentflow -- environments --command unrelated",
       environmentContext: { runId: "scoped-review" } }), /nested agent command/u);
