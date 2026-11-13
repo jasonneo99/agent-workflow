@@ -48,7 +48,16 @@ export const environmentProfileSchema = z.object({
     max_output_chars: z.number().int().min(256).max(1_000_000).default(20_000),
     max_source_bytes: z.number().int().min(1).max(536_870_912).default(67_108_864),
     max_files: z.number().int().min(1).max(20_000).default(4096)
-  }).strict().default({})
+  }).strict().default({
+    cpus: 2,
+    memory_mb: 2048,
+    pids: 256,
+    timeout_ms: 120_000,
+    preparation_timeout_ms: 600_000,
+    max_output_chars: 20_000,
+    max_source_bytes: 67_108_864,
+    max_files: 4096
+  })
 }).strict().superRefine((profile, context) => {
   if (profile.kind === "container" && (!profile.image || !profile.platform.startsWith("linux/"))) {
     context.addIssue({ code: "custom", message: "Container profiles need a digest-pinned image and a Linux target platform." });

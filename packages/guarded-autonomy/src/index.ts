@@ -12,7 +12,7 @@ export const adversarialCaseSchema = z.object({
   id: z.string().min(1),
   threat_class: z.enum(adversarialThreatClasses),
   synthetic: z.literal(true),
-  candidate_input: z.record(z.unknown()),
+  candidate_input: z.record(z.string(), z.unknown()),
   network_allowed: z.literal(false),
   private_data_included: z.literal(false)
 });
@@ -47,7 +47,7 @@ export const stageAuthorityGrantSchema = z.object({
   effect_class: z.enum(effectClasses),
   evidence_hashes: z.array(z.string().regex(/^[a-f0-9]{64}$/u)).min(1),
   policy_hash: z.string().regex(/^[a-f0-9]{64}$/u),
-  breaker_generations: z.record(z.number().int().nonnegative()),
+  breaker_generations: z.record(z.string(), z.number().int().nonnegative()),
   issued_by: z.string().min(1),
   issued_at: z.string().datetime(),
   expires_at: z.string().datetime(),
@@ -199,7 +199,7 @@ export function evaluateTransactionalFault(input: {
 
 export const promotionEvidenceSchema = z.object({
   representative_cases: z.number().int().nonnegative(),
-  cases_per_affected_workflow: z.record(z.number().int().nonnegative()),
+  cases_per_affected_workflow: z.record(z.string(), z.number().int().nonnegative()),
   relative_quality_gain: z.number(),
   absolute_quality_gain_points: z.number(),
   confidence_excludes_meaningful_degradation: z.boolean(),

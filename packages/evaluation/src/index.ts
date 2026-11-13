@@ -35,8 +35,16 @@ export const evaluationScoringProfileSchema = z.object({
     accepted_feedback_rate: z.number().default(0),
     revised_feedback_rate: z.number().default(0),
     rejected_feedback_rate: z.number().default(0)
-  }).default({}),
-  case_weights: z.record(z.number().positive()).default({}),
+  }).default({
+    pass_rate: 1,
+    quality: 1,
+    latency: 0,
+    fallback_rate: 0,
+    accepted_feedback_rate: 0,
+    revised_feedback_rate: 0,
+    rejected_feedback_rate: 0
+  }),
+  case_weights: z.record(z.string(), z.number().positive()).default({}),
   latency_budget_ms: z.number().positive().default(30000)
 });
 

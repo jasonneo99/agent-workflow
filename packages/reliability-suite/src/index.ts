@@ -134,7 +134,7 @@ export const reliabilityBaselineSchema = z.object({
     failed: z.number().int().nonnegative(),
     blocked: z.number().int().nonnegative(),
     not_run: z.number().int().nonnegative(),
-    metric_coverage: z.record(z.object({
+    metric_coverage: z.record(z.string(), z.object({
       measured: z.number().int().nonnegative(),
       partial: z.number().int().nonnegative(),
       unavailable: z.number().int().nonnegative()
