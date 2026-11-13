@@ -11,7 +11,9 @@ else
   cp -R templates/project/. "$PROJECT_DIR/"
 fi
 trap 'if [[ -n "$SMOKE_TEMP_ROOT" ]]; then rm -rf "$SMOKE_TEMP_ROOT"; fi' EXIT
-WORKFLOW="${AGENTFLOW_SMOKE_WORKFLOW:-build-feature}"
+# Exercise enterprise storage and governed project-artifact writes without
+# pretending the generic template has selected a source execution environment.
+WORKFLOW="${AGENTFLOW_SMOKE_WORKFLOW:-maintain-context}"
 TASK="${AGENTFLOW_SMOKE_TASK:-Smoke test portable agent workflow}"
 PROVIDER="${AGENTFLOW_SMOKE_PROVIDER:-mock}"
 
