@@ -105,6 +105,7 @@ export async function assessRunStaleInputs(ctx: CliContext, runId: string): Prom
 }
 
 export function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {
+  const canEditProjectFiles = agent.can.some((capability) => /^edit_[a-z0-9_]*files$/u.test(capability));
   return {
     id: `agent-task-${agent.id}`,
     name: `Agent Task - ${agent.display_name}`,
@@ -113,7 +114,7 @@ export function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAge
     default_autonomy: agent.autonomy,
     execution: ['context-curator','auto-memory-summarizer'].includes(agent.id)
       ? {kind:'project-artifacts',artifact_paths:[...projectContextArtifactPaths]}
-      : {kind:agent.can.includes('edit_local_files')?'source-change':'read-only'},
+      : {kind:canEditProjectFiles?'source-change':'read-only'},
     triggers: {
       manual: true,
       events: []
