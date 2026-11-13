@@ -125,7 +125,7 @@ export class CodexCliProvider implements ModelProvider {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
         "Direct repository inspection is disabled. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Request policy-governed commands and file writes in the structured output. Do not use native tools or claim side effects.",
-        buildStagePrompt(input)
+        buildStagePrompt(boundedCodexStageInput(input))
       ].join("\n\n"),
       schema: input.acceptanceContract ? {
         ...stageSchema,
@@ -193,6 +193,28 @@ export class CodexCliProvider implements ModelProvider {
     const readiness = await this.check();
     if (!readiness.ready) throw new Error(readiness.details[0]);
   }
+}
+
+const CODEX_FILE_READ_CONTEXT_MAX_CHARS = 280_000;
+
+/** Keep the most recent source observations while leaving headroom for the
+ * fixed workflow contract, schema, and Codex transport envelope. The durable
+ * read artifacts remain complete; this only projects a bounded provider view. */
+export function boundedCodexStageInput(input: StageExecutionInput): StageExecutionInput {
+  const reads = input.fileReads ?? [];
+  if (reads.reduce((total, read) => total + read.content.length, 0) <= CODEX_FILE_READ_CONTEXT_MAX_CHARS) return input;
+  let remaining = CODEX_FILE_READ_CONTEXT_MAX_CHARS;
+  const selected: NonNullable<StageExecutionInput["fileReads"]> = [];
+  for (const read of [...reads].reverse()) {
+    if (remaining <= 0) break;
+    const marker = "\n...truncated to fit Codex provider input budget...";
+    const content = read.content.length <= remaining
+      ? read.content
+      : `${read.content.slice(0, Math.max(0, remaining - marker.length)).trimEnd()}${marker}`;
+    selected.push({ ...read, content, truncated: read.truncated || content.length < read.content.length });
+    remaining -= content.length;
+  }
+  return { ...input, fileReads: selected.reverse() };
 }
 
 export function configuredCodexCliModelForTier(tier?: ModelTier, override?: string): string | undefined {

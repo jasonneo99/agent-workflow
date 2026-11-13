@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildCodexCliDiagnostic, CodexCliProvider, codexStderrExcerpt, configuredCodexCliDirectRepoInspection, configuredCodexCliMaxResumes, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliSessionReuse, configuredCodexCliTimeoutMs, createCodexCliRunner, parseCodexCliThreadId, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
+import { boundedCodexStageInput, buildCodexCliDiagnostic, CodexCliProvider, codexStderrExcerpt, configuredCodexCliDirectRepoInspection, configuredCodexCliMaxResumes, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliSessionReuse, configuredCodexCliTimeoutMs, createCodexCliRunner, parseCodexCliThreadId, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -29,6 +29,17 @@ const stageInput = {
   modelTier: "standard",
   priorReceipts: []
 } as unknown as StageExecutionInput;
+
+test("Codex CLI bounds cumulative file-read context and keeps the newest observations", () => {
+  const fileReads = Array.from({ length: 40 }, (_, index) => ({
+    path: `src/file-${index}.ts`, content: String(index).padEnd(20_000, "x"), truncated: false, sha256: "a".repeat(64)
+  }));
+  const bounded = boundedCodexStageInput({ ...stageInput, fileReads });
+  assert.ok((bounded.fileReads ?? []).reduce((total, read) => total + read.content.length, 0) <= 280_000);
+  assert.equal(bounded.fileReads?.at(-1)?.path, "src/file-39.ts");
+  assert.ok((bounded.fileReads?.length ?? 0) < fileReads.length);
+  assert.equal(bounded.fileReads?.[0]?.path, "src/file-26.ts");
+});
 
 test('strict Codex schema can express a bounded source proposal and evidence influence as structured artifact fields',async()=>{
  const paths=['src/synthetic.ts','tests/synthetic.test.ts'],memoryInfluence={used:[],noInfluenceReason:'No earlier comparison was needed.'};
