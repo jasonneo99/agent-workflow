@@ -49,7 +49,15 @@ function visible(alias: string): string {
             and hidden.metadata->>'runId'=${alias}.id::text
             and hidden.metadata->>'projectId'=${alias}.project_id::text
             and hidden.metadata->>'originalTask'=${alias}.task
-            and hidden.metadata->>'originatingThreadId'=${alias}.evaluation_metadata->>'codexThreadId'
+            and (hidden.metadata->>'originatingThreadId'=${alias}.evaluation_metadata->>'codexThreadId'
+              or (${alias}.evaluation_metadata->>'codexThreadId' is null
+                and hidden.metadata->>'originatingThreadId' is null
+                and hidden.metadata->>'operatorSessionId' ~* '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'
+                and hidden.metadata->>'originalOriginDigest' ~ '^[a-f0-9]{64}$'
+                and hidden.metadata->'originalRunOrigin'=jsonb_build_object(
+                  'requester',to_jsonb(${alias})->'requester',
+                  'requesterChannel',to_jsonb(${alias})->'requester_channel',
+                  'evaluationMetadata',${alias}.evaluation_metadata)))
             and hidden.receipt_hash is not null
             and not exists(select 1 from workflow_tasks withdrawal_task where withdrawal_task.run_id=${alias}.id and withdrawal_task.status in('queued','leased','running'))
             and not exists(select 1 from action_approvals withdrawal_approval where withdrawal_approval.run_id=${alias}.id and withdrawal_approval.status in('pending','approved','executing','failed'))

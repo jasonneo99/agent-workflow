@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {randomUUID} from 'node:crypto';
 import {withClient} from './client.js';
 import {activeQueueSourceOnClient} from './queue-source-membership.js';
 
@@ -56,5 +57,17 @@ test('exact-source membership reuses queue visibility without reviving hidden hi
   await c.query("update side_effect_receipts set status='rejected'");
   await c.query("insert into workflow_tasks values('source','running')");
   assert.equal(await activeQueueSourceOnClient(c,'source'),true,'A newly active task cannot be concealed by historical withdrawal');
+  await c.query('delete from workflow_tasks;delete from side_effect_receipts;delete from action_receipts;delete from artifacts');
+  await c.query("update workflow_runs set evaluation_metadata='{}'");
+  const operatorWithdrawal={...withdrawn,originatingThreadId:null,operatorSessionId:randomUUID().toUpperCase(),
+   originalOriginDigest:'c'.repeat(64),originalRunOrigin:{requester:null,requesterChannel:null,evaluationMetadata:{}}};
+  await c.query("insert into action_receipts values('source','workflow_run_withdrawn',clock_timestamp(),$1,'Synthetic operator withdrawal','chain')",[operatorWithdrawal]);
+  await c.query("insert into artifacts values('source','operator_run_withdrawal',$1)",[operatorWithdrawal]);
+  assert.equal(await activeQueueSourceOnClient(c,'source'),false,'An exact operator withdrawal can hide a CLI run without fabricating a chat origin');
+  await c.query("update workflow_runs set evaluation_metadata='{\"source\":\"changed-origin\"}'");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'Origin drift invalidates the operator withdrawal');
+  await c.query("update workflow_runs set evaluation_metadata='{}';alter table workflow_runs add column requester text");
+  await c.query("update workflow_runs set requester='different-scheduler'");
+  assert.equal(await activeQueueSourceOnClient(c,'source'),true,'A changed requester invalidates the operator withdrawal');
  }finally{await c.query('rollback');}
 }));

@@ -10688,11 +10688,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       if (!input.confirmed) return { ok: false, error: "Confirm withdrawal of this exact unsuccessful run first." };
       const row = await withClient(async client => (await client.query<{
         projectId:string; task:string; evaluationMetadata:Record<string,unknown> | null;
-      }>(`select project_id::text as "projectId",task,evaluation_metadata as "evaluationMetadata"
+        requester:string|null;requesterChannel:string|null;
+      }>(`select project_id::text as "projectId",task,evaluation_metadata as "evaluationMetadata",requester,requester_channel as "requesterChannel"
           from workflow_runs where id=$1::uuid`,[runId])).rows[0]);
       const originatingThreadId = typeof row?.evaluationMetadata?.codexThreadId === "string"
         ? row.evaluationMetadata.codexThreadId : "";
-      if (!row || !originatingThreadId) return { ok:false,error:`Run is missing its exact originating-chat identity: ${runId}` };
+      if (!row) return { ok:false,error:`Unknown workflow run: ${runId}` };
       const owner = `dashboard-withdrawal:${runId}`;
       const intent = await acquireWorkIntent({
         projectId:row.projectId,owner,
@@ -10701,7 +10702,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       });
       try {
         const instruction=input.reason.trim()||"Archive this exact unsuccessful run from active queue views without accepting it.";
-        await withdrawUnacceptedRun({projectId:row.projectId,runId,originatingThreadId,
+        const originBinding=originatingThreadId?{originatingThreadId}:{operatorSessionId:randomUUID(),
+          originalOriginDigest:acceptanceDigest({requester:row.requester,requesterChannel:row.requesterChannel,evaluationMetadata:row.evaluationMetadata})};
+        await withdrawUnacceptedRun({projectId:row.projectId,runId,...originBinding,
           originalTaskDigest:acceptanceDigest(row.task),owner,intentFence:intent.fencingToken,
           actor:input.actor?.trim()||"Human via dashboard",instruction,confirmation:WITHDRAW_RUN_CONFIRMATION});
         return {ok:true,title:"Run archived from active views",runId,output:[

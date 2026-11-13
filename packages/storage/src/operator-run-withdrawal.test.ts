@@ -63,3 +63,43 @@ for(const name of ['foreign-origin','task-drift','expired-intent','pending-appro
  await assert.rejects(withdrawUnacceptedRunOnClient(client,input));
  assert.equal((await client.query('select count(*)::int n from artifacts')).rows[0].n,0);
 }));
+
+test('operator withdrawal binds a real CLI origin without inventing a source chat or changing history',()=>fixture(async({client,input})=>{
+ const metadata={source:'scheduled-review',scheduleId:'synthetic-review'};
+ await client.query('alter table workflow_runs add column requester text,add column requester_channel text');
+ await client.query("update workflow_runs set requester='synthetic-scheduler',requester_channel='cli',evaluation_metadata=$1",[metadata]);
+ const before=(await client.query('select * from workflow_runs')).rows;
+ const originalRunOrigin={requester:'synthetic-scheduler',requesterChannel:'cli',evaluationMetadata:metadata};
+ const operatorInput={...input,originatingThreadId:undefined,operatorSessionId:randomUUID(),originalOriginDigest:acceptanceDigest(originalRunOrigin)};
+ const uri=await withdrawUnacceptedRunOnClient(client,operatorInput);
+ assert.equal(await withdrawUnacceptedRunOnClient(client,operatorInput),uri);
+ assert.deepEqual((await client.query('select * from workflow_runs')).rows,before);
+ const rows=(await client.query('select metadata from action_receipts')).rows;
+ assert.equal(rows.length,1);assert.equal(rows[0].metadata.originatingThreadId,null);
+ assert.equal(rows[0].metadata.operatorSessionId,operatorInput.operatorSessionId);
+ assert.deepEqual(rows[0].metadata.originalRunOrigin,originalRunOrigin);
+ assert.equal(rows[0].metadata.originalAcceptanceChanged,false);
+ assert.equal(rows[0].metadata.executionAuthorityGranted,false);
+ await client.query("update workflow_runs set requester='different-scheduler'");
+ await assert.rejects(withdrawUnacceptedRunOnClient(client,{...operatorInput,
+  originalOriginDigest:acceptanceDigest({...originalRunOrigin,requester:'different-scheduler'})}),/prior withdrawal is bound/u);
+ assert.equal((await client.query('select count(*)::int n from action_receipts')).rows[0].n,1);
+}));
+
+for(const name of ['missing-session','missing-origin-digest','origin-drift','foreign-chat','expired-intent','pending-approval','active-stage','active-owner','uncertain-effect','completed'] as const)
+test(`non-chat operator withdrawal refuses ${name}`,()=>fixture(async({client,input})=>{
+ const metadata=name==='foreign-chat'?{codexThreadId:randomUUID()}:{source:'scheduled-review'};
+ await client.query('update workflow_runs set evaluation_metadata=$1',[metadata]);
+ const next:Parameters<typeof withdrawUnacceptedRunOnClient>[1]={...input,originatingThreadId:undefined,operatorSessionId:randomUUID(),originalOriginDigest:acceptanceDigest({requester:null,requesterChannel:null,evaluationMetadata:metadata})};
+ if(name==='missing-session')next.operatorSessionId='';
+ if(name==='missing-origin-digest')next.originalOriginDigest='';
+ if(name==='origin-drift')await client.query("update workflow_runs set evaluation_metadata='{\"source\":\"different-origin\"}'");
+ if(name==='expired-intent')await client.query("update work_intents set expires_at=now()-interval '1 minute'");
+ if(name==='pending-approval')await client.query("insert into action_approvals values($1,'pending')",[input.runId]);
+ if(name==='active-stage')await client.query("insert into workflow_tasks values($1,'running')",[input.runId]);
+ if(name==='active-owner')await client.query("insert into queue_coordinator_assignments(source_run_id,child_run_id,state) values($1,null,'running')",[input.runId]);
+ if(name==='uncertain-effect')await client.query("insert into side_effect_receipts(project_id,idempotency_key,status) values($1,'synthetic-effect','uncertain')",[input.runId]);
+ if(name==='completed')await client.query("update workflow_runs set status='completed'");
+ await assert.rejects(withdrawUnacceptedRunOnClient(client,next));
+ assert.equal((await client.query('select count(*)::int n from artifacts')).rows[0].n,0);
+}));

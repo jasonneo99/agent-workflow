@@ -5,7 +5,8 @@ import { appendActionReceipt } from "./receipt-writer.js";
 
 export const WITHDRAW_RUN_CONFIRMATION = "Withdraw this exact run without accepting it.";
 export interface WithdrawRunInput {
-  projectId: string; runId: string; originatingThreadId: string; originalTaskDigest: string;
+  projectId: string; runId: string; originatingThreadId?: string; originalTaskDigest: string;
+  operatorSessionId?: string; originalOriginDigest?: string;
   owner: string; intentFence: string; actor: string; instruction: string; confirmation: string;
 }
 
@@ -54,16 +55,26 @@ async function reconcileExpiredPrewriteClaims(client:Client,runId:string):Promis
  */
 export async function withdrawUnacceptedRunOnClient(client: Client, input: WithdrawRunInput): Promise<string> {
   const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu;
-  if (![input.projectId,input.runId,input.originatingThreadId].every(id => uuid.test(id))
+  if (![input.projectId,input.runId].every(id => uuid.test(id))
     || !/^[a-f0-9]{64}$/u.test(input.originalTaskDigest) || !input.actor.trim() || !input.instruction.trim()
     || input.confirmation !== WITHDRAW_RUN_CONFIRMATION) throw Error("Exact direct-human run withdrawal required.");
   await client.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
-  const run = (await client.query(`select id::text,project_id::text,task,status,evaluation_metadata
-    from workflow_runs where id=$1::uuid and project_id=$2::uuid for update`, [input.runId,input.projectId])).rows[0];
+  const run = (await client.query(`select id::text,project_id::text,task,status,evaluation_metadata,
+    to_jsonb(wr)->>'requester' as requester,to_jsonb(wr)->>'requester_channel' as "requesterChannel"
+    from workflow_runs wr where id=$1::uuid and project_id=$2::uuid for update`, [input.runId,input.projectId])).rows[0];
+  const originalRunOrigin = {requester:run?.requester??null,requesterChannel:run?.requesterChannel??null,
+    evaluationMetadata:run?.evaluation_metadata??null};
+  const chatOrigin=run?.evaluation_metadata?.codexThreadId;
+  const chatBound=typeof chatOrigin==='string'&&uuid.test(chatOrigin)&&input.originatingThreadId===chatOrigin
+    &&input.operatorSessionId===undefined&&input.originalOriginDigest===undefined;
+  // An operator may withdraw a CLI/scheduled run without inventing a source
+  // chat. Bind its actual origin snapshot separately from the operator session.
+  const operatorBound=chatOrigin==null&&input.originatingThreadId===undefined
+    &&uuid.test(input.operatorSessionId??'')&&input.originalOriginDigest===acceptanceDigest(originalRunOrigin);
   if (!run || !["blocked","failed","cancelled"].includes(run.status)
-    || run.evaluation_metadata?.codexThreadId !== input.originatingThreadId
+    || !(chatBound||operatorBound)
     || acceptanceDigest(run.task) !== input.originalTaskDigest || run.evaluation_metadata?.acceptance === "accepted") {
-    throw Error("Withdrawal requires the exact unaccepted terminal run in its originating chat.");
+    throw Error("Withdrawal requires the exact unaccepted terminal run and its unchanged source origin.");
   }
   if (!(await client.query(`select 1 from work_intents where project_id=$1 and owner=$2 and fencing_token=$3::bigint
     and expires_at>clock_timestamp() and file_scopes=$4::jsonb for update`,
@@ -90,10 +101,19 @@ export async function withdrawUnacceptedRunOnClient(client: Client, input: Withd
     where (source_run_id=$1::uuid or child_run_id=$1::uuid) and state='uncertain'`,[input.runId]);
   const uri = `db://workflow_runs/${input.runId}/operator_withdrawal`;
   const existing = (await client.query("select content from artifacts where run_id=$1::uuid and uri=$2 and kind='operator_run_withdrawal'", [input.runId,uri])).rows[0];
-  if (existing) return uri;
+  if (existing) {
+    if(existing.content.originalTaskDigest!==input.originalTaskDigest
+      ||(chatBound?existing.content.originatingThreadId!==input.originatingThreadId
+        :existing.content.originalOriginDigest!==input.originalOriginDigest)) {
+      throw Error("A prior withdrawal is bound to a different task or source origin.");
+    }
+    return uri;
+  }
   const content = { version:1,authority:"direct-human",disposition:"withdrawn-unaccepted",viewOnly:true,
     originalAcceptanceChanged:false,executionAuthorityGranted:false,runId:input.runId,projectId:input.projectId,
-    originatingThreadId:input.originatingThreadId,originalTask:run.task,originalTaskDigest:input.originalTaskDigest,
+    originatingThreadId:chatBound?input.originatingThreadId:null,
+    ...(operatorBound?{operatorSessionId:input.operatorSessionId,originalOriginDigest:input.originalOriginDigest,originalRunOrigin}:{}),
+    originalTask:run.task,originalTaskDigest:input.originalTaskDigest,
     historicalStatus:run.status,coordinatorUncertaintyClosed:true,reconciledPrewriteClaims,actor:input.actor,instruction:input.instruction };
   await client.query("insert into artifacts(run_id,kind,uri,content) values($1::uuid,'operator_run_withdrawal',$2,$3::jsonb)", [input.runId,uri,JSON.stringify(content)]);
   await appendActionReceipt(client, { runId:input.runId,agentId:"workflow-orchestrator",actionType:"workflow_run_withdrawn",target:input.runId,
