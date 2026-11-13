@@ -8,7 +8,7 @@ export {
 export { cancelWorkflowRun, completeWorkflowTask, blockWorkflowTask, failWorkflowTask } from "./workflow-task-outcomes.js";
 import { queueCoordinatorSchemaSql } from "./queue-coordinator-schema.js";
 import { automaticRecoveryAdmissionFenceSql, automaticRecoveryWrapperReason, automaticRepeatForbidden, noAutomaticRepeatReason } from "./no-automatic-repeat.js";
-import {assertGenericRunRecoveryAllowed} from './managed-run-recovery.js';
+import {assertGenericRunRecoveryAllowed,PartnerManagedRunRecoveryError} from './managed-run-recovery.js';
 import { runPipelineSchemaSql, installationRequiresRunPipeline } from './run-pipeline.js';
 import { pipelineContract, preparedWorkflow, type RunPipelineContract } from '../../run-environments/src/pipeline.js';
 
@@ -667,6 +667,11 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
                  and reinstated.created_at > dismissed.created_at
              )
          )
+         and not exists (
+           select 1 from action_receipts withdrawn
+           where withdrawn.run_id = wr.id
+             and withdrawn.action_type = 'workflow_run_withdrawn'
+         )
          and (${options?.latestRelated ? "true or " : ""}wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           or exists (
             select 1 from workflow_tasks active
@@ -1171,16 +1176,30 @@ export async function dismissAllFailedWorkflowRuns(input: {
          for update of wr`,
         [input.projectRootUri ?? null]
       );
-      const runIds = runs.rows.map((row) => row.id);
-      if (!runIds.length) {
+      const candidateRunIds = runs.rows.map((row) => row.id);
+      if (!candidateRunIds.length) {
         await client.query("rollback");
         return 0;
       }
-      for (const runId of runIds) {
-        await assertGenericRunRecoveryAllowed(client,runId,'dismiss');
+      const runIds: string[] = [];
+      for (const runId of candidateRunIds) {
+        try {
+          await assertGenericRunRecoveryAllowed(client,runId,'dismiss');
+        } catch (error) {
+          // Partner-managed families have a separate, explicitly authorized
+          // withdrawal/archive lifecycle. One protected family must not roll
+          // back dismissal of unrelated, eligible failures in the same batch.
+          if (error instanceof PartnerManagedRunRecoveryError) continue;
+          throw error;
+        }
         await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator",
           actionType: "failed_run_dismissed", target: runId, summary: input.reason,
           metadata: JSON.stringify({ actor: input.actor, reason: input.reason, bulk: true, projectRootUri: input.projectRootUri ?? null }) });
+        runIds.push(runId);
+      }
+      if (!runIds.length) {
+        await client.query("rollback");
+        return 0;
       }
       await client.query(
         `update workflow_runs set status = 'cancelled', updated_at = now() where id = any($1::uuid[])`,

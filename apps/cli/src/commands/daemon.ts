@@ -59,6 +59,9 @@ import { defaultServiceEndpoints } from "../../../../packages/storage/src/config
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { type StorageMigrationPlan } from "../../../../packages/storage/src/migration-plan.js";
 import { acquireWorkIntent, cancelWorkflowRun, decideActionApproval, dismissAllFailedWorkflowRuns, dismissFailedWorkflowRun, getActionApproval, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listActivityEvents, listArtifactLifecycle, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listStaleTerminalWorkflowRuns, listWorkflowHandoffs, listWorkflowQueue, listWorkflowRuns, listWorkflowRunsForProject, listWorkflowStageHealthForRuns, listWorkflowStageRunsForRuns, reconcileStaleTerminalWorkflowRuns, recordRunAction, releaseWorkIntent, replayWorkflowRun, requestActionApproval, requeueExpiredWorkflowTaskLeases, requeueRunningWorkflowTasks, resumeWorkflowRunFromCheckpoint, retryFailedWorkflowRun, seedRegistry, setQueuedWorkflowRunAutonomy } from "../../../../packages/storage/src/postgres.js";
+import { acceptanceDigest } from "../../../../packages/storage/src/acceptance.js";
+import { PartnerManagedRunRecoveryError } from "../../../../packages/storage/src/managed-run-recovery.js";
+import { WITHDRAW_RUN_CONFIRMATION, withdrawUnacceptedRun } from "../../../../packages/storage/src/operator-run-withdrawal.js";
 import { authorizeCoordinatorHistoryAction, prepareCoordinatorHistoryAction } from "../../../../packages/storage/src/coordinator-history-archive.js";
 import { legacyGuideEvidenceInventory, legacyGuideEvidenceInventoryPage, reduceLegacyGuideEvidenceSnapshot } from "../../../../packages/storage/src/queue-partner-guide-legacy-inventory.js";
 import { queuePartnerGuideRegistryHoldMetrics } from "../../../../packages/storage/src/queue-partner-guide-holds.js";
@@ -10636,7 +10639,15 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
     if (action === "dismiss-failed") {
       const reason = input.reason.trim() || "Dismissed from the dashboard queue.";
-      const dismissed = await dismissFailedWorkflowRun({ runId, actor: "dashboard", reason });
+      let dismissed = false;
+      try {
+        dismissed = await dismissFailedWorkflowRun({ runId, actor: "dashboard", reason });
+      } catch (error) {
+        if (error instanceof PartnerManagedRunRecoveryError) {
+          return { ok: false, error: "This is Partner-managed work. Use ‘Archive from active views’ on this exact card; generic dismissal cannot change its governed history." };
+        }
+        throw error;
+      }
       return dismissed
         ? {
           ok: true,
@@ -10650,6 +10661,36 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ].join("\n")
         }
         : { ok: false, error: `Run has no failed queue items or does not exist: ${runId}` };
+    }
+
+    if (action === "withdraw-unaccepted") {
+      if (!input.confirmed) return { ok: false, error: "Confirm withdrawal of this exact unsuccessful run first." };
+      const row = await withClient(async client => (await client.query<{
+        projectId:string; task:string; evaluationMetadata:Record<string,unknown> | null;
+      }>(`select project_id::text as "projectId",task,evaluation_metadata as "evaluationMetadata"
+          from workflow_runs where id=$1::uuid`,[runId])).rows[0]);
+      const originatingThreadId = typeof row?.evaluationMetadata?.codexThreadId === "string"
+        ? row.evaluationMetadata.codexThreadId : "";
+      if (!row || !originatingThreadId) return { ok:false,error:`Run is missing its exact originating-chat identity: ${runId}` };
+      const owner = `dashboard-withdrawal:${runId}`;
+      const intent = await acquireWorkIntent({
+        projectId:row.projectId,owner,
+        objective:`Withdraw exact unaccepted run ${runId} from active views`,
+        fileScopes:[`runtime/withdrawals/${runId}`],ttlSeconds:120
+      });
+      try {
+        const instruction=input.reason.trim()||"Archive this exact unsuccessful run from active queue views without accepting it.";
+        await withdrawUnacceptedRun({projectId:row.projectId,runId,originatingThreadId,
+          originalTaskDigest:acceptanceDigest(row.task),owner,intentFence:intent.fencingToken,
+          actor:input.actor?.trim()||"Human via dashboard",instruction,confirmation:WITHDRAW_RUN_CONFIRMATION});
+        return {ok:true,title:"Run archived from active views",runId,output:[
+          `Run: ${runId}`,`Instruction: ${instruction}`,
+          "Original failed status, contracts, approvals, artifacts, and receipts remain in history.",
+          "No execution or acceptance authority was granted.","Open: /queue"
+        ].join("\n")};
+      } finally {
+        await releaseWorkIntent({projectId:row.projectId,owner,fencingToken:intent.fencingToken});
+      }
     }
 
     return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
@@ -11453,6 +11494,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="dismiss-failed"><input name="reason" aria-label="Dismissal reason" placeholder="Optional reason"><button class="danger" type="submit">${iconLabel("trash", "Dismiss")}</button></form>`;
   }
 
+  function queueWithdrawRunForm(runId: string): string {
+    return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="withdraw-unaccepted"><input name="reason" aria-label="Withdrawal instruction" placeholder="Why this attempt is obsolete"><label class="check-row"><input type="checkbox" name="confirmed" required> This exact unsuccessful run may leave active views.</label><button class="danger" type="submit">${iconLabel("archive", "Archive from active views")}</button></form>`;
+  }
+
   function queueItemPrimaryForms(item: DashboardQueueItem): string {
     if (hasExpiredLease(item)) {
       return queueRunActionForm(item.runId, "recover-expired-leases", "Recover expired lease");
@@ -11484,6 +11529,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         forms.push(queueRunActionForm(item.runId, "repair-blocked", "Diagnose as New Run"));
       }
       forms.push(queueDismissRunForm(item.runId));
+      forms.push(queueWithdrawRunForm(item.runId));
     }
     if (item.runStatus === "queued" || item.runStatus === "running") {
       forms.push(queueRunActionForm(item.runId, "cancel", "Cancel"));

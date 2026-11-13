@@ -183,6 +183,12 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
   assert.match(source, /export async function listWorkflowQueue[\s\S]+reinstated\.created_at > dismissed\.created_at/u);
 });
 
+test("human-withdrawn unsuccessful runs leave actionable queue views without changing terminal history", () => {
+  const queue = storageFunction("./postgres.ts", "listWorkflowQueue");
+  assert.match(queue, /withdrawn\.action_type = 'workflow_run_withdrawn'/u);
+  assert.doesNotMatch(queue, /workflow_run_withdrawn[\s\S]{0,240}update workflow_runs/u);
+});
+
 test("project queue scopes lineage before recursive family expansion", () => {
   const queue = storageFunction("./postgres.ts", "listWorkflowQueue");
   assert.match(queue, /queuePresentationSql\(identityFamilies, "\$2"\)/u);
