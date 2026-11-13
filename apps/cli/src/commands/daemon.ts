@@ -4550,7 +4550,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           response.end(JSON.stringify(output, null, 2));
         } catch (error) {
           response.writeHead(409, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error), restartRequired: true, checkpointRejected: Boolean(resumeCheckpointHandle), authority: "resume-only", grants: { repair: false, replay: false, approval: false, promotion: false, acceptance: false } }));
+          response.end(JSON.stringify({ error: publicHttpError("The guide evidence checkpoint could not be resumed."), restartRequired: true, checkpointRejected: Boolean(resumeCheckpointHandle), authority: "resume-only", grants: { repair: false, replay: false, approval: false, promotion: false, acceptance: false } }));
         }
         return;
       }
@@ -4562,7 +4562,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           response.end(JSON.stringify(page, null, 2));
         } catch (error) {
           response.writeHead(409, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error), restartRequired: true, authority: "inventory-only" }));
+          response.end(JSON.stringify({ error: publicHttpError("The guide evidence inventory could not be read."), restartRequired: true, authority: "inventory-only" }));
         }
         return;
       }
@@ -5040,7 +5040,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         if(!body||typeof body!=="object"||Array.isArray(body))throw new Error("JSON worker heartbeat object is required.");
         const result=await ingestRemoteWorkerHeartbeat({heartbeat:body as Record<string,unknown>,trustStore:await loadWorkerTrustStore(),heartbeatDir:ctx.defaultWorkerHeartbeatDir,cursorPath:path.join(ctx.defaultWorkerHeartbeatDir,"remote-ingestion-cursors.state")});
         response.writeHead(result.accepted?202:200,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:result.idempotent?"idempotent":"accepted",...result},null,2));return;
-      }catch(error){response.writeHead(422,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:"rejected",error:safeErrorMessage(error)},null,2));return;}
+      }catch{response.writeHead(422,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:"rejected",error:publicHttpError("The worker heartbeat was invalid or could not be verified.")},null,2));return;}
     }
 
     if (requestUrl.pathname === "/api/server-roadmap") {
@@ -6079,7 +6079,22 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
 
     if (requestUrl.pathname === "/queue") {
-      const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
+      const requestedProjectRootUri = requestUrl.searchParams.get("project")?.trim() || undefined;
+      let projectRootUri: string | undefined;
+      if (requestedProjectRootUri) {
+        const requestedLocalRoot = path.resolve(await resolveLocalProjectRootUri(requestedProjectRootUri));
+        const registeredProjects = await listProjectStorageSummaries(500);
+        const registeredRoots = await Promise.all(registeredProjects.map(async (project) => ({
+          project,
+          localRoot: path.resolve(await resolveLocalProjectRootUri(project.rootUri))
+        })));
+        projectRootUri = registeredRoots.find((candidate) => candidate.localRoot === requestedLocalRoot)?.project.rootUri;
+        if (!projectRootUri) {
+          response.writeHead(404, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          response.end(renderDashboardActionResult({ ok: false, error: "Queue filtering requires an exact registered project." }));
+          return;
+        }
+      }
       const freshSnapshot = requestUrl.searchParams.get("_queue_snapshot") === "fresh";
       const snapshot = await loadQueueCardSnapshot(projectRootUri, freshSnapshot);
       response.writeHead(200, {
@@ -6088,7 +6103,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         ...queueSnapshotHeaders(snapshot),
         ...(freshSnapshot ? { "x-agentflow-queue-snapshot": snapshot.ageMs <= 750 ? "fresh" : "bounded-stale" } : {})
       });
-      response.end(renderQueueHtml(snapshot.value.queue, requestUrl.searchParams, snapshot.value.historicalRuns, snapshot.value.partnerProjects, snapshot.value.partnerHistory));
+      const requestedActionRun = requestUrl.searchParams.get("actionRun") ?? "";
+      const flash = {
+        notice: requestUrl.searchParams.get("notice")?.slice(0, 180) || undefined,
+        error: requestUrl.searchParams.get("error")?.slice(0, 240) || undefined,
+        actionRun: /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(requestedActionRun) ? requestedActionRun : undefined
+      };
+      response.end(renderQueueHtml(snapshot.value.queue, projectRootUri, flash, snapshot.value.historicalRuns, snapshot.value.partnerProjects, snapshot.value.partnerHistory));
       return;
     }
 
@@ -12889,9 +12910,15 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function renderDashboardFlash(params: URLSearchParams): string {
-    const notice = params.get("notice");
-    const error = params.get("error");
-    const actionRun = params.get("actionRun");
+    return renderDashboardFlashValues({
+      notice: params.get("notice") ?? undefined,
+      error: params.get("error") ?? undefined,
+      actionRun: params.get("actionRun") ?? undefined
+    });
+  }
+
+  function renderDashboardFlashValues(input: {notice?:string;error?:string;actionRun?:string}): string {
+    const {notice, error, actionRun} = input;
     if (!notice && !error) return "";
     const message = error ?? notice ?? "";
     const runLink = actionRun ? `<a class="button secondary" href="/run?id=${encodeURIComponent(actionRun)}">Open Run</a>` : "";
@@ -16441,8 +16468,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, historicalRuns: DashboardRunStatus[], partnerProjects: Array<{id:string;name:string;rootUri:string}>, partnerHistory:Record<string,QueuePartnerHistorySummary>={}): string {
-    const projectFilter = params.get("project")?.trim() || "";
+  function renderQueueHtml(queue: DashboardQueueItem[], projectFilter: string | undefined, flash: {notice?:string;error?:string;actionRun?:string}, historicalRuns: DashboardRunStatus[], partnerProjects: Array<{id:string;name:string;rootUri:string}>, partnerHistory:Record<string,QueuePartnerHistorySummary>={}): string {
+    const resolvedProjectFilter = projectFilter ?? "";
     const active = queue.filter((item) => queueLifecyclePresentation(item).active
       || item.familyAttempts?.some(attempt => ["queued","leased","running"].includes(attempt.status)));
     const recoveryActiveStatuses = new Set(["queued", "leased", "running"]);
@@ -16619,7 +16646,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("queue")}
-    ${renderQueuePartnerOverlay(partnerProjects, projectFilter || ctx.rootDir)}
+    ${renderQueuePartnerOverlay(partnerProjects, resolvedProjectFilter || ctx.rootDir)}
     <main>
       <div class="topbar">
         <div>
@@ -16630,7 +16657,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </div>
         <div class="actions"><a class="button secondary" href="/queue-status">Live status table</a><a class="button secondary" href="/api/queue">JSON</a></div>
       </div>
-      ${renderDashboardFlash(params)}
+      ${renderDashboardFlashValues(flash)}
       ${renderDashboardActionHistory()}
       <section class="panel">
         <div class="meta-grid" data-queue-live-region="counts">
@@ -16641,11 +16668,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
         </div>
         <div class="actions" data-queue-live-region="controls">
-          ${queueProcessForm(projectFilter)}
+          ${queueProcessForm(resolvedProjectFilter)}
           ${expiredLeaseRows.length ? queueRecoverExpiredLeasesForm() : ""}
         </div>
         <form class="workflow-form" method="get" action="/queue">
-          <label class="wide">Project filter<input name="project" value="${escapeHtml(projectFilter)}" placeholder="/path/to/project or blank for all"></label>
+          <label class="wide">Project filter<input name="project" value="${escapeHtml(resolvedProjectFilter)}" placeholder="/path/to/project or blank for all"></label>
           <div class="form-actions"><button type="submit">Filter Queue</button></div>
         </form>
       </section>

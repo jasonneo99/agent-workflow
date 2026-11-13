@@ -10,9 +10,10 @@ const script=(html=render())=>html.match(/<script data-queue-partner-overlay-scr
 const entry=(patch:Record<string,unknown>={})=>({id:'decision-one',familyId:'family-one',runId,title:'Repairing the missing proof',state:'running',kind:'decision',what:'Checking the exact source evidence.',why:'The previous attempt omitted a required proof.',how:'An isolated read-only verifier checks the candidate.',next:'Record actual executed evidence before acceptance.',requiresPermission:false,evidence:[{label:'Run history',url:`/runs?relatedTo=${runId}`}],...patch});
 const report=(entries=[entry()],patch:Record<string,unknown>={})=>({version:1,authority:'evidence-only',scope:{kind:'queue'},capacity:{repair:5,verifier:1},observedAt:'timestamp',entries,watching:['Waiting for the independent verifier; unrelated eligible families may continue.'],truncated:false,...patch});
 const response=(value:unknown)=>({ok:true,json:async()=>value});
+const withoutElements=(html:string,tag:string)=>{let output=html,start=output.indexOf(`<${tag}`);while(start>=0){const end=output.indexOf(`</${tag}>`,start);if(end<0)break;output=output.slice(0,start)+output.slice(end+tag.length+3);start=output.indexOf(`<${tag}`)}return output};
 
 test('Partner presents one accessible chat with no legacy dashboard panels',()=>{
- const html=render(runId),markup=html.replace(/<style>[\s\S]*?<\/style>/g,'').replace(/<script[\s\S]*?<\/script>/g,'');
+ const html=render(runId),markup=withoutElements(withoutElements(html,'style'),'script');
  assert.match(markup,/role="dialog" aria-modal="false"/);assert.match(markup,/aria-controls="queue-partner-overlay" aria-expanded="false"/);
  assert.equal((markup.match(/id="dashboard-question-form"/g)??[]).length,1);
  assert.doesNotMatch(markup,/queue-partner-(?:activity|notices|toast)|Coordinator activity|Live feedback|ops-question-prompts/);

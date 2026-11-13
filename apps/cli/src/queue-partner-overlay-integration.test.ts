@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const code=readFileSync(new URL('./commands/daemon.ts',import.meta.url),'utf8');
 test('queue and exact run pages share one context-bound partner overlay',()=>{
- assert.match(code,/renderQueuePartnerOverlay\(partnerProjects, projectFilter \|\| ctx.rootDir\)/);
+ assert.match(code,/renderQueuePartnerOverlay\(partnerProjects, resolvedProjectFilter \|\| ctx.rootDir\)/);
  assert.match(code,/renderQueuePartnerOverlay\(input.partnerProjects, input.run.projectRootUri, \{runId:input.run.id\}\)/);
  assert.match(code,/partnerProjects: \(await listProjectStorageSummaries\(100\)\).filter\(project => project.rootUri === details.run!\.projectRootUri\)/);
 });

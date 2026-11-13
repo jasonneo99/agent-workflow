@@ -5,6 +5,7 @@ import { renderDashboardQuestionPanel } from "./question-chat.js";
 import { partnerChatHistory } from './partner-chat-state.js';
 
 const render=()=>renderDashboardQuestionPanel([{id:"project-one",name:"Project One",rootUri:"/synthetic/one"}],"/synthetic/one");
+const inlineScript=(html:string)=>{const start=html.indexOf('<script>'),end=html.lastIndexOf('</script>');return start>=0&&end>start?html.slice(start+8,end):undefined};
 
 test('run context is bounded evidence and never a project or action authority',()=>{
  const runId='11111111-1111-4111-8111-111111111111';
@@ -33,7 +34,7 @@ test("Partner is one accessible conversation with persistent chat and composer c
 });
 
 test("rendered queue partner script parses and all responses use text nodes",()=>{
-  const html=render(),script=html.match(/<script>([\s\S]*)<\/script>/u)?.[1];
+  const html=render(),script=inlineScript(html);
   assert.ok(script);assert.doesNotThrow(()=>new Script(script));
   assert.match(script,/document.createTextNode/);
   assert.match(script,/node.textContent=text/);
@@ -74,7 +75,7 @@ test("client history stays within server turn and character budgets",()=>{
 test("untrusted project display and ID never inject markup or script",()=>{
   const attack='</option><script>alert("x")</script>';
   const html=renderDashboardQuestionPanel([{id:attack,name:attack,rootUri:"/synthetic"}],"/synthetic");
-  assert.equal((html.match(/<script>/gu)??[]).length,1);
+  assert.equal(html.split('<script>').length-1,1);
   assert.ok(!html.includes(attack));
   assert.ok(html.includes('id="dashboard-question-thread"'));
   assert.ok(!html.includes("/queue?project="+encodeURIComponent(attack)));

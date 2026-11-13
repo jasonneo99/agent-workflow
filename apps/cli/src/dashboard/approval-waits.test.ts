@@ -23,6 +23,7 @@ test('approve-only stays held with an explicit execute button; manual decisions 
 });
 test('approval payloads and request labels cannot inject HTML or forms',()=>{
  const html=renderApprovalWait({...wait,stageId:'<img src=x>',approvals:[{...wait.approvals[0],id:'\"><form action="evil">',target:'<script>evil()</script>',payload:{value:'</pre><script>evil()</script>'}}]},()=>true);
- assert.doesNotMatch(html,/<script>|<img|action="evil"/);assert.match(html,/&lt;script&gt;/);
+ const normalized=html.toLowerCase();
+ assert.equal(normalized.includes('<script>'),false);assert.equal(normalized.includes('<img'),false);assert.equal(normalized.includes('action="evil"'),false);assert.equal(html.includes('&lt;script&gt;'),true);
  assert.equal(renderApprovalWait(null,()=>true),'');
 });
