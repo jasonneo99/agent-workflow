@@ -47,4 +47,8 @@ test("normalizeProviderRef maps aliases and normalizes unknown providers", () =>
   assert.equal(normalizeProviderRef("LM Studio"), "local");
   assert.equal(normalizeProviderRef("Bring Your Own Model"), "byo");
   assert.equal(normalizeProviderRef("Google Gemini"), "gemini");
+  assert.equal(normalizeProviderRef("Groq"), "groq");
+  assert.equal(normalizeProviderRef("openai/gpt-oss-120b"), "groq");
+  assert.equal(normalizeProviderRef("OpenRouter"), "openrouter");
+  assert.equal(normalizeProviderRef("google/gemma-4-31b-it:free"), "openrouter");
 });

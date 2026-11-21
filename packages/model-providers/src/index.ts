@@ -2,11 +2,13 @@ import { BedrockProvider } from "./bedrock.js";
 import { CodexCliProvider } from "./codex-cli.js";
 import { DeepSeekProvider } from "./deepseek.js";
 import { GeminiProvider } from "./gemini.js";
+import { GroqProvider } from "./groq.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { MuseProvider } from "./muse.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
+import { OpenRouterProvider } from "./openrouter.js";
 import type { ModelProvider } from "./types.js";
 
 export * from "./local-routing-recommendations.js";
@@ -47,6 +49,14 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "gemini") {
     return new GeminiProvider();
+  }
+
+  if (provider === "groq") {
+    return new GroqProvider();
+  }
+
+  if (provider === "openrouter") {
+    return new OpenRouterProvider();
   }
 
   if (provider === "openai-compatible") {
@@ -107,6 +117,12 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
     return "gemini";
+  }
+  if (process.env.GROQ_API_KEY) {
+    return "groq";
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    return "openrouter";
   }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";

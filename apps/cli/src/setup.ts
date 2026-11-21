@@ -218,7 +218,7 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
 
   if (answers.provider === "auto") {
     lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
-    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,deepseek,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
+    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,deepseek,gemini,groq,openrouter,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
     lines.push("AGENTFLOW_MODEL_POLICY=best-coding");
   }
 

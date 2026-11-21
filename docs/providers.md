@@ -38,6 +38,8 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
 | `deepseek` | DeepSeek Flash through the hosted OpenAI-compatible API | `DEEPSEEK_API_KEY`, optional `DEEPSEEK_MODEL` |
 | `gemini` | Google Gemini through the official OpenAI-compatible endpoint | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
+| `groq` | Groq fast inference through the OpenAI-compatible API (free tier) | `GROQ_API_KEY`, optional `GROQ_MODEL` |
+| `openrouter` | OpenRouter free `:free` models through the OpenAI-compatible API | `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL` |
 | `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
@@ -196,6 +198,64 @@ Gemini-native feature. This adapter intentionally covers portable text stages
 and file summaries; Gemini-specific grounding, Files API, and native tools are
 outside its contract. Do not commit keys or put them in runtime artifacts.
 
+### Groq provider
+
+Create a Groq API key at console.groq.com and keep it only in the local
+`.env`. Groq's API is OpenAI-compatible, so the dedicated adapter shares the
+structured stage-artifact, usage, routing, fallback, and receipt contract
+used by other hosted providers. The default model is the free-tier
+`openai/gpt-oss-120b` (Free plan: 30 requests/min, 1,000 requests/day,
+200K tokens/day, no card required):
+
+```env
+DEFAULT_MODEL_PROVIDER=groq
+GROQ_API_KEY=your-groq-api-key
+# GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=openai/gpt-oss-120b
+GROQ_MODEL_FAST=openai/gpt-oss-120b
+GROQ_MODEL_STANDARD=openai/gpt-oss-120b
+GROQ_MODEL_REASONING=openai/gpt-oss-120b
+```
+
+```bash
+npm run agentflow -- provider-use groq --check
+npm run agentflow -- contract-test --provider groq --live-provider
+```
+
+Free-tier requests are rate-limited per organization, and the free model
+catalog changes over time; pin an exact model id with `GROQ_MODEL` when you
+need reproducible runs. Do not commit keys or put them in runtime artifacts.
+
+### OpenRouter provider
+
+Create an OpenRouter API key at openrouter.ai and keep it only in the local
+`.env`. OpenRouter's API is OpenAI-compatible, so the dedicated adapter shares
+the structured stage-artifact, usage, routing, fallback, and receipt contract
+used by other hosted providers. The default model is the free
+`google/gemma-4-31b-it:free` variant. Free `:free` variants carry
+per-minute/per-day request caps gated by credits purchased (50 requests/day
+with no credits purchased, 1,000/day once at least $10 of credits has been
+purchased), and the `:free` roster rotates, so pin an exact model id with
+`OPENROUTER_MODEL` when you need reproducible runs:
+
+```env
+DEFAULT_MODEL_PROVIDER=openrouter
+OPENROUTER_API_KEY=your-openrouter-api-key
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
+OPENROUTER_MODEL_FAST=google/gemma-4-31b-it:free
+OPENROUTER_MODEL_STANDARD=google/gemma-4-31b-it:free
+OPENROUTER_MODEL_REASONING=google/gemma-4-31b-it:free
+```
+
+```bash
+npm run agentflow -- provider-use openrouter --check
+npm run agentflow -- contract-test --provider openrouter --live-provider
+```
+
+A stronger free alternative is `nvidia/nemotron-3-ultra-550b-a55b:free`.
+Do not commit keys or put them in runtime artifacts.
+
 ### AWS Bedrock provider
 
 Bedrock uses the AWS SDK credential chain and the Bedrock Converse API. For a
@@ -243,7 +303,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,groq,openrouter,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding

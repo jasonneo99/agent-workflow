@@ -207,6 +207,10 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         console.log("Using DeepSeek's hosted OpenAI-compatible API. Requires DEEPSEEK_API_KEY; DEEPSEEK_MODEL defaults to deepseek-flash.");
       } else if (providerId === "gemini") {
         console.log("Using Gemini through Google's official OpenAI-compatible endpoint. Requires GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL defaults to gemini-3.8-flash.");
+      } else if (providerId === "groq") {
+        console.log("Using Groq's hosted OpenAI-compatible API. Requires GROQ_API_KEY; GROQ_MODEL defaults to openai/gpt-oss-120b (free tier).");
+      } else if (providerId === "openrouter") {
+        console.log("Using OpenRouter's hosted OpenAI-compatible API. Requires OPENROUTER_API_KEY; OPENROUTER_MODEL defaults to google/gemma-4-31b-it:free (free tier).");
       } else if (providerId === "muse") {
         console.log("Using Meta Muse via the Meta Model API. Requires MUSE_API_KEY. MUSE_MODEL defaults to muse-spark-1.1.");
       } else if (providerId === "auto") {

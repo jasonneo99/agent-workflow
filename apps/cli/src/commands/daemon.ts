@@ -418,7 +418,7 @@ type DashboardHomeHealth = {
 };
 
 type DashboardModelCatalogProvider = {
-  providerId: "openai" | "anthropic" | "deepseek" | "gemini" | "byo" | "openai-compatible" | "bedrock";
+  providerId: "openai" | "anthropic" | "deepseek" | "gemini" | "groq" | "openrouter" | "byo" | "openai-compatible" | "bedrock";
   label: string;
   configured: boolean;
   status: "ready" | "missing" | "not configured";
@@ -7747,6 +7747,32 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         apiKeyStatus: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? "configured" : "missing",
         loadModels: () => loadOpenAICompatibleModelIds(process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/", process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
         configuredForTier: (tier) => process.env[`GEMINI_MODEL_${tier.toUpperCase()}`] || process.env.GEMINI_MODEL || "gemini-3.8-flash"
+      }),
+      loadProviderCatalogExplanation({
+        providerId: "groq",
+        label: "Groq",
+        configured: Boolean(process.env.GROQ_API_KEY),
+        catalogProvider: "compatible",
+        catalogSource: "Groq OpenAI-compatible /models",
+        modelEnv: "GROQ_MODEL",
+        configuredModel: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
+        baseUrl: safeDisplayUrl(process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1"),
+        apiKeyStatus: process.env.GROQ_API_KEY ? "configured" : "missing",
+        loadModels: () => loadOpenAICompatibleModelIds(process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1", process.env.GROQ_API_KEY),
+        configuredForTier: (tier) => process.env[`GROQ_MODEL_${tier.toUpperCase()}`] || process.env.GROQ_MODEL || "openai/gpt-oss-120b"
+      }),
+      loadProviderCatalogExplanation({
+        providerId: "openrouter",
+        label: "OpenRouter",
+        configured: Boolean(process.env.OPENROUTER_API_KEY),
+        catalogProvider: "compatible",
+        catalogSource: "OpenRouter OpenAI-compatible /models",
+        modelEnv: "OPENROUTER_MODEL",
+        configuredModel: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
+        baseUrl: safeDisplayUrl(process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"),
+        apiKeyStatus: process.env.OPENROUTER_API_KEY ? "configured" : "missing",
+        loadModels: () => loadOpenAICompatibleModelIds(process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1", process.env.OPENROUTER_API_KEY),
+        configuredForTier: (tier) => process.env[`OPENROUTER_MODEL_${tier.toUpperCase()}`] || process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free"
       }),
       loadProviderCatalogExplanation({
         providerId: "byo",
@@ -20395,7 +20421,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const updates: Record<string, string> = {
       DEFAULT_MODEL_PROVIDER: provider,
       AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,deepseek,gemini,openai,anthropic,openai-compatible,kiro",
+      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,deepseek,gemini,groq,openrouter,openai,anthropic,openai-compatible,kiro",
       AGENTFLOW_PROVIDER_FAST: fastProvider,
       AGENTFLOW_PROVIDER_STANDARD: standardProvider,
       AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
