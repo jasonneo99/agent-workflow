@@ -276,21 +276,44 @@ function studioScript(): string {
         } catch (error) { devLog('<div class="dev-note dev-error">Stream failed: ' + esc(error.message) + '</div>'); }
         dev.streaming = false;
       }
+      function devSplitHunks(diffText) {
+        const hunks = [];
+        let current = null;
+        for (const line of String(diffText || "").split("\n")) {
+          if (line.startsWith("@@ ")) { current = { header: line, lines: [] }; hunks.push(current); continue; }
+          if (current) current.lines.push(line);
+        }
+        return hunks;
+      }
       async function devLoadDiffs() {
         if (!dev.sessionId) return;
         try {
           const detail = await fetchJson("/api/dev-session/" + dev.sessionId);
           const diffs = detail.diffs || [];
+          const hunksByDiff = new Map((detail.hunks || []).map((entry) => [entry.diffId, entry.hunks || []]));
           $("dev-diffs").hidden = !diffs.length;
-          $("dev-diff-list").innerHTML = diffs.map((diff) => '<article class="dev-diff"><strong>' + esc(diff.path) + '</strong><span>' + esc(diff.status) + '</span><pre>' + esc(diff.diffText || "") + '</pre><div class="dev-diff-actions"><button type="button" data-dev-accept="' + esc(diff.id) + '">Accept</button><button type="button" data-dev-reject="' + esc(diff.id) + '">Reject</button></div></article>').join("");
-          document.querySelectorAll("[data-dev-accept]").forEach((button) => button.addEventListener("click", () => devDecideDiff(button.dataset.devAccept, "accept")));
-          document.querySelectorAll("[data-dev-reject]").forEach((button) => button.addEventListener("click", () => devDecideDiff(button.dataset.devReject, "reject")));
+          $("dev-diff-list").innerHTML = diffs.map((diff) => {
+            const hunks = devSplitHunks(diff.diffText);
+            const tracked = hunksByDiff.get(diff.id) || [];
+            const hunkHtml = hunks.map((hunk, index) => {
+              const status = tracked[index] ? tracked[index].status : "proposed";
+              const actions = status === "proposed"
+                ? '<div class="dev-diff-actions"><button type="button" data-dev-diff="' + esc(diff.id) + '" data-dev-hunk="' + index + '" data-dev-decision="accept">Accept hunk</button><button type="button" data-dev-diff="' + esc(diff.id) + '" data-dev-hunk="' + index + '" data-dev-decision="reject">Reject hunk</button></div>'
+                : "";
+              return '<div class="dev-hunk"><div class="dev-hunk-head"><span>' + esc(hunk.header) + '</span><span>' + esc(status) + '</span></div><pre>' + esc(hunk.lines.join("\n")) + '</pre>' + actions + '</div>';
+            }).join("");
+            const fileActions = diff.status === "proposed"
+              ? '<div class="dev-diff-actions"><button type="button" data-dev-diff="' + esc(diff.id) + '" data-dev-decision="accept">Accept all</button><button type="button" data-dev-diff="' + esc(diff.id) + '" data-dev-decision="reject">Reject all</button></div>'
+              : "";
+            return '<article class="dev-diff"><strong>' + esc(diff.path) + '</strong><span>' + esc(diff.status) + '</span>' + fileActions + hunkHtml + '</article>';
+          }).join("");
+          document.querySelectorAll("[data-dev-diff]").forEach((button) => button.addEventListener("click", () => devDecideDiff(button.dataset.devDiff, button.dataset.devDecision, button.dataset.devHunk === undefined ? undefined : Number(button.dataset.devHunk))));
         } catch { /* diffs stay as they are until the next turn */ }
       }
-      async function devDecideDiff(diffId, decision) {
+      async function devDecideDiff(diffId, decision, hunkIndex) {
         if (!dev.sessionId) return;
         try {
-          const response = await fetch("/api/dev-session/" + dev.sessionId + "/diff/" + diffId, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ decision }) });
+          const response = await fetch("/api/dev-session/" + dev.sessionId + "/diff/" + diffId, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ decision, ...(hunkIndex === undefined ? {} : { hunkIndex }) }) });
           if (!response.ok) throw new Error(await response.text());
           await devLoadDiffs();
         } catch (error) { devLog('<div class="dev-note dev-error">Could not ' + esc(decision) + ' the change: ' + esc(error.message) + '</div>'); }
@@ -722,6 +745,9 @@ function studioCss(): string {
     .dev-diff strong { font-size: 12px; }
     .dev-diff span { margin-left: 8px; color: var(--faint); font-size: 11px; }
     .dev-diff pre { max-height: 240px; overflow: auto; margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+    .dev-hunk { border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 10px; }
+    .dev-hunk-head { display: flex; justify-content: space-between; gap: 10px; color: var(--faint); font-size: 11px; }
+    .dev-hunk pre { margin: 8px 0; }
     .dev-diff-actions { display: flex; gap: 8px; }
     .dev-composer { border-top: 1px solid var(--line); padding-top: 12px; }
     .dev-composer > label { display: block; margin: 0 0 7px 2px; color: #c4cbc7; font-size: 10px; font-weight: 650; }

@@ -5,13 +5,31 @@
  * renders the proposal, and Accept applies it per file or per hunk via
  * `applyDiffHunk` / `applyUnifiedDiff`, both of which verify the preimage
  * (context and removed lines must match the current file) before changing
- * anything. Line arrays keep a trailing "" element for content ending in a
- * newline, so joining reproduces the file byte-for-byte.
+ * anything.
+ *
+ * Line model: diffs are built in the same model as the repo's
+ * `applyUnifiedPatch` — a trailing newline terminates the last line rather
+ * than starting an empty one — so proposal diffs round-trip through the
+ * repo's patch tools. A final line that lacks its trailing newline is
+ * marked with the standard "\ No newline at end of file" marker, so
+ * apply/invert reproduce it exactly. `applyDiffHunk` itself splits content
+ * keeping a trailing "" element, which always sits outside every hunk
+ * range, so the file's trailing newline survives application unchanged.
+ * The one gap this leaves: a change that ONLY adds or removes a trailing
+ * newline on an otherwise unchanged last line produces no diff and is
+ * reported as no change.
  */
 
 export interface DiffLine {
   type: " " | "-" | "+";
   text: string;
+  /**
+   * "\ No newline at end of file" for this line: for '+' lines the new side
+   * lacks a trailing newline, for '-' lines the old side does, and for ' '
+   * lines both sides do. A shared last line whose two sides disagree on the
+   * trailing newline is not marked (that difference alone produces no diff).
+   */
+  noNewline?: boolean;
 }
 
 export interface DiffHunk {
@@ -28,6 +46,14 @@ const DIFF_MAX_LINES = 2000;
 
 export function splitDiffLines(content: string): string[] {
   return content === "" ? [] : content.split("\n");
+}
+
+/** Lines in the repo patch model: a trailing newline terminates the last line. */
+export function splitPatchLines(content: string): string[] {
+  if (content === "") return [];
+  const lines = content.split("\n");
+  if (content.endsWith("\n")) lines.pop();
+  return lines;
 }
 
 function joinDiffLines(lines: string[]): string {
@@ -88,7 +114,7 @@ function formatRange(start: number, count: number): string {
   return count === 1 ? `${start}` : `${start},${count}`;
 }
 
-function buildHunks(ops: EditOp[]): DiffHunk[] {
+function buildHunks(ops: EditOp[], originalEndsWithNewline: boolean, proposedEndsWithNewline: boolean): DiffHunk[] {
   // Group ops into hunks: a change plus DIFF_CONTEXT_LINES of context on
   // each side; merge hunks whose context would overlap.
   const changeIndexes = ops.map((op, index) => (op.kind === "equal" ? -1 : index)).filter((index) => index >= 0);
@@ -132,6 +158,17 @@ function buildHunks(ops: EditOp[]): DiffHunk[] {
         newCount += 1;
       }
     }
+    // A hunk reaching the end of the file marks a final line that lacks its
+    // trailing newline, so apply/invert reproduce it exactly.
+    if (group.end === ops.length) {
+      const lastOld = [...lines].reverse().find((line) => line.type === " " || line.type === "-");
+      const lastNew = [...lines].reverse().find((line) => line.type === " " || line.type === "+");
+      if (lastOld?.type === "-" && !originalEndsWithNewline) lastOld.noNewline = true;
+      if (lastNew?.type === "+" && !proposedEndsWithNewline) lastNew.noNewline = true;
+      if (lastOld === lastNew && lastOld?.type === " " && !originalEndsWithNewline && !proposedEndsWithNewline) {
+        lastOld.noNewline = true;
+      }
+    }
     // A hunk that only adds at the start of an empty file starts at line 0.
     const header = `@@ -${oldCount === 0 ? "0,0" : formatRange(oldStart, oldCount)} +${newCount === 0 ? "0,0" : formatRange(newStart, newCount)} @@`;
     return { header, oldStart: oldCount === 0 ? 0 : oldStart, oldCount, newStart: newCount === 0 ? 0 : newStart, newCount, lines };
@@ -140,11 +177,11 @@ function buildHunks(ops: EditOp[]): DiffHunk[] {
 
 export function buildUnifiedDiff(path: string, original: string, proposed: string): string {
   if (original === proposed) return "";
-  const ops = diffLineOps(splitDiffLines(original), splitDiffLines(proposed));
-  const hunks = buildHunks(ops);
+  const ops = diffLineOps(splitPatchLines(original), splitPatchLines(proposed));
+  const hunks = buildHunks(ops, original.endsWith("\n") || original === "", proposed.endsWith("\n") || proposed === "");
   const header = original === "" ? `--- /dev/null\n+++ b/${path}` : `--- a/${path}\n+++ b/${path}`;
   const body = hunks
-    .map((hunk) => `${hunk.header}\n${hunk.lines.map((line) => `${line.type}${line.text}`).join("\n")}`)
+    .map((hunk) => `${hunk.header}\n${hunk.lines.map((line) => `${line.type}${line.text}${line.noNewline ? "\n\\ No newline at end of file" : ""}`).join("\n")}`)
     .join("\n");
   return `${header}\n${body}\n`;
 }
@@ -169,7 +206,11 @@ export function parseDiffHunks(diffText: string): DiffHunk[] {
       continue;
     }
     if (!current) continue;
-    if (rawLine.startsWith("\\")) continue;
+    if (rawLine.startsWith("\\")) {
+      const previous = current.lines.at(-1);
+      if (previous) previous.noNewline = true;
+      continue;
+    }
     const type = rawLine[0];
     if (type === " " || type === "-" || type === "+") {
       current.lines.push({ type, text: rawLine.slice(1) });
@@ -199,7 +240,22 @@ export function applyDiffHunk(original: string, hunk: DiffHunk): string {
     throw new Error(`Diff hunk length mismatch: ${hunk.header}`);
   }
   const replacement = hunk.lines.filter((line) => line.type !== "-").map((line) => line.text);
-  return joinDiffLines([...lines.slice(0, startIndex), ...replacement, ...lines.slice(startIndex + hunk.oldCount)]);
+  let result = joinDiffLines([...lines.slice(0, startIndex), ...replacement, ...lines.slice(startIndex + hunk.oldCount)]);
+  // A hunk reaching the end of the file decides the result's trailing
+  // newline: an added final line without a marker means the new file ends
+  // with a newline; a marked one means it does not. A context final line
+  // keeps the original's trailing newline.
+  const hasTrailingNewline = original.endsWith("\n");
+  const realLines = hasTrailingNewline ? lines.length - 1 : lines.length;
+  if (startIndex + hunk.oldCount >= realLines) {
+    const lastNew = [...hunk.lines].reverse().find((line) => line.type === " " || line.type === "+");
+    if (lastNew) {
+      const newHasTrailing = lastNew.type === "+" ? lastNew.noNewline !== true : lastNew.noNewline === true ? false : hasTrailingNewline;
+      if (newHasTrailing && result !== "" && !result.endsWith("\n")) result += "\n";
+      if (!newHasTrailing && result.endsWith("\n")) result = result.slice(0, -1);
+    }
+  }
+  return result;
 }
 
 /** Apply every hunk in a unified diff, last hunk first so line numbers hold. */
@@ -210,4 +266,47 @@ export function applyUnifiedDiff(original: string, diffText: string): string {
     content = applyDiffHunk(content, hunk);
   }
   return content;
+}
+
+/**
+ * Recover the preimage of a unified diff: apply every hunk backwards, last
+ * hunk first, verifying the new-side lines match. The exact inverse of
+ * applyUnifiedDiff for diffs built by buildUnifiedDiff, including new-file
+ * diffs (whose preimage is the empty string).
+ */
+export function invertUnifiedDiff(proposed: string, diffText: string): string {
+  const hunks = parseDiffHunks(diffText);
+  const lines = splitDiffLines(proposed);
+  for (const hunk of [...hunks].reverse()) {
+    const startIndex = hunk.newStart === 0 ? 0 : hunk.newStart - 1;
+    if (startIndex < 0 || startIndex > lines.length) {
+      throw new Error(`Diff hunk starts outside the file: ${hunk.header}`);
+    }
+    const newSide = hunk.lines.filter((line) => line.type !== "-").map((line) => line.text);
+    const oldSide = hunk.lines.filter((line) => line.type !== "+").map((line) => line.text);
+    for (const [offset, text] of newSide.entries()) {
+      if (lines[startIndex + offset] !== text) {
+        throw new Error(
+          `Diff hunk does not invert cleanly at line ${startIndex + offset + 1}: expected ${JSON.stringify(text)}, found ${JSON.stringify(lines[startIndex + offset] ?? "")}.`
+        );
+      }
+    }
+    if (newSide.length !== hunk.newCount) {
+      throw new Error(`Diff hunk length mismatch: ${hunk.header}`);
+    }
+    // EOF state of the working content before this hunk is inverted.
+    const workingHasTrailingNewline = lines.length > 0 && lines.at(-1) === "";
+    const realLines = workingHasTrailingNewline ? lines.length - 1 : lines.length;
+    const reachesEnd = startIndex + hunk.newCount >= realLines;
+    lines.splice(startIndex, newSide.length, ...oldSide);
+    if (reachesEnd) {
+      const lastOld = [...hunk.lines].reverse().find((line) => line.type === " " || line.type === "-");
+      if (lastOld) {
+        const oldHasTrailing = lastOld.type === "-" ? lastOld.noNewline !== true : lastOld.noNewline === true ? false : workingHasTrailingNewline;
+        if (oldHasTrailing && lines.length > 0 && lines.at(-1) !== "") lines.push("");
+        if (!oldHasTrailing && lines.length > 0 && lines.at(-1) === "") lines.pop();
+      }
+    }
+  }
+  return joinDiffLines(lines);
 }

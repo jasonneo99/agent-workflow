@@ -110,6 +110,21 @@ export const devSessionSchemaSql = `
   );
   CREATE INDEX IF NOT EXISTS dev_session_approvals_session_idx
   ON dev_session_approvals(session_id, created_at);
+  CREATE TABLE IF NOT EXISTS dev_session_diff_hunks (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    diff_id uuid NOT NULL REFERENCES dev_session_diffs(id) ON DELETE CASCADE,
+    hunk_index integer NOT NULL,
+    header text NOT NULL DEFAULT '',
+    status text NOT NULL DEFAULT 'proposed',
+    decided_by text,
+    decided_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT dev_session_diff_hunks_status_check CHECK (status IN ('proposed', 'accepted', 'rejected')),
+    UNIQUE(diff_id, hunk_index)
+  );
+  CREATE INDEX IF NOT EXISTS dev_session_diff_hunks_diff_idx
+  ON dev_session_diff_hunks(diff_id, hunk_index);
 `;
 
 export interface DevSession {
@@ -684,5 +699,76 @@ export async function consumeDevSessionApproval(approvalId: string): Promise<voi
        where id = $1::uuid and status = 'approved' and consumed_at is null`,
       [approvalId]
     );
+  });
+}
+
+export interface DevSessionDiffHunk {
+  id: string;
+  diffId: string;
+  hunkIndex: number;
+  header: string;
+  status: "proposed" | "accepted" | "rejected";
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function diffHunkFromRow(row: Record<string, unknown>): DevSessionDiffHunk {
+  return {
+    id: row.id as string,
+    diffId: row.diff_id as string,
+    hunkIndex: row.hunk_index as number,
+    header: row.header as string,
+    status: row.status as DevSessionDiffHunk["status"],
+    decidedBy: (row.decided_by as string | null) ?? null,
+    decidedAt: row.decided_at ? (row.decided_at as Date).toISOString() : null,
+    createdAt: (row.created_at as Date).toISOString(),
+    updatedAt: (row.updated_at as Date).toISOString()
+  };
+}
+
+/** Replace a diff's hunk rows with fresh proposed rows for the given headers. */
+export async function syncDevSessionDiffHunks(diffId: string, headers: string[]): Promise<DevSessionDiffHunk[]> {
+  return withClient(async (client) => {
+    await client.query(`delete from dev_session_diff_hunks where diff_id = $1::uuid`, [diffId]);
+    const rows: DevSessionDiffHunk[] = [];
+    for (const [index, header] of headers.entries()) {
+      const result = await client.query(
+        `insert into dev_session_diff_hunks (diff_id, hunk_index, header)
+         values ($1::uuid, $2, $3) returning *`,
+        [diffId, index, header]
+      );
+      rows.push(diffHunkFromRow(result.rows[0] as Record<string, unknown>));
+    }
+    return rows;
+  });
+}
+
+export async function listDevSessionDiffHunks(diffId: string): Promise<DevSessionDiffHunk[]> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `select * from dev_session_diff_hunks where diff_id = $1::uuid order by hunk_index asc`,
+      [diffId]
+    );
+    return result.rows.map((row) => diffHunkFromRow(row as Record<string, unknown>));
+  });
+}
+
+export async function setDevSessionDiffHunkDecision(input: {
+  diffId: string;
+  hunkIndex: number;
+  status: "accepted" | "rejected";
+  decidedBy: string;
+}): Promise<DevSessionDiffHunk | null> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `update dev_session_diff_hunks
+       set status = $3, decided_by = $4, decided_at = now(), updated_at = now()
+       where diff_id = $1::uuid and hunk_index = $2 and status = 'proposed' returning *`,
+      [input.diffId, input.hunkIndex, input.status, input.decidedBy]
+    );
+    if (!result.rows.length) return null;
+    return diffHunkFromRow(result.rows[0] as Record<string, unknown>);
   });
 }

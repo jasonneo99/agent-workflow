@@ -4,7 +4,7 @@ import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval } from "../../policy-engine/src/index.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertWorkerCommand } from "../../local-tools/src/controller-commands.js";
-import { buildUnifiedDiff } from "../../local-tools/src/file-diff.js";
+import { buildUnifiedDiff, parseDiffHunks } from "../../local-tools/src/file-diff.js";
 import { applyUnifiedPatch, normalizeRequestedFileMutation } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { assertFileWriteAllowed } from "../../local-tools/src/file-writer.js";
@@ -14,6 +14,7 @@ import {
   appendDevSessionReceipt,
   consumeDevSessionApproval,
   createDevSessionApproval,
+  syncDevSessionDiffHunks,
   upsertDevSessionDiff,
   type DevSession
 } from "../../storage/src/dev-sessions.js";
@@ -406,6 +407,10 @@ export async function executeDevTurnActions(input: DevTurnActionContext): Promis
       diffText,
       payloadHash: sha256Hex(mutation.payload)
     });
+    await syncDevSessionDiffHunks(
+      diff.id,
+      parseDiffHunks(diffText).map((hunk) => hunk.header)
+    );
     input.diffIds.push(diff.id);
     input.toolResults.push(`Proposed a change to ${write.path}. It is not applied; review the diff and accept or reject it.`);
     await input.onEvent({ type: "diff_proposed", turnId, path: write.path, diffId: diff.id });

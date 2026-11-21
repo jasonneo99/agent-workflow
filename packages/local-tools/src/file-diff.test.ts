@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyDiffHunk, applyUnifiedDiff, buildUnifiedDiff, parseDiffHunks } from "./file-diff.js";
+import { applyDiffHunk, applyUnifiedDiff, buildUnifiedDiff, invertUnifiedDiff, parseDiffHunks } from "./file-diff.js";
 
 test("unified diffs round-trip through per-hunk application", () => {
   const original = ["line one", "line two", "line three", "line four", "line five", "line six", "line seven", "line eight", ""].join("\n");
@@ -23,8 +23,9 @@ test("a new file diffs from /dev/null and applies cleanly", () => {
   const proposed = "export const x = 1;\n";
   const diff = buildUnifiedDiff("src/new.ts", "", proposed);
   assert.match(diff, /^--- \/dev\/null\n\+\+\+ b\/src\/new\.ts\n/u);
-  assert.match(diff, /@@ -0,0 \+1,2 @@/u);
+  assert.match(diff, /@@ -0,0 \+1 @@/u);
   assert.equal(applyUnifiedDiff("", diff), proposed);
+  assert.equal(invertUnifiedDiff(proposed, diff), "");
 });
 
 test("identical content produces no diff", () => {
@@ -40,6 +41,27 @@ test("a hunk that does not match the preimage is rejected", () => {
   assert.throws(() => applyDiffHunk("alpha\nbeta\n", hunk), /does not apply cleanly/);
 });
 
+test("inverting a diff recovers the original, including across two hunks", () => {
+  const lines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
+  const original = `${lines.join("\n")}\n`;
+  const changed = [...lines];
+  changed[1] = "CHANGED 2";
+  changed[38] = "CHANGED 39";
+  const proposed = `${changed.join("\n")}\n`;
+  const diff = buildUnifiedDiff("src/big.txt", original, proposed);
+  assert.equal(invertUnifiedDiff(proposed, diff), original);
+  assert.throws(() => invertUnifiedDiff(proposed.replace("CHANGED 2", "WRONG 2"), diff), /does not invert cleanly/);
+});
+
+test("a final line without a trailing newline round-trips through apply and invert", () => {
+  const original = "alpha\nbeta";
+  const proposed = "alpha\nBETA";
+  const diff = buildUnifiedDiff("src/nolf.txt", original, proposed);
+  assert.match(diff, /\\ No newline at end of file/u);
+  assert.equal(applyUnifiedDiff(original, diff), proposed);
+  assert.equal(invertUnifiedDiff(proposed, diff), original);
+  assert.equal(applyUnifiedDiff("", buildUnifiedDiff("src/new.txt", "", "no newline")), "no newline");
+});
 test("distant changes become separate hunks", () => {
   const lines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
   const original = `${lines.join("\n")}\n`;

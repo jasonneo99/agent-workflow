@@ -105,7 +105,7 @@ import { renderQueueStatusHtml } from "../dashboard/queue-status.js";
 import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
-import { createDevSessionFromBody, decideDevSessionApprovalFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
+import { createDevSessionFromBody, decideDevSessionApprovalFromBody, decideDevSessionDiffFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
 import { renderProjectEvidenceHtml } from "../dashboard/project-evidence.js";
 import { renderContextInfluenceHtml } from "../dashboard/context-influence.js";
 import { readContextInfluence } from "../../../../packages/storage/src/context-influence.js";
@@ -4042,6 +4042,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         } else if (request.method === "POST" && devSessionPath.action === "approval") {
           const body = objectValue(await readJsonBody(request, 64_000));
           const decided = await decideDevSessionApprovalFromBody({ sessionId: devSessionPath.id, body });
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify(decided));
+        } else if (request.method === "POST" && devSessionPath.action === "diff" && devSessionPath.target) {
+          const body = objectValue(await readJsonBody(request, 64_000));
+          const decided = await decideDevSessionDiffFromBody({ sessionId: devSessionPath.id, diffId: devSessionPath.target, body });
           response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
           response.end(JSON.stringify(decided));
         } else {

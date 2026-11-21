@@ -4,12 +4,15 @@ import path from "node:path";
 import { loadProjectConfig } from "../../../../packages/agent-registry/src/loaders.js";
 import type { ProjectConfig } from "../../../../packages/agent-registry/src/schemas.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
+import { resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import {
   appendDevSessionReceipt,
   createDevSession,
   decideDevSessionApproval,
   getDevSessionApproval,
+  getDevSessionDiff,
   listDevSessionApprovals,
+  listDevSessionDiffHunks,
   listDevSessionDiffs,
   listDevSessionTurns,
   listDevSessions,
@@ -22,6 +25,7 @@ import {
   runDirectTurn,
   type DevTurnEvent
 } from "../../../../packages/workflow-engine/src/direct-turn.js";
+import { decideDevSessionDiff } from "../../../../packages/workflow-engine/src/dev-diff-decisions.js";
 
 /**
  * HTTP-facing Dev session handlers, called from the dashboard daemon
@@ -30,13 +34,13 @@ import {
  * project, and drives the direct turn loop.
  */
 
-export function parseDevSessionPath(pathname: string): { id: string; action: string } | null {
+export function parseDevSessionPath(pathname: string): { id: string; action: string; target: string } | null {
   const prefix = "/api/dev-session/";
   if (!pathname.startsWith(prefix)) return null;
   const rest = pathname.slice(prefix.length).split("/").filter(Boolean);
-  if (rest.length === 0 || rest.length > 2) return null;
+  if (rest.length === 0 || rest.length > 3) return null;
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(rest[0])) return null;
-  return { id: rest[0], action: rest[1] ?? "" };
+  return { id: rest[0], action: rest[1] ?? "", target: rest[2] ?? "" };
 }
 
 export function formatDevSseEvent(event: DevTurnEvent): string {
@@ -88,6 +92,7 @@ export async function getDevSessionDetail(sessionId: string): Promise<{
   turns: Awaited<ReturnType<typeof listDevSessionTurns>>;
   diffs: Awaited<ReturnType<typeof listDevSessionDiffs>>;
   approvals: Awaited<ReturnType<typeof listDevSessionApprovals>>;
+  hunks: Array<{ diffId: string; hunks: Awaited<ReturnType<typeof listDevSessionDiffHunks>> }>;
 }> {
   const session = await getDevSessionOrThrow(sessionId);
   const [turns, diffs, approvals] = await Promise.all([
@@ -95,7 +100,42 @@ export async function getDevSessionDetail(sessionId: string): Promise<{
     listDevSessionDiffs(session.id),
     listDevSessionApprovals(session.id)
   ]);
-  return { session, turns, diffs, approvals };
+  const hunks = await Promise.all(
+    diffs.map(async (diff) => ({ diffId: diff.id, hunks: await listDevSessionDiffHunks(diff.id) }))
+  );
+  return { session, turns, diffs, approvals, hunks };
+}
+
+/**
+ * Accept or reject a proposed diff, per file or per hunk. The Accept click
+ * is the durable approval: the exact new content is bound through
+ * approved-file-mutation before anything is written.
+ */
+export async function decideDevSessionDiffFromBody(input: {
+  sessionId: string;
+  diffId: string;
+  body: Record<string, unknown>;
+}): Promise<Awaited<ReturnType<typeof decideDevSessionDiff>>> {
+  const decision = stringField(input.body, "decision");
+  if (decision !== "accept" && decision !== "reject") throw new Error("Decision must be accept or reject.");
+  const hunkIndexRaw = input.body.hunkIndex;
+  const hunkIndex =
+    typeof hunkIndexRaw === "number" && Number.isInteger(hunkIndexRaw) && hunkIndexRaw >= 0 ? hunkIndexRaw : undefined;
+  if (hunkIndexRaw !== undefined && hunkIndex === undefined) throw new Error("hunkIndex must be a non-negative integer.");
+  const session = await getDevSessionOrThrow(input.sessionId);
+  const diff = await getDevSessionDiff(input.diffId);
+  if (!diff) throw new Error(`Unknown dev diff: ${input.diffId}`);
+  if (diff.sessionId !== input.sessionId) throw new Error("Diff does not belong to this session.");
+  const { projectDir, project } = await resolveDevProject(session.projectRootUri);
+  const resolved = resolveExecutionPolicy(project, "trusted-personal");
+  return decideDevSessionDiff({
+    diffId: diff.id,
+    decision,
+    hunkIndex,
+    decidedBy: stringField(input.body, "actor") || "dashboard-user",
+    projectDir,
+    project: resolved.project
+  });
 }
 
 /**

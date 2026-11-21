@@ -258,6 +258,21 @@ CREATE TABLE IF NOT EXISTS dev_session_approvals (
 );
 CREATE INDEX IF NOT EXISTS dev_session_approvals_session_idx
 ON dev_session_approvals(session_id, created_at);
+CREATE TABLE IF NOT EXISTS dev_session_diff_hunks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  diff_id uuid NOT NULL REFERENCES dev_session_diffs(id) ON DELETE CASCADE,
+  hunk_index integer NOT NULL,
+  header text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'proposed',
+  decided_by text,
+  decided_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT dev_session_diff_hunks_status_check CHECK (status IN ('proposed', 'accepted', 'rejected')),
+  UNIQUE(diff_id, hunk_index)
+);
+CREATE INDEX IF NOT EXISTS dev_session_diff_hunks_diff_idx
+ON dev_session_diff_hunks(diff_id, hunk_index);
 
 CREATE TABLE IF NOT EXISTS suspend_resume_threads (
   thread_id text PRIMARY KEY,
