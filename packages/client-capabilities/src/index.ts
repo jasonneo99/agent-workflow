@@ -17,6 +17,7 @@ export function buildClientCapabilityContract(runtimeVersion: string): AgentWork
       "orchestration.one-goal": { supported: true, semantics: "Agent Workflow owns decomposition, execution, retries, approvals, validation, and terminal state." },
       "progress.server-sent-events": { supported: true, semantics: "Clients may render bounded progress but do not infer completion." },
       "promotion.review": { supported: true, semantics: "Approve, defer, and reject decisions are receipted and reversible." },
+      "dev-mode.direct-turns": { supported: true, semantics: "Studio Dev mode: the daemon supports dev sessions, direct agent turns, and per-hunk diff review over Postgres-backed session storage." },
       "approval.remote-mutation": { supported: false, semantics: "Remote mutation remains disabled unless governed server policy explicitly enables it." },
       "workflow.client-side-execution": { supported: false, semantics: "Clients submit intent and render evidence; they do not duplicate workflow stages." }
     }

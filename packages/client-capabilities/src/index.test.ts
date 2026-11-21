@@ -7,6 +7,7 @@ test("client capability contract is versioned and keeps orchestration authoritat
   assert.equal(contract.schemaVersion, 1);
   assert.equal(contract.runtimeVersion, "0.4.6");
   assert.equal(contract.capabilities["orchestration.one-goal"].supported, true);
+  assert.equal(contract.capabilities["dev-mode.direct-turns"].supported, true);
   assert.equal(contract.capabilities["workflow.client-side-execution"].supported, false);
   assert.equal(contract.capabilities["approval.remote-mutation"].supported, false);
 });

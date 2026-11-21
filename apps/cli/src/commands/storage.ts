@@ -8,6 +8,7 @@ import { buildObjectArtifactProofReport, execMcText, formatOfflineFallbackQueue,
 import { loadAgentRecords, loadProjectConfig, loadWorkflowRecords } from "../../../../packages/agent-registry/src/loaders.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
+import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
 import { formatStorageMergeImportResult, runStorageMergeImport } from "../../../../packages/storage/src/merge-importer.js";
 import { type StorageProjectConflictReport, buildStorageMergeManifest, buildStorageProjectConflictReport, formatStorageMergeManifest } from "../../../../packages/storage/src/merge-manifest.js";
 import { type StorageMigrationPlan, buildStorageMigrationPlan, formatStorageMigrationPlan, storageMigrationScript } from "../../../../packages/storage/src/migration-plan.js";
@@ -287,8 +288,13 @@ export function registerStorageCommands(program: Command, ctx: CliContext): void
   program
     .command("migrate-storage")
     .description("Apply additive enterprise storage migrations")
-    .action(async () => {
-      const serviceChecks = await checkServices();
+    .option("--postgres-only", "check Postgres only; skip the Redis and S3 reachability gates (Studio Dev mode: dev sessions are Postgres-only)")
+    .action(async (options: { postgresOnly?: boolean }) => {
+      const serviceChecks = await checkServices(
+        options.postgresOnly
+          ? defaultServiceEndpoints().filter((endpoint) => endpoint.name === "Postgres + pgvector")
+          : undefined
+      );
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
         for (const check of missing) {
@@ -299,7 +305,7 @@ export function registerStorageCommands(program: Command, ctx: CliContext): void
       }
 
       await migrateStorage();
-      console.log("Storage migrations applied.");
+      console.log(options.postgresOnly ? "Postgres storage migrations applied." : "Storage migrations applied.");
     });
 
   program
