@@ -258,7 +258,10 @@ function studioScript(): string {
             if (type === "token") bubble.textContent += event.text || "";
             if (type === "tool_call") devLog('<div class="dev-note">Tool ' + esc(event.tool) + ' → ' + esc(event.target) + ' (' + esc(event.status) + ')</div>');
             if (type === "diff_proposed") devLoadDiffs();
-            if (type === "turn_awaiting_approval") devLog('<div class="dev-note dev-warn">Paused: ' + esc(event.actionType) + ' ' + esc(event.target) + ' needs approval. ' + esc(event.reason || "") + '</div>');
+            if (type === "turn_awaiting_approval") {
+              devLog('<div class="dev-note dev-warn">Paused: ' + esc(event.actionType) + ' ' + esc(event.target) + ' needs approval. ' + esc(event.reason || "") + '</div><div class="dev-approval"><button type="button" data-dev-approval="' + esc(event.approvalId) + '" data-dev-decision="approved" data-dev-action-type="' + esc(event.actionType) + '" data-dev-target="' + esc(event.target) + '">Approve once</button><button type="button" data-dev-approval="' + esc(event.approvalId) + '" data-dev-decision="rejected" data-dev-action-type="' + esc(event.actionType) + '" data-dev-target="' + esc(event.target) + '">Reject</button></div>');
+              document.querySelectorAll("[data-dev-approval]").forEach((button) => button.addEventListener("click", () => devDecideApproval(button.dataset.devApproval, button.dataset.devDecision, button.dataset.devActionType, button.dataset.devTarget)));
+            }
             if (type === "turn_failed") devLog('<div class="dev-note dev-error">Turn failed: ' + esc(event.error || "unknown error") + '</div>');
             if (type === "turn_completed") devLoadDiffs();
           };
@@ -291,6 +294,16 @@ function studioScript(): string {
           if (!response.ok) throw new Error(await response.text());
           await devLoadDiffs();
         } catch (error) { devLog('<div class="dev-note dev-error">Could not ' + esc(decision) + ' the change: ' + esc(error.message) + '</div>'); }
+      }
+      async function devDecideApproval(approvalId, decision, actionType, target) {
+        if (!dev.sessionId) return;
+        try {
+          const response = await fetch("/api/dev-session/" + dev.sessionId + "/approval", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ approvalId, decision, actor: "dashboard-user" }) });
+          if (!response.ok) throw new Error(await response.text());
+          const { resumeHint } = await response.json();
+          devLog('<div class="dev-note">' + esc(actionType) + ' ' + esc(target) + ' was ' + esc(decision) + '.</div>');
+          if (resumeHint) await devSend(resumeHint);
+        } catch (error) { devLog('<div class="dev-note dev-error">Could not ' + esc(decision) + ' the action: ' + esc(error.message) + '</div>'); }
       }
 
       function updateGuideEvidenceLink(project) {
@@ -694,7 +707,8 @@ function studioCss(): string {
     .dev-session-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
     .dev-session-row label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
     .dev-session-row input { min-width: 260px; border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 7px 10px; font-size: 12px; }
-    .dev-session-row button, .dev-diff-actions button { border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 7px 12px; font-size: 11px; font-weight: 650; cursor: pointer; }
+    .dev-session-row button, .dev-diff-actions button, .dev-approval button { border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 7px 12px; font-size: 11px; font-weight: 650; cursor: pointer; }
+    .dev-approval { display: flex; gap: 8px; }
     .dev-session-label { color: var(--faint); font-size: 11px; }
     .dev-log { min-height: 220px; max-height: calc(100vh - 380px); overflow-y: auto; display: grid; gap: 10px; align-content: start; border: 1px solid var(--line); background: var(--surface); padding: 18px; }
     .dev-msg { max-width: 92%; padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }

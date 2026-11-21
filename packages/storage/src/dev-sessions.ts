@@ -89,6 +89,27 @@ export const devSessionSchemaSql = `
   );
   CREATE INDEX IF NOT EXISTS dev_session_diffs_session_idx
   ON dev_session_diffs(session_id, created_at);
+  CREATE TABLE IF NOT EXISTS dev_session_approvals (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL REFERENCES dev_sessions(id) ON DELETE CASCADE,
+    turn_id uuid REFERENCES dev_session_turns(id) ON DELETE SET NULL,
+    action_type text NOT NULL,
+    target text NOT NULL,
+    rationale text NOT NULL DEFAULT '',
+    policy_decision jsonb NOT NULL DEFAULT '{}',
+    payload jsonb NOT NULL DEFAULT '{}',
+    idempotency_key text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    decided_by text,
+    decided_at timestamptz,
+    consumed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT dev_session_approvals_status_check CHECK (status IN ('pending', 'approved', 'rejected')),
+    UNIQUE(session_id, idempotency_key)
+  );
+  CREATE INDEX IF NOT EXISTS dev_session_approvals_session_idx
+  ON dev_session_approvals(session_id, created_at);
 `;
 
 export interface DevSession {
@@ -530,5 +551,138 @@ export async function setDevSessionDiffDecision(input: {
     );
     if (!result.rows.length) return null;
     return diffFromRow(result.rows[0] as Record<string, unknown>);
+  });
+}
+
+export interface DevSessionApproval {
+  id: string;
+  sessionId: string;
+  turnId: string | null;
+  actionType: string;
+  target: string;
+  rationale: string;
+  policyDecision: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+  status: "pending" | "approved" | "rejected";
+  decidedBy: string | null;
+  decidedAt: string | null;
+  consumedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function approvalFromRow(row: Record<string, unknown>): DevSessionApproval {
+  return {
+    id: row.id as string,
+    sessionId: row.session_id as string,
+    turnId: (row.turn_id as string | null) ?? null,
+    actionType: row.action_type as string,
+    target: row.target as string,
+    rationale: row.rationale as string,
+    policyDecision: (row.policy_decision as Record<string, unknown>) ?? {},
+    payload: (row.payload as Record<string, unknown>) ?? {},
+    idempotencyKey: row.idempotency_key as string,
+    status: row.status as DevSessionApproval["status"],
+    decidedBy: (row.decided_by as string | null) ?? null,
+    decidedAt: row.decided_at ? (row.decided_at as Date).toISOString() : null,
+    consumedAt: row.consumed_at ? (row.consumed_at as Date).toISOString() : null,
+    createdAt: (row.created_at as Date).toISOString(),
+    updatedAt: (row.updated_at as Date).toISOString()
+  };
+}
+
+/**
+ * Inline approval for a hard-gated dev action. This is the dev-mode
+ * equivalent of the queue's action_approvals rows: requestActionApproval
+ * cannot be reused because it requires a workflow_runs row. Approving here
+ * authorizes the exact action once; the next turn consumes it.
+ */
+export async function createDevSessionApproval(input: {
+  sessionId: string;
+  turnId: string | null;
+  actionType: string;
+  target: string;
+  rationale: string;
+  policyDecision: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+}): Promise<DevSessionApproval> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `insert into dev_session_approvals
+         (session_id, turn_id, action_type, target, rationale, policy_decision, payload, idempotency_key)
+       values ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
+       on conflict (session_id, idempotency_key) do update set updated_at = now()
+       returning *`,
+      [
+        input.sessionId,
+        input.turnId,
+        input.actionType,
+        input.target,
+        input.rationale,
+        JSON.stringify(input.policyDecision),
+        JSON.stringify(input.payload),
+        input.idempotencyKey
+      ]
+    );
+    return approvalFromRow(result.rows[0] as Record<string, unknown>);
+  });
+}
+
+export async function getDevSessionApproval(approvalId: string): Promise<DevSessionApproval | null> {
+  return withClient(async (client) => {
+    const result = await client.query(`select * from dev_session_approvals where id = $1::uuid`, [approvalId]);
+    if (!result.rows.length) return null;
+    return approvalFromRow(result.rows[0] as Record<string, unknown>);
+  });
+}
+
+export async function listDevSessionApprovals(sessionId: string): Promise<DevSessionApproval[]> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `select * from dev_session_approvals where session_id = $1::uuid order by created_at asc`,
+      [sessionId]
+    );
+    return result.rows.map((row) => approvalFromRow(row as Record<string, unknown>));
+  });
+}
+
+export async function listApprovedDevSessionApprovals(sessionId: string): Promise<DevSessionApproval[]> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `select * from dev_session_approvals
+       where session_id = $1::uuid and status = 'approved' and consumed_at is null
+       order by created_at asc`,
+      [sessionId]
+    );
+    return result.rows.map((row) => approvalFromRow(row as Record<string, unknown>));
+  });
+}
+
+export async function decideDevSessionApproval(input: {
+  approvalId: string;
+  decision: "approved" | "rejected";
+  decidedBy: string;
+}): Promise<DevSessionApproval | null> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `update dev_session_approvals
+       set status = $2, decided_by = $3, decided_at = now(), updated_at = now()
+       where id = $1::uuid and status = 'pending' returning *`,
+      [input.approvalId, input.decision, input.decidedBy]
+    );
+    if (!result.rows.length) return null;
+    return approvalFromRow(result.rows[0] as Record<string, unknown>);
+  });
+}
+
+export async function consumeDevSessionApproval(approvalId: string): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(
+      `update dev_session_approvals set consumed_at = now(), updated_at = now()
+       where id = $1::uuid and status = 'approved' and consumed_at is null`,
+      [approvalId]
+    );
   });
 }

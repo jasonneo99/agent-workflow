@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createDevSessionApproval } from "../../../../packages/storage/src/dev-sessions.js";
 import {
   createDevSessionFromBody,
+  decideDevSessionApprovalFromBody,
   formatDevSseEvent,
   getDevSessionDetail,
   parseDevSessionPath
@@ -35,4 +37,41 @@ test("creating a dev session validates the project and provider before persistin
   await assert.rejects(createDevSessionFromBody({ project: "templates/project", provider: "no-such-provider" }), /Unsupported provider adapter/);
   await assert.rejects(createDevSessionFromBody({ project: "does/not/exist" }), /Unknown project directory/);
   await assert.rejects(createDevSessionFromBody({}), /Missing project/);
+});
+
+test("deciding a dev approval records the decision and returns a resume hint when approved", async () => {
+  const { session } = await createDevSessionFromBody({ project: "templates/project", provider: "mock", title: "Approval route test" });
+  const approval = await createDevSessionApproval({
+    sessionId: session.id,
+    turnId: null,
+    actionType: "local_command",
+    target: 'python3 -c "print(1)"',
+    rationale: "Test approval.",
+    policyDecision: { approvalRequired: true },
+    payload: {},
+    idempotencyKey: "route-test-approval-1"
+  });
+  const decided = await decideDevSessionApprovalFromBody({
+    sessionId: session.id,
+    body: { approvalId: approval.id, decision: "approved", actor: "test-user" }
+  });
+  assert.equal(decided.approval?.status, "approved");
+  assert.match(decided.resumeHint ?? "", /Continue with the approved local_command/);
+
+  const detail = await getDevSessionDetail(session.id);
+  assert.equal(detail.approvals.length, 1);
+  assert.equal(detail.approvals[0].status, "approved");
+
+  await assert.rejects(
+    decideDevSessionApprovalFromBody({ sessionId: session.id, body: { approvalId: approval.id, decision: "rejected" } }),
+    /already decided/
+  );
+  await assert.rejects(
+    decideDevSessionApprovalFromBody({ sessionId: session.id, body: { approvalId: "00000000-0000-0000-0000-000000000000", decision: "approved" } }),
+    /Unknown dev approval/
+  );
+  await assert.rejects(
+    decideDevSessionApprovalFromBody({ sessionId: session.id, body: { approvalId: approval.id, decision: "maybe" } }),
+    /approved or rejected/
+  );
 });

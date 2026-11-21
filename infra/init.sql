@@ -237,6 +237,27 @@ CREATE TABLE IF NOT EXISTS dev_session_diffs (
 );
 CREATE INDEX IF NOT EXISTS dev_session_diffs_session_idx
 ON dev_session_diffs(session_id, created_at);
+CREATE TABLE IF NOT EXISTS dev_session_approvals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES dev_sessions(id) ON DELETE CASCADE,
+  turn_id uuid REFERENCES dev_session_turns(id) ON DELETE SET NULL,
+  action_type text NOT NULL,
+  target text NOT NULL,
+  rationale text NOT NULL DEFAULT '',
+  policy_decision jsonb NOT NULL DEFAULT '{}',
+  payload jsonb NOT NULL DEFAULT '{}',
+  idempotency_key text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  decided_by text,
+  decided_at timestamptz,
+  consumed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT dev_session_approvals_status_check CHECK (status IN ('pending', 'approved', 'rejected')),
+  UNIQUE(session_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS dev_session_approvals_session_idx
+ON dev_session_approvals(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS suspend_resume_threads (
   thread_id text PRIMARY KEY,

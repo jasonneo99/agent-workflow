@@ -8,11 +8,14 @@ import {
   providerFromEnv
 } from "../../model-providers/src/index.js";
 import type { StageExecutionOutput } from "../../model-providers/src/types.js";
+import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
 import { listProjectFileSummaries } from "../../storage/src/postgres.js";
+import { executeDevTurnActions } from "./dev-turn-actions.js";
 import {
   addDevSessionTurn,
   appendDevSessionReceipt,
   getDevSession,
+  listApprovedDevSessionApprovals,
   listDevSessionTurns,
   updateDevSessionTurn,
   type DevSession
@@ -40,6 +43,7 @@ export const DEV_MODE_WORKFLOW_ID = "dev-mode";
 export const DEV_MODE_STAGE_ID = "dev-turn";
 export const DEV_MODE_MAX_ITERATIONS = 6;
 export const DEV_MODE_MAX_OPEN_FILES = 8;
+export const DEV_MODE_MAX_TOKENS = 120_000;
 
 export type DevTurnEvent =
   | { type: "turn_started"; turnId: string; sessionId: string }
@@ -65,6 +69,8 @@ export interface DevTurnResult {
   iterations: number;
   deferredActions: DevTurnDeferredAction[];
   diffIds: string[];
+  stoppedReason: "completed" | "max_iterations" | "token_budget" | "awaiting_approval";
+  awaitingApproval?: { approvalId: string; actionType: string; target: string; reason: string };
 }
 
 export interface RunDirectTurnInput {
@@ -75,9 +81,9 @@ export interface RunDirectTurnInput {
   openFiles?: string[];
   providerId?: string;
   modelOverride?: string;
-  /** Bounded ReAct iterations. Phase 1 runs a single provider call. */
+  /** Bounded ReAct iterations (default 1; the message route uses DEV_MODE_MAX_ITERATIONS). */
   maxIterations?: number;
-  /** Phase 1 default false: requested actions are recorded, not executed. */
+  /** When true, requested reads/commands run and file writes become proposed diffs. */
   toolsEnabled?: boolean;
   /** Approved hard actions for this turn (by "actionType:target"), set after an inline approval. */
   approvedActions?: string[];
@@ -224,6 +230,23 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
   const maxIterations = Math.max(1, Math.min(input.maxIterations ?? 1, DEV_MODE_MAX_ITERATIONS));
   const toolsEnabled = input.toolsEnabled ?? false;
 
+  // Direct turns run under trusted-personal: ordinary dev pre-approved,
+  // hard gates unchanged. Resolution also snapshots the effective config
+  // for the turn receipt. Previously approved one-time actions for this
+  // session (approved inline, not yet consumed) join the caller-supplied set.
+  const resolvedPolicy = resolveExecutionPolicy(input.project, "trusted-personal");
+  const project = resolvedPolicy.project;
+  const approvedActions = new Map<string, string | undefined>(
+    (input.approvedActions ?? []).map((key) => [key, undefined])
+  );
+  for (const approval of await listApprovedDevSessionApprovals(session.id)) {
+    approvedActions.set(`${approval.actionType}:${approval.target}`, approval.id);
+  }
+  const tokenBudget = Math.max(
+    1_000,
+    Number(process.env.AGENTFLOW_DEV_TURN_TOKEN_BUDGET ?? DEV_MODE_MAX_TOKENS) || DEV_MODE_MAX_TOKENS
+  );
+
   const userTurn = await addDevSessionTurn({
     sessionId: session.id,
     role: "user",
@@ -246,7 +269,14 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
     actionType: "dev_turn_started",
     target: userTurn.id,
     summary: `Dev turn started for message ${userTurn.id.slice(0, 8)}.`,
-    metadata: { provider: providerId, model: input.modelOverride ?? session.model ?? null, maxIterations, toolsEnabled }
+    metadata: {
+      provider: providerId,
+      model: input.modelOverride ?? session.model ?? null,
+      maxIterations,
+      toolsEnabled,
+      policyProfile: resolvedPolicy.profile,
+      policySnapshotHash: resolvedPolicy.snapshotHash
+    }
   });
   await input.onEvent({ type: "turn_started", turnId, sessionId: session.id });
 
@@ -256,21 +286,24 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
     .map((turn) => ({ role: turn.role, content: turn.content.slice(0, 2000) }));
   const openFileReads = await readOpenFiles({
     projectDir: input.projectDir,
-    project: input.project,
+    project,
     openFiles: input.openFiles ?? []
   });
   const indexedSummaries = await selectIndexedContext({
     projectDir: input.projectDir,
-    project: input.project,
+    project,
     message: input.message
   });
 
   const deferredActions: DevTurnDeferredAction[] = [];
   const diffIds: string[] = [];
   const toolResults: string[] = [];
+  const seenActions = new Set<string>();
   let summary = "";
   let usage: StageExecutionOutput["usage"];
   let iterations = 0;
+  let usedTokens = 0;
+  let stoppedReason: DevTurnResult["stoppedReason"] = "completed";
 
   try {
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -288,7 +321,7 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
       const stageInput = {
         runId: session.id,
         taskId: turnId,
-        projectConfig: input.project,
+        projectConfig: project,
         workflowId: DEV_MODE_WORKFLOW_ID,
         workflowTask: input.message,
         stageId: DEV_MODE_STAGE_ID,
@@ -312,6 +345,7 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
       const output = result.output;
       summary = output.summary;
       usage = output.usage;
+      usedTokens += usage?.totalTokens ?? 0;
       for (const chunk of chunkTextForStreaming(output.summary)) {
         await input.onEvent({ type: "token", turnId, text: chunk });
       }
@@ -354,9 +388,59 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
         break;
       }
 
-      // Phase 2 executes requested actions here (reads, policy-checked
-      // commands, file writes as proposed diffs) and continues the loop.
-      break;
+      const executed = await executeDevTurnActions({
+        session,
+        turnId,
+        projectDir: input.projectDir,
+        project,
+        output,
+        approvedActions,
+        seenActions,
+        onEvent: input.onEvent,
+        toolResults,
+        deferredActions,
+        diffIds
+      });
+      if (executed.awaitingApproval) {
+        await updateDevSessionTurn(turnId, { content: summary, status: "awaiting_approval", usage });
+        await appendDevSessionReceipt({
+          sessionId: session.id,
+          turnId,
+          agentId: DEV_MODE_AGENT_ID,
+          actionType: "dev_turn_awaiting_approval",
+          target: executed.awaitingApproval.target,
+          summary: `Dev turn paused: ${executed.awaitingApproval.actionType} ${executed.awaitingApproval.target} needs approval.`,
+          metadata: { approval: executed.awaitingApproval }
+        });
+        await input.onEvent({
+          type: "turn_awaiting_approval",
+          turnId,
+          approvalId: executed.awaitingApproval.approvalId,
+          actionType: executed.awaitingApproval.actionType,
+          target: executed.awaitingApproval.target,
+          reason: executed.awaitingApproval.reason
+        });
+        return {
+          turnId,
+          assistantTurnId: turnId,
+          summary,
+          usage,
+          iterations,
+          deferredActions,
+          diffIds,
+          stoppedReason: "awaiting_approval",
+          awaitingApproval: executed.awaitingApproval
+        };
+      }
+      if (!executed.continued) break;
+      // The agent asked for nothing new this round; another provider call
+      // would repeat the same actions, so the turn ends here.
+      if (!executed.progress) break;
+      if (usedTokens >= tokenBudget) {
+        stoppedReason = "token_budget";
+        break;
+      }
+      if (iteration === maxIterations - 1) stoppedReason = "max_iterations";
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -382,10 +466,10 @@ export async function runDirectTurn(input: RunDirectTurnInput): Promise<DevTurnR
     actionType: "dev_turn_completed",
     target: turnId,
     summary: summary.slice(0, 500),
-    metadata: { iterations, deferredActions: deferredActions.length, diffs: diffIds.length, usage: usage ?? null }
+    metadata: { iterations, deferredActions: deferredActions.length, diffs: diffIds.length, usage: usage ?? null, stoppedReason }
   });
   await input.onEvent({ type: "turn_completed", turnId, summary, usage });
-  return { turnId, assistantTurnId: turnId, summary, usage, iterations, deferredActions, diffIds };
+  return { turnId, assistantTurnId: turnId, summary, usage, iterations, deferredActions, diffIds, stoppedReason };
 }
 
 export async function getDevSessionOrThrow(sessionId: string): Promise<DevSession> {

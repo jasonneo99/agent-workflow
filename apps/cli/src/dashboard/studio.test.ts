@@ -125,4 +125,9 @@ test("studio exposes a Dev mode panel backed by the dev-session API", () => {
   assert.match(dashboard, /\/api\/dev-sessions/);
   assert.match(dashboard, /streamDevSessionMessage\(/);
   assert.match(dashboard, /createDevSessionFromBody\(/);
+  assert.match(dashboard, /decideDevSessionApprovalFromBody\(/);
+  assert.match(html, /turn_awaiting_approval/);
+  assert.match(html, /devDecideApproval\(/);
+  assert.match(html, /Approve once/);
+  assert.match(html, /\/approval/);
 });

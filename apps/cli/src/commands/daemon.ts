@@ -105,7 +105,7 @@ import { renderQueueStatusHtml } from "../dashboard/queue-status.js";
 import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
-import { createDevSessionFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
+import { createDevSessionFromBody, decideDevSessionApprovalFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
 import { renderProjectEvidenceHtml } from "../dashboard/project-evidence.js";
 import { renderContextInfluenceHtml } from "../dashboard/context-influence.js";
 import { readContextInfluence } from "../../../../packages/storage/src/context-influence.js";
@@ -4039,6 +4039,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         } else if (request.method === "POST" && devSessionPath.action === "message") {
           const body = objectValue(await readJsonBody(request, 64_000));
           await streamDevSessionMessage({ sessionId: devSessionPath.id, body, request, response });
+        } else if (request.method === "POST" && devSessionPath.action === "approval") {
+          const body = objectValue(await readJsonBody(request, 64_000));
+          const decided = await decideDevSessionApprovalFromBody({ sessionId: devSessionPath.id, body });
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify(decided));
         } else {
           response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
           response.end(JSON.stringify({ error: "Unknown dev session route." }));

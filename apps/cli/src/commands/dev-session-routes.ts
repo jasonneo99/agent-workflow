@@ -5,13 +5,23 @@ import { loadProjectConfig } from "../../../../packages/agent-registry/src/loade
 import type { ProjectConfig } from "../../../../packages/agent-registry/src/schemas.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import {
+  appendDevSessionReceipt,
   createDevSession,
+  decideDevSessionApproval,
+  getDevSessionApproval,
+  listDevSessionApprovals,
   listDevSessionDiffs,
   listDevSessionTurns,
   listDevSessions,
   type DevSession
 } from "../../../../packages/storage/src/dev-sessions.js";
-import { getDevSessionOrThrow, runDirectTurn, type DevTurnEvent } from "../../../../packages/workflow-engine/src/direct-turn.js";
+import {
+  DEV_MODE_AGENT_ID,
+  DEV_MODE_MAX_ITERATIONS,
+  getDevSessionOrThrow,
+  runDirectTurn,
+  type DevTurnEvent
+} from "../../../../packages/workflow-engine/src/direct-turn.js";
 
 /**
  * HTTP-facing Dev session handlers, called from the dashboard daemon
@@ -77,10 +87,56 @@ export async function getDevSessionDetail(sessionId: string): Promise<{
   session: DevSession;
   turns: Awaited<ReturnType<typeof listDevSessionTurns>>;
   diffs: Awaited<ReturnType<typeof listDevSessionDiffs>>;
+  approvals: Awaited<ReturnType<typeof listDevSessionApprovals>>;
 }> {
   const session = await getDevSessionOrThrow(sessionId);
-  const [turns, diffs] = await Promise.all([listDevSessionTurns(session.id), listDevSessionDiffs(session.id)]);
-  return { session, turns, diffs };
+  const [turns, diffs, approvals] = await Promise.all([
+    listDevSessionTurns(session.id),
+    listDevSessionDiffs(session.id),
+    listDevSessionApprovals(session.id)
+  ]);
+  return { session, turns, diffs, approvals };
+}
+
+/**
+ * Answer a paused turn's inline approval. Approving authorizes the exact
+ * action once: the next turn in this session consumes it. The returned
+ * resume hint is the follow-up message the Studio panel sends so the agent
+ * re-requests the approved action with the approval in force.
+ */
+export async function decideDevSessionApprovalFromBody(input: {
+  sessionId: string;
+  body: Record<string, unknown>;
+}): Promise<{
+  approval: Awaited<ReturnType<typeof decideDevSessionApproval>>;
+  resumeHint: string | null;
+}> {
+  const approvalId = stringField(input.body, "approvalId");
+  const decision = stringField(input.body, "decision");
+  const actor = stringField(input.body, "actor") || "dashboard-user";
+  if (!approvalId) throw new Error("Missing approvalId.");
+  if (decision !== "approved" && decision !== "rejected") throw new Error("Decision must be approved or rejected.");
+  const existing = await getDevSessionApproval(approvalId);
+  if (!existing) throw new Error(`Unknown dev approval: ${approvalId}`);
+  if (existing.sessionId !== input.sessionId) throw new Error("Approval does not belong to this session.");
+  const approval = await decideDevSessionApproval({ approvalId, decision, decidedBy: actor });
+  if (!approval) throw new Error("Approval was already decided.");
+  await appendDevSessionReceipt({
+    sessionId: input.sessionId,
+    turnId: approval.turnId,
+    agentId: DEV_MODE_AGENT_ID,
+    actionType: "dev_approval_decided",
+    target: approval.target,
+    summary: `${approval.actionType} ${approval.target} was ${decision} by ${actor}.`,
+    metadata: { approvalId: approval.id, decision, actor }
+  });
+  const resumeHint =
+    decision === "approved"
+      ? approval.actionType === "local_command"
+        ? `Continue with the approved local_command: ${approval.target}`
+        : `Continue with the approved file write: ${approval.target}`
+      : null;
+  return { approval, resumeHint };
 }
 
 export async function listDevSessionsForBody(body: Record<string, unknown>): Promise<DevSession[]> {
@@ -93,8 +149,9 @@ export async function listDevSessionsForBody(body: Record<string, unknown>): Pro
 /**
  * Stream one direct turn over SSE. All validation happens before the SSE
  * headers are written, so failures surface as JSON errors instead of a
- * half-open stream. Phase 1 runs the turn with tools disabled: the provider
- * answers, and any requested actions are recorded as deferred.
+ * half-open stream. The turn runs with tools enabled: reads and
+ * policy-checked commands execute, file writes become proposed diffs, and
+ * hard gates pause the turn with an inline approval.
  */
 export async function streamDevSessionMessage(input: {
   sessionId: string;
@@ -127,8 +184,8 @@ export async function streamDevSessionMessage(input: {
       openFiles,
       providerId: stringField(input.body, "provider") || undefined,
       modelOverride: stringField(input.body, "model") || undefined,
-      maxIterations: 1,
-      toolsEnabled: false,
+      maxIterations: DEV_MODE_MAX_ITERATIONS,
+      toolsEnabled: true,
       onEvent: (event) => {
         sawEvent = true;
         if (!response.writableEnded) response.write(formatDevSseEvent(event));
