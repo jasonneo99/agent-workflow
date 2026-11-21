@@ -157,12 +157,12 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
     .command("provider-use")
     .alias("model-use")
     .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, deepseek, gemini, muse, openai-compatible, bedrock, or kiro")
+    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, deepseek, gemini, groq, openrouter, muse, openai-compatible, bedrock, or kiro")
     .option("--login", "authenticate interactively before selecting a CLI provider")
     .option("--device-auth", "use Codex device-code login for a headless machine")
     .option("--check", "run provider-check after switching")
     .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "muse", "openai-compatible", "bedrock", "kiro"];
+      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "openai-compatible", "bedrock", "kiro"];
       const providerId = normalizeProviderRef(provider);
       if (!supported.includes(providerId)) {
         console.error(`Unsupported provider: ${provider}`);

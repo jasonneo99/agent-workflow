@@ -9652,7 +9652,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return "";
     }
     const normalized = normalizeProviderRef(trimmed);
-    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]);
+    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "openai-compatible", "bedrock", "kiro"]);
     return supported.has(normalized) ? normalized : undefined;
   }
 
@@ -16429,9 +16429,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       : info.provider.selected === "auto"
         ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
         : `<p class="muted">This provider has no selectable live model list.</p>`;
-    const providerIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const executionProviderIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "deepseek", "gemini", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+    const providerIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const executionProviderIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
     const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
     const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
       const selected = value === selectedValue ? " selected" : "";
