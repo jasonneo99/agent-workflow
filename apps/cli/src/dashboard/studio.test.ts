@@ -103,3 +103,26 @@ test("studio run-now queues and watches inline without blocking the submit", () 
   assert.match(dashboard, /function startStudioRunNowWatch\(runId: string, projectDir: string\)/);
   assert.match(dashboard, /void watchWorkflowRun\(\{/);
 });
+
+test("studio exposes a Dev mode panel backed by the dev-session API", () => {
+  const html = renderStudioHtml({ workflows, defaultProject: "templates/project" });
+  assert.match(html, /Dev mode/);
+  assert.match(html, /id="dev-mode-link"/);
+  assert.match(html, /id="dev-workspace"/);
+  assert.match(html, /id="dev-log"/);
+  assert.match(html, /id="dev-form"/);
+  assert.match(html, /id="dev-message"/);
+  assert.match(html, /id="dev-new-session"/);
+  assert.match(html, /id="dev-diffs"/);
+  assert.match(html, /\/api\/dev-session\//);
+  assert.match(html, /devShow\(true\)/);
+  assert.match(html, /devShow\(false\)/);
+  assert.match(html, /Proposed changes/);
+  assert.match(html, /No queue, no run/);
+
+  const dashboard = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  assert.match(dashboard, /\/api\/dev-session/);
+  assert.match(dashboard, /\/api\/dev-sessions/);
+  assert.match(dashboard, /streamDevSessionMessage\(/);
+  assert.match(dashboard, /createDevSessionFromBody\(/);
+});

@@ -167,6 +167,77 @@ CREATE TABLE IF NOT EXISTS action_receipts (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Dev mode (direct agent turns) sessions. Separate from workflow_runs so the
+-- direct path never pollutes queue semantics; receipts are hash-chained per
+-- session the same way action_receipts chains per run.
+CREATE TABLE IF NOT EXISTS dev_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_root_uri text NOT NULL,
+  project_id text NOT NULL DEFAULT '',
+  provider text NOT NULL DEFAULT 'mock',
+  model text,
+  title text NOT NULL DEFAULT '',
+  policy_profile text NOT NULL DEFAULT 'trusted-personal',
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT dev_sessions_status_check CHECK (status IN ('active', 'closed'))
+);
+CREATE INDEX IF NOT EXISTS dev_sessions_project_created_idx
+ON dev_sessions(project_root_uri, created_at DESC);
+CREATE TABLE IF NOT EXISTS dev_session_turns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES dev_sessions(id) ON DELETE CASCADE,
+  role text NOT NULL,
+  content text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'pending',
+  provider text,
+  model text,
+  usage jsonb NOT NULL DEFAULT '{}',
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT dev_session_turns_role_check CHECK (role IN ('user', 'assistant')),
+  CONSTRAINT dev_session_turns_status_check CHECK (status IN ('pending', 'running', 'completed', 'failed', 'awaiting_approval', 'blocked'))
+);
+CREATE INDEX IF NOT EXISTS dev_session_turns_session_created_idx
+ON dev_session_turns(session_id, created_at);
+CREATE TABLE IF NOT EXISTS dev_session_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dev_session_id uuid NOT NULL REFERENCES dev_sessions(id) ON DELETE CASCADE,
+  turn_id uuid REFERENCES dev_session_turns(id) ON DELETE SET NULL,
+  agent_id text NOT NULL,
+  action_type text NOT NULL,
+  target text NOT NULL,
+  summary text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}',
+  prev_hash text,
+  receipt_hash text,
+  metadata_serialization_version integer,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dev_session_receipts_session_created_idx
+ON dev_session_receipts(dev_session_id, created_at);
+CREATE TABLE IF NOT EXISTS dev_session_diffs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES dev_sessions(id) ON DELETE CASCADE,
+  turn_id uuid REFERENCES dev_session_turns(id) ON DELETE SET NULL,
+  path text NOT NULL,
+  original_hash text,
+  proposed_content text NOT NULL DEFAULT '',
+  diff_text text NOT NULL DEFAULT '',
+  payload_hash text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'proposed',
+  decided_by text,
+  decided_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT dev_session_diffs_status_check CHECK (status IN ('proposed', 'accepted', 'rejected')),
+  UNIQUE(session_id, turn_id, path)
+);
+CREATE INDEX IF NOT EXISTS dev_session_diffs_session_idx
+ON dev_session_diffs(session_id, created_at);
+
 CREATE TABLE IF NOT EXISTS suspend_resume_threads (
   thread_id text PRIMARY KEY,
   run_id uuid REFERENCES workflow_runs(id) ON DELETE CASCADE,

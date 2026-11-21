@@ -32,6 +32,7 @@ import { transitionWorkflowRun } from "./run-transitions.js";
 import { findRecentDuplicateRun, findReplayConflict } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
+import { devSessionSchemaSql } from "./dev-sessions.js";
 import { projectIdentitySchemaSql, registerProjectIdentityScope, projectIdentitySchemaAvailable } from "./project-identity.js";
 import { projectRegistrationRoot } from "./project-registration-root.js";
 import {prepareFreshRunFamilyLink,recordFreshRunFamilyLink,type FreshRunFamilyInput} from './fresh-run-family-link.js';
@@ -272,6 +273,7 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz
     `);
     await client.query(guardedAutonomySchemaSql);
+    await client.query(devSessionSchemaSql);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

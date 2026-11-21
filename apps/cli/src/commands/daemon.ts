@@ -105,6 +105,7 @@ import { renderQueueStatusHtml } from "../dashboard/queue-status.js";
 import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
+import { createDevSessionFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
 import { renderProjectEvidenceHtml } from "../dashboard/project-evidence.js";
 import { renderContextInfluenceHtml } from "../dashboard/context-influence.js";
 import { readContextInfluence } from "../../../../packages/storage/src/context-influence.js";
@@ -3983,6 +3984,71 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         note: form.get("note") ?? undefined
       });
       respondDashboardAction(request, response, form, result, "/studio");
+      return;
+    }
+
+    // Dev mode (direct agent turns): session + streaming API. No workflow
+    // run is created; turns run session-scoped via runDirectTurn.
+    if (request.method === "POST" && requestUrl.pathname === "/api/dev-session") {
+      if (!isTrustedLocalDashboardRequest(request)) {
+        response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Dev sessions require the trusted local dashboard.");
+        return;
+      }
+      try {
+        const body = objectValue(await readJsonBody(request, 64_000));
+        const { session } = await createDevSessionFromBody(body);
+        response.writeHead(201, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ session }));
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ error: publicHttpError(error instanceof Error ? error.message : "Could not create the dev session.") }));
+      }
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/dev-sessions") {
+      if (!isTrustedLocalDashboardRequest(request)) {
+        response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Dev sessions require the trusted local dashboard.");
+        return;
+      }
+      try {
+        const sessions = await listDevSessionsForBody(Object.fromEntries(requestUrl.searchParams));
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ sessions }));
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ error: publicHttpError(error instanceof Error ? error.message : "Could not list dev sessions.") }));
+      }
+      return;
+    }
+
+    const devSessionPath = parseDevSessionPath(requestUrl.pathname);
+    if (devSessionPath) {
+      if (!isTrustedLocalDashboardRequest(request)) {
+        response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Dev sessions require the trusted local dashboard.");
+        return;
+      }
+      try {
+        if (request.method === "GET" && !devSessionPath.action) {
+          const detail = await getDevSessionDetail(devSessionPath.id);
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify(detail));
+        } else if (request.method === "POST" && devSessionPath.action === "message") {
+          const body = objectValue(await readJsonBody(request, 64_000));
+          await streamDevSessionMessage({ sessionId: devSessionPath.id, body, request, response });
+        } else {
+          response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: "Unknown dev session route." }));
+        }
+      } catch (error) {
+        if (!response.writableEnded) {
+          response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: publicHttpError(error instanceof Error ? error.message : "Dev session request failed.") }));
+        }
+      }
       return;
     }
 

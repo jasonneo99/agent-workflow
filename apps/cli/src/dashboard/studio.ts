@@ -58,6 +58,7 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
     <aside class="studio-rail">
       <nav aria-label="Studio navigation">
         <a class="rail-link active" href="/studio">${icon("activity")}<span>Active task</span></a>
+        <a class="rail-link" href="/studio" id="dev-mode-link">${icon("code")}<span>Dev mode</span></a>
         <a class="rail-link" href="/projects">${icon("folder")}<span>Projects</span></a>
         <a class="rail-link" href="/studio/context?project=${encodeURIComponent(input.defaultProject)}">${icon("file")}<span>Project context</span></a>
         <a class="rail-link" id="guide-evidence-link" href="/learning?view=diagnostics&amp;project=${encodeURIComponent(input.defaultProject)}#guide-evidence-integrity">${icon("shield")}<span>Guide evidence</span></a>
@@ -115,6 +116,22 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
           <form method="post" action="/api/follow-up" id="accept-form"><input type="hidden" name="returnTo" id="accept-return" value="/studio"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="accepted"><input type="hidden" name="note" value="Accepted in Agent Workflow Studio"><input type="hidden" name="runId" id="accept-run"><button class="review-primary" type="submit">${icon("check")} Accept changes</button></form>
         </div>
       </aside>
+    </main>
+
+    <main class="dev-workspace" id="dev-workspace" hidden>
+      <section class="dev-chat">
+        <div class="dev-header">
+          <div><h1>Dev mode</h1><p>Direct agent turns on this project. No queue, no run. Edits arrive as proposed diffs and apply only when you accept them.</p></div>
+          <div class="dev-session-row"><label>Project <input id="dev-project" value="${escapeHtml(input.defaultProject)}"></label><button type="button" id="dev-new-session">New session</button><span id="dev-session-label" class="dev-session-label">No session yet</span></div>
+        </div>
+        <div id="dev-log" class="dev-log" aria-live="polite"><div class="empty-state">Start a session, then ask for a change. The agent answers here; proposed edits appear below.</div></div>
+        <section id="dev-diffs" class="dev-diffs" hidden><h2>Proposed changes</h2><div id="dev-diff-list"></div></section>
+        <form id="dev-form" class="dev-composer">
+          <label for="dev-message">Message</label>
+          <div class="command-field">${icon("chevron")}<textarea id="dev-message" rows="2" placeholder="Ask for a change, a fix, or an explanation…" required></textarea><button type="submit" aria-label="Send message">${icon("send")}</button></div>
+          <p>One message is one bounded agent turn. Hard actions (push, deploy, external sends, deletes) pause the turn and ask here.</p>
+        </form>
+      </section>
     </main>
   </div>
 
@@ -181,6 +198,99 @@ function studioScript(): string {
       function setConnection(mode, text) {
         $("live-status").textContent = text;
         $("live-dot").className = "health-dot " + mode;
+      }
+
+      // Dev mode: direct agent turns over POST /api/dev-session/:id/message (SSE).
+      const dev = { sessionId: null, streaming: false };
+      function devShow(show) {
+        $("dev-workspace").hidden = !show;
+        $("task-workspace").hidden = show;
+        $("dev-mode-link").classList.toggle("active", show);
+        const taskLink = document.querySelector('.rail-link[href="/studio"]:not(#dev-mode-link)');
+        if (taskLink) taskLink.classList.toggle("active", !show);
+      }
+      function devLog(html) {
+        const log = $("dev-log");
+        const empty = log.querySelector(".empty-state");
+        if (empty) empty.remove();
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+        log.insertAdjacentHTML("beforeend", html);
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+      async function devNewSession() {
+        const project = $("dev-project").value.trim();
+        if (!project) return;
+        try {
+          const response = await fetch("/api/dev-session", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ project }) });
+          if (!response.ok) throw new Error(await response.text());
+          const { session } = await response.json();
+          dev.sessionId = session.id;
+          $("dev-session-label").textContent = "Session " + session.id.slice(0, 8) + " · " + session.provider;
+          devLog('<div class="dev-note">Session started for ' + esc(project) + '.</div>');
+        } catch (error) { devLog('<div class="dev-note dev-error">Could not start a session: ' + esc(error.message) + '</div>'); }
+      }
+      async function devSend(message) {
+        if (dev.streaming) return;
+        if (!dev.sessionId) await devNewSession();
+        if (!dev.sessionId) return;
+        dev.streaming = true;
+        devLog('<div class="dev-msg dev-user">' + esc(message) + '</div>');
+        const bubble = document.createElement("div");
+        bubble.className = "dev-msg dev-agent";
+        $("dev-log").appendChild(bubble);
+        let buffer = "";
+        try {
+          const response = await fetch("/api/dev-session/" + dev.sessionId + "/message", { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream" }, body: JSON.stringify({ message }) });
+          if (!response.ok || !response.body) throw new Error(await response.text());
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          const handleEvent = (raw) => {
+            const lines = raw.split("\n");
+            let type = "message";
+            let data = "";
+            for (const line of lines) {
+              if (line.startsWith("event: ")) type = line.slice(7).trim();
+              if (line.startsWith("data: ")) data += line.slice(6);
+            }
+            if (!data) return;
+            let event;
+            try { event = JSON.parse(data); } catch { return; }
+            if (type === "token") bubble.textContent += event.text || "";
+            if (type === "tool_call") devLog('<div class="dev-note">Tool ' + esc(event.tool) + ' → ' + esc(event.target) + ' (' + esc(event.status) + ')</div>');
+            if (type === "diff_proposed") devLoadDiffs();
+            if (type === "turn_awaiting_approval") devLog('<div class="dev-note dev-warn">Paused: ' + esc(event.actionType) + ' ' + esc(event.target) + ' needs approval. ' + esc(event.reason || "") + '</div>');
+            if (type === "turn_failed") devLog('<div class="dev-note dev-error">Turn failed: ' + esc(event.error || "unknown error") + '</div>');
+            if (type === "turn_completed") devLoadDiffs();
+          };
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let index;
+            while ((index = buffer.indexOf("\n\n")) !== -1) { handleEvent(buffer.slice(0, index)); buffer = buffer.slice(index + 2); }
+          }
+          if (buffer.trim()) handleEvent(buffer);
+        } catch (error) { devLog('<div class="dev-note dev-error">Stream failed: ' + esc(error.message) + '</div>'); }
+        dev.streaming = false;
+      }
+      async function devLoadDiffs() {
+        if (!dev.sessionId) return;
+        try {
+          const detail = await fetchJson("/api/dev-session/" + dev.sessionId);
+          const diffs = detail.diffs || [];
+          $("dev-diffs").hidden = !diffs.length;
+          $("dev-diff-list").innerHTML = diffs.map((diff) => '<article class="dev-diff"><strong>' + esc(diff.path) + '</strong><span>' + esc(diff.status) + '</span><pre>' + esc(diff.diffText || "") + '</pre><div class="dev-diff-actions"><button type="button" data-dev-accept="' + esc(diff.id) + '">Accept</button><button type="button" data-dev-reject="' + esc(diff.id) + '">Reject</button></div></article>').join("");
+          document.querySelectorAll("[data-dev-accept]").forEach((button) => button.addEventListener("click", () => devDecideDiff(button.dataset.devAccept, "accept")));
+          document.querySelectorAll("[data-dev-reject]").forEach((button) => button.addEventListener("click", () => devDecideDiff(button.dataset.devReject, "reject")));
+        } catch { /* diffs stay as they are until the next turn */ }
+      }
+      async function devDecideDiff(diffId, decision) {
+        if (!dev.sessionId) return;
+        try {
+          const response = await fetch("/api/dev-session/" + dev.sessionId + "/diff/" + diffId, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ decision }) });
+          if (!response.ok) throw new Error(await response.text());
+          await devLoadDiffs();
+        } catch (error) { devLog('<div class="dev-note dev-error">Could not ' + esc(decision) + ' the change: ' + esc(error.message) + '</div>'); }
       }
 
       function updateGuideEvidenceLink(project) {
@@ -495,6 +605,16 @@ function studioScript(): string {
         document.querySelectorAll("[data-tab]").forEach((tab) => { tab.classList.toggle("active", tab === button); tab.setAttribute("aria-selected", String(tab === button)); });
         renderEvidence();
       }));
+      $("dev-mode-link").addEventListener("click", (event) => { event.preventDefault(); devShow(true); });
+      document.querySelector('.rail-link[href="/studio"]:not(#dev-mode-link)').addEventListener("click", (event) => { event.preventDefault(); devShow(false); });
+      $("dev-new-session").addEventListener("click", devNewSession);
+      $("dev-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = $("dev-message").value.trim();
+        if (!message) return;
+        $("dev-message").value = "";
+        await devSend(message);
+      });
       load();
       if (window.EventSource) {
         const events = new EventSource("/api/studio-events");
@@ -567,6 +687,31 @@ function studioCss(): string {
     .health-dot.polling { background: var(--amber); }
     .health-dot.offline { background: var(--red); }
     .task-workspace { min-height: 100vh; margin-left: var(--rail-width); padding-top: var(--top); display: grid; grid-template-columns: minmax(440px, 54%) minmax(420px, 46%); opacity: 1; transition: opacity .15s ease; }
+    .dev-workspace { min-height: 100vh; margin-left: var(--rail-width); padding: calc(var(--top) + 24px) 32px 32px; }
+    .dev-chat { max-width: 860px; margin: 0 auto; display: grid; gap: 18px; }
+    .dev-header h1 { margin: 0 0 6px; font-size: 22px; }
+    .dev-header p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .dev-session-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+    .dev-session-row label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+    .dev-session-row input { min-width: 260px; border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 7px 10px; font-size: 12px; }
+    .dev-session-row button, .dev-diff-actions button { border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 7px 12px; font-size: 11px; font-weight: 650; cursor: pointer; }
+    .dev-session-label { color: var(--faint); font-size: 11px; }
+    .dev-log { min-height: 220px; max-height: calc(100vh - 380px); overflow-y: auto; display: grid; gap: 10px; align-content: start; border: 1px solid var(--line); background: var(--surface); padding: 18px; }
+    .dev-msg { max-width: 92%; padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+    .dev-user { justify-self: end; background: var(--surface-2); border: 1px solid var(--line); }
+    .dev-agent { justify-self: start; border: 1px solid var(--line-soft); }
+    .dev-note { color: var(--muted); font-size: 11px; }
+    .dev-error { color: var(--red); }
+    .dev-warn { color: var(--amber); }
+    .dev-diffs h2 { margin: 0 0 10px; font-size: 14px; }
+    .dev-diff { border: 1px solid var(--line); background: var(--surface); padding: 12px; margin-bottom: 10px; }
+    .dev-diff strong { font-size: 12px; }
+    .dev-diff span { margin-left: 8px; color: var(--faint); font-size: 11px; }
+    .dev-diff pre { max-height: 240px; overflow: auto; margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+    .dev-diff-actions { display: flex; gap: 8px; }
+    .dev-composer { border-top: 1px solid var(--line); padding-top: 12px; }
+    .dev-composer > label { display: block; margin: 0 0 7px 2px; color: #c4cbc7; font-size: 10px; font-weight: 650; }
+    .dev-composer > p { margin: 6px 2px 0; color: var(--faint); font-size: 9px; }
     .task-workspace.is-loading { opacity: .7; }
     .task-pane { min-width: 0; height: calc(100vh - var(--top)); display: grid; grid-template-rows: minmax(0,1fr) auto; border-right: 1px solid var(--line); }
     .task-scroll { min-height: 0; overflow: auto; padding: 27px 26px 22px; }
