@@ -3846,6 +3846,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const project = form.get("project") ?? "";
       const task = form.get("task") ?? "";
       const requestedWorkflow = form.get("workflowId") ?? "auto";
+      const runNow = form.get("submitMode") === "run-now";
       let workflowId = requestedWorkflow;
       let routeTitle = "Studio task";
 
@@ -3870,8 +3871,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           });
           await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
           const queued = await queueWorkflow(ctx, { workflowId: workflow.id, projectPath: projectDir, task, workflowOverride: workflow });
+          if (queued.ok && runNow) {
+            startStudioRunNowWatch(queued.run.runId, projectDir);
+          }
           result = queued.ok
-            ? { ok: true, title: `Queued ${workflow.stages.length}-stage agent plan`, runId: queued.run.runId, output: `Run: ${queued.run.runId}\nPlan: ${workflow.stages.map((stage) => stage.id).join(" → ")}\nOpen: /studio?run=${encodeURIComponent(queued.run.runId)}` }
+            ? { ok: true, title: runNow ? `Running now: ${workflow.stages.length}-stage agent plan` : `Queued ${workflow.stages.length}-stage agent plan`, runId: queued.run.runId, output: `Run: ${queued.run.runId}\nPlan: ${workflow.stages.map((stage) => stage.id).join(" → ")}\nOpen: /studio?run=${encodeURIComponent(queued.run.runId)}${runNow ? "\nRun now: a live watch is driving this run in the daemon; watch stages progress in the task pane." : ""}` }
             : { ok: false, error: queued.error };
           routeTitle = result.ok ? result.title : "Studio task";
         } catch (error) {
@@ -3889,6 +3893,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           workerConcurrency: form.get("workerConcurrency") ?? "1",
           timeoutMs: form.get("timeoutMs") ?? "60000"
         });
+        if (runNow && result.ok && result.runId) {
+          startStudioRunNowWatch(result.runId, path.resolve(process.cwd(), project));
+          routeTitle = "Running now — watch live progress in Studio";
+        }
       }
       respondDashboardAction(
         request,
@@ -11441,6 +11449,42 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         "npm run worker -- --limit 6"
       ].join("\n")
     };
+  }
+
+  // Studio "Run now" watches, keyed by run id. A watch drives worker ticks
+  // inside the daemon so a freshly queued run makes live progress in the
+  // Studio task pane (which already polls /api/runs and refreshes on
+  // /api/studio-events). The watch is detached: the submit POST returns
+  // immediately and Studio renders progress from the existing feed. A
+  // second Run now for the same run reuses the in-flight watch instead of
+  // spawning a duplicate worker loop.
+  const studioRunNowWatches = new Set<string>();
+
+  function startStudioRunNowWatch(runId: string, projectDir: string): void {
+    if (studioRunNowWatches.has(runId)) return;
+    studioRunNowWatches.add(runId);
+    void watchWorkflowRun({
+      runId,
+      workerLimit: 6,
+      workerConcurrency: 1,
+      projectRootUri: projectDir,
+      intervalMs: 1000,
+      timeoutMs: 900000,
+      onTick: (tick) => {
+        if (tick.claimed > 0 || tick.completed > 0 || tick.failed > 0) {
+          console.log(`Studio run now ${runId}: worker claimed ${tick.claimed}, completed ${tick.completed}, failed ${tick.failed}.`);
+        }
+      }
+    }).then(
+      (watchResult) => {
+        studioRunNowWatches.delete(runId);
+        console.log(`Studio run now ${runId} finished: ${watchResult.status} (${watchResult.completedTasks}/${watchResult.totalTasks} tasks, ${watchResult.failedTasks} failed).`);
+      },
+      (error) => {
+        studioRunNowWatches.delete(runId);
+        console.error(`Studio run now ${runId} watch failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    );
   }
 
   async function queueDashboardWorkflowRun(input: {

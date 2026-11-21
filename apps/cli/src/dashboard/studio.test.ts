@@ -24,6 +24,10 @@ test("studio renders the task-first governed workflow surface", () => {
   assert.match(html, /Artifacts/);
   assert.match(html, /Receipts/);
   assert.match(html, /action="\/api\/studio-task"/);
+  assert.match(html, /name="submitMode" value="run-now"/);
+  assert.match(html, /Run now/);
+  assert.match(html, /dialog-run-now/);
+  assert.match(html, /Start workflow/);
   assert.match(html, /action="\/api\/follow-up"/);
   assert.match(html, /name="returnTo"/);
   assert.match(html, /id="approval-banner"/);
@@ -87,4 +91,15 @@ test("coordinator history is exposed consistently by CLI, MCP, dashboard, and St
   assert.match(mcp,/agentflow_coordinator_history/);assert.match(mcp,/Exact human-approved obsolete run list/);
   assert.match(dashboard,/\/api\/coordinator-history/);assert.match(dashboard,/Archive from active views/);
   assert.match(dashboard,/runs = historyRuns[\s\S]+\.filter\(\(run\) => !run\.dismissed\)[\s\S]+\.filter\(\(run\) => run\.workflowId === workflow\.id\)/);
+});
+
+test("studio run-now queues and watches inline without blocking the submit", () => {
+  const dashboard = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  const handler = dashboard.slice(dashboard.indexOf("/api/studio-task"), dashboard.indexOf("/api/studio-task") + 5000);
+  assert.match(handler, /form\.get\("submitMode"\) === "run-now"/);
+  assert.match(handler, /watch: false/);
+  assert.match(handler, /startStudioRunNowWatch\(/);
+  assert.match(dashboard, /const studioRunNowWatches = new Set<string>\(\)/);
+  assert.match(dashboard, /function startStudioRunNowWatch\(runId: string, projectDir: string\)/);
+  assert.match(dashboard, /void watchWorkflowRun\(\{/);
 });

@@ -128,7 +128,8 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
       <div id="routing-preview" class="routing-preview" hidden aria-live="polite"></div>
       <input type="hidden" id="plan-stages" name="planStages">
       <section id="plan-editor" class="plan-editor" hidden><header><strong>Execution plan</strong><span id="plan-summary"></span></header><div id="plan-stage-list"></div></section>
-      <div class="dialog-actions"><button type="button" class="dialog-cancel">Cancel</button><button type="submit" class="dialog-start">${icon("play")} Start workflow</button></div>
+      <p class="dialog-run-hint">Run now queues the plan and drives it live in this task pane; Start workflow queues it for the next worker batch.</p>
+      <div class="dialog-actions"><button type="button" class="dialog-cancel">Cancel</button><button type="submit" class="dialog-run-now" name="submitMode" value="run-now">${icon("play")} Run now</button><button type="submit" class="dialog-start">${icon("play")} Start workflow</button></div>
     </form>
   </dialog>
   <script>${studioScript()}</script>
@@ -728,6 +729,8 @@ function studioCss(): string {
     .dialog-actions button { min-height: 37px; padding: 0 13px; border: 1px solid #465158; cursor: pointer; font-size: 11px; font-weight: 650; }
     .dialog-cancel { background: transparent; color: #b7c0c5; }
     .dialog-start { display: flex; align-items: center; gap: 7px; border-color: var(--lime) !important; background: var(--lime); color: #10200d; }
+    .dialog-run-now { display: flex; align-items: center; gap: 7px; border-color: var(--lime) !important; background: transparent; color: var(--lime); }
+    .dialog-run-hint { margin: 0; color: var(--faint); font-size: 10px; line-height: 1.5; text-align: right; }
     @media (max-width: 1050px) {
       :root { --rail-width: 192px; }
       .studio-topbar { grid-template-columns: var(--rail-width) 1fr auto; }
