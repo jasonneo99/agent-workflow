@@ -9,6 +9,7 @@ test('resolution yield counts verified closure and non-resolving turns without t
   {sourceRunId:'b',strategy:'invented',state:'failed',blockedSince:null,settledAt:'2026-10-26T00:03:00Z'}
  ]);
  assert.equal(report.totalBlockedFamiliesObserved,2);assert.equal(report.totalAcceptanceGapsClosed,1);assert.equal(JSON.stringify(report).includes('task'),false);
+ assert.equal(report.verifiedFamilies,1);assert.equal(report.verifiedFamilyRate,.5);assert.equal(report.verifiedAttemptRate,1/3);
  assert.deepEqual(report.strategies.find(row=>row.strategy==='verify-sealed-candidate'),{strategy:'verify-sealed-candidate',blockedFamiliesObserved:1,attempts:1,acceptanceGapsClosed:1,nonResolvingTurns:0,verifiedClosureRate:1,averageTimeToVerifiedMs:120000});
  assert.equal(report.strategies.find(row=>row.strategy==='unknown')?.nonResolvingTurns,1);
  assert.deepEqual(report.adaptiveRankingShadow,{applied:false,minimumSamplesPerStrategy:20,eligibleStrategies:0,promotionEligible:false,proposedOrder:[]});
@@ -29,4 +30,21 @@ test('adaptive strategy ranking remains shadow-only and requires confident sampl
  assert.equal(shadow.promotionEligible,true);
  assert.deepEqual(shadow.proposedOrder.map(item=>item.strategy),['repair-exact-source','discover-missing-scope']);
  assert.ok(shadow.proposedOrder[0].verifiedClosureLowerBound>shadow.proposedOrder[1].verifiedClosureLowerBound);
+});
+test('first-attempt yield uses lifetime ordinals and reports missing time evidence',()=>{
+ const rows=[
+  {sourceRunId:'a',strategy:'repair-exact-source',state:'verified',blockedSince:null,settledAt:'2026-10-26T00:03:00Z',attemptOrdinal:2},
+  {sourceRunId:'b',strategy:'repair-exact-source',state:'verified',blockedSince:'2026-10-26T00:00:00Z',settledAt:'2026-10-26T00:02:00Z',attemptOrdinal:1},
+  {sourceRunId:'c',strategy:'repair-exact-source',state:'held',blockedSince:null,settledAt:'2026-10-26T00:02:00Z',attemptOrdinal:1}
+ ];
+ const report=summarizeQueuePartnerResolutionYield(rows);
+ assert.deepEqual(report.firstAttemptAcceptance,{familiesWithFirstAttempt:2,accepted:1,rate:.5,familyCoverage:2/3});
+ assert.deepEqual(report.timeToVerified,{samples:1,verifiedAttempts:2,coverage:.5,averageMs:120000});
+ const unknown=summarizeQueuePartnerResolutionYield([{...rows[0],attemptOrdinal:undefined}]);
+ assert.equal(unknown.firstAttemptAcceptance.rate,null);assert.equal(unknown.timeToVerified.averageMs,null);
+});
+test('multiple source attempts within one recorded family count as one family',()=>{
+ const base={familyId:'family-a',strategy:'repair-exact-source',blockedSince:null,settledAt:'2026-10-26T00:00:00Z'};
+ const report=summarizeQueuePartnerResolutionYield([{...base,sourceRunId:'old',state:'held'},{...base,sourceRunId:'new',state:'verified'}]);
+ assert.equal(report.totalAttempts,2);assert.equal(report.totalBlockedFamiliesObserved,1);assert.equal(report.verifiedFamilies,1);
 });

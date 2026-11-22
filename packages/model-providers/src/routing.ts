@@ -25,7 +25,7 @@ type ProviderReadiness = {
   details: string[];
 };
 
-const readinessCache = new Map<string, Promise<ProviderReadiness>>();
+const readinessCache = new Map<string, {expiresAt:number;result:Promise<ProviderReadiness>}>();
 
 export type SelectModelRouteInput =
   Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief"> &
@@ -260,7 +260,7 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-async function getProviderReadiness(providerId: string): Promise<ProviderReadiness> {
+export async function getProviderReadiness(providerId: string): Promise<ProviderReadiness> {
   if (providerId === "auto") {
     return { ready: false, details: ["auto is a router, not an execution provider"] };
   }
@@ -269,11 +269,13 @@ async function getProviderReadiness(providerId: string): Promise<ProviderReadine
   }
 
   let cached = readinessCache.get(providerId);
-  if (!cached) {
-    cached = checkProviderReadiness(providerId);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    const entry={expiresAt:Date.now()+30_000,result:checkProviderReadiness(providerId)};
+    cached = entry;
     readinessCache.set(providerId, cached);
+    void entry.result.then(result=>{entry.expiresAt=Date.now()+(result.ready?30_000:5_000);});
   }
-  return cached;
+  return cached.result;
 }
 
 async function checkProviderReadiness(providerId: string): Promise<ProviderReadiness> {

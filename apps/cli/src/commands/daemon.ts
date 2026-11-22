@@ -4774,7 +4774,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           const snapshot = await loadQueueCardSnapshot(undefined);
           const report = await buildQueueStatusReport(undefined, undefined, true, {
             items: snapshot.value.queue, capturedAt: snapshot.capturedAt, ageMs: snapshot.ageMs, refreshing: snapshot.refreshing, limit: 100
-          });
+          },true);
           response.writeHead(200, {"content-type":"application/json; charset=utf-8","cache-control":"no-store"});
           response.end(JSON.stringify({version:1,authority:"evidence-only",scope:{kind:"queue"},observedAt:report.observedAt,coordinator:await readPartnerQueueObservation(ctx.rootDir),capacity:{repair:5,verifier:1},
             entries:report.rows.slice(0,12).map(row=>({id:row.id,familyId:row.id,runId:row.runId,title:`${row.projectName} · ${row.name}`,state:row.status,kind:"observation",
@@ -4794,6 +4794,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       response.end(JSON.stringify(report)); return;
     }
 
+    if (requestUrl.pathname === "/api/queue-resolution-metrics") {
+      if(request.method!=="GET"){response.writeHead(405,{allow:"GET"});response.end();return;}
+      if(!isTrustedLocalDashboardRequest(request)){response.writeHead(403);response.end();return;}
+      const {queuePartnerResolutionYield}=await import("../../../../packages/storage/src/queue-partner-resolution-metrics.js");
+      const metrics=await queuePartnerResolutionYield();
+      response.writeHead(200,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});
+      response.end(JSON.stringify(metrics));return;
+    }
     if (requestUrl.pathname === "/api/queue") {
       const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
       const snapshot = await loadQueueCardSnapshot(projectRootUri, requestUrl.searchParams.get("fresh") === "1");

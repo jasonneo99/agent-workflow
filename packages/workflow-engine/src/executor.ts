@@ -1,4 +1,5 @@
 import { createStageFileReader, executeStageFileWrites } from "./stage-file-actions.js";
+import {createProviderCallGuard} from './provider-call-guard.js';
 export { isInternalWorkflowReceiptWrite } from "./stage-file-actions.js";
 import { boundedProjectFileSearchResult } from "./project-file-search.js";
 export { boundedProjectFileSearch, boundedProjectFileSearchResult } from "./project-file-search.js";
@@ -301,10 +302,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         ...task,
         projectRootUri: localProjectRootUri,
         stagePattern,
+        requiredVerificationCommands:preparation?.commands,
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
       if(preparation?.workspace)stageInput.compiledBrief += `\nCurrent project instruction snapshots are read-only inputs under ${preparation.workspace.contextRoot}/. This is the run-owned checkout; the runtime manages ownership, test environments, commits and final source integration.\n`;
+      if(preparation?.commands.length)stageInput.compiledBrief += '\n## Required literal candidate verification\n'+preparation.commands.map(command=>'- '+command).join('\n')+'\nThese are the runtime-selected checks for this source scope. Wildcards in environment profile declarations are selectors, not executable requests. Preserve any additional check explicitly required by the original task; do not substitute a broad profile suite for these candidate checks.\n';
       if (task.executorSnapshot) {
         const assertExecutorAuthority = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
         await assertExecutorAuthority(true);
@@ -360,11 +363,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       // chains (which may also override the original model tier).
       const configuredFallbackPolicy = providerFallbackPolicyFromEnv();
       const fallbackPolicy = strictProviderIds === undefined ? configuredFallbackPolicy : { ...configuredFallbackPolicy, chains: {} };
+      const guardProviderCalls=createProviderCallGuard(fallbackPolicy);
       const guardedProviderFactory = (providerId: string) => {
         if (strictProviderIds !== undefined && !strictProviderIds.has(providerId)) {
           throw new Error(`Provider ${providerId} is outside the worker's strict authorization`);
         }
-        return providerWithInfluence(providerFromEnv(providerId));
+        return guardProviderCalls(providerWithInfluence(providerFromEnv(providerId)));
       };
       let guideAssignmentForStage=options?.guidePlane?.enabled?(options.guidePlane.assignment??guideAssignment(task.runId,task.workflowId,options.guidePlane.sampleRate)):null;
       if(guideAssignmentForStage){
@@ -696,8 +700,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files : undefined;
         const candidateProfile=([...(task.priorStageArtifacts??[])].reverse().find(stage=>stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint|undefined)?.environmentProfile;
         const candidateCommands=candidateProfile?project.execution.environments?.profiles[candidateProfile]?.verification.flatMap(rule=>rule.commands).filter(command=>!command.includes('*'))??[]:[];
-        const scopedCommands=preparation&&repairCommitSelected?await literalScopeVerificationCommands(localProjectRootUri,project,[...(task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()],{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId}):[];
-        const declaredPipelineCommands=scopedCommands.length?scopedCommands:candidateCommands.length?candidateCommands:preparation?.commands??[];
+        const scopedCommands=preparation&&(repairCommitSelected||stagePattern.type==='verifier')?await literalScopeVerificationCommands(localProjectRootUri,project,[...(candidateFiles??task.executionPipeline?.sourcePaths??[]),...(await reconstructRunWriteFootprint(task.runId,localProjectRootUri)).keys()],{runId:task.runId,taskId:task.taskId,workflowId:task.workflowId,stageId:task.stageId}):[];
+        const declaredPipelineCommands=scopedCommands.length?scopedCommands:preparation?.commands.length?preparation.commands:candidateCommands;
         pipelineVerificationCommands=declaredPipelineCommands;
         const observedCommands=new Set([...(output.requestedCommands??[]),...currentVerificationCommands(actionResults)]);
         const scheduledVerifierCommands = preparation&&((repairCommitSelected)||stagePattern.type==='verifier')

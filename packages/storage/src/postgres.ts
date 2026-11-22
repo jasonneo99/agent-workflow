@@ -13,6 +13,7 @@ import { runPipelineSchemaSql, installationRequiresRunPipeline } from './run-pip
 import { pipelineContract, preparedWorkflow, type RunPipelineContract } from '../../run-environments/src/pipeline.js';
 
 import type pg from "pg";
+import {queryQueuePresentation} from './queue-read-query.js';
 import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
@@ -82,7 +83,13 @@ export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(projectIdentitySchemaSql);
     await client.query(runtimeEventFunctionSql);
-    await client.query(workflowRunSetMigrationSql);
+    // Installed run-set schema is maintained by normal run creation. Replaying
+    // the historical backfill takes an exclusive table lock and can oscillate
+    // across malformed old lineage, blocking every queue reader and worker.
+    const runSetsInstalled=(await client.query(`select exists(select 1 from pg_attribute
+      where attrelid=to_regclass('workflow_runs') and attname='run_set_id' and attnotnull and not attisdropped)
+      and to_regclass('workflow_runs_run_set_idx') is not null as ready`)).rows[0]?.ready;
+    if(!runSetsInstalled)await client.query(workflowRunSetMigrationSql);
     await client.query(`
       ALTER TABLE workflow_runs
       ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
@@ -562,7 +569,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
   return withClient(async (client) => {
     const identityFamilies = options?.latestRelated ? await projectIdentitySchemaAvailable(client) : false;
     const projectRootUri = options?.projectRootUri?.trim() || null;
-    const result = await client.query<WorkflowQueueItem>(
+    const result = await queryQueuePresentation<WorkflowQueueItem>(client,
       `${options?.latestRelated ? queuePresentationSql(identityFamilies, "$2") : ""} select
          wr.id::text as "runId",
          wr.run_set_id::text as "runSetId",

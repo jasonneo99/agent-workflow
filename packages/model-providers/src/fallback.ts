@@ -9,7 +9,7 @@ export interface ProviderFallbackAttempt { provider: string; model?: string; att
 export interface ProviderFallbackPolicy { chains: Record<string, ProviderFallbackCandidate[]>; maxRetries: number; circuitFailureThreshold: number; circuitCooldownMs: number; allowQuotaFallback: boolean; }
 export interface ProviderFallbackResult { output: StageExecutionOutput; requestedProvider: string; actualProvider: string; actualModel?: string; fallbackUsed: boolean; attempts: ProviderFallbackAttempt[]; }
 
-type CircuitState = { failures: number; openedAt?: number };
+type CircuitState = { failures: number; openedAt?: number; failureKind?: ProviderFailureKind };
 const circuits = new Map<string, CircuitState>();
 const loadedCircuitPaths = new Set<string>();
 let circuitWrite = Promise.resolve();
@@ -106,7 +106,7 @@ export async function executeWithProviderFallback(input: {
     ? path.resolve(process.env.AGENTFLOW_PROVIDER_CIRCUIT_STATE ?? ".agent-workflow/runtime/provider-circuits.json")
     : input.circuitStatePath;
   if (circuitStatePath) await loadCircuits(circuitStatePath);
-  const candidates = uniqueCandidates([{ provider: input.providerId }, ...(policy.chains[input.providerId] ?? policy.chains["*"] ?? [])]);
+  const candidates = uniqueCandidates([{ provider: input.providerId,model:input.stageInput.modelOverride }, ...(policy.chains[input.providerId] ?? policy.chains["*"] ?? [])]);
   const attempts: ProviderFallbackAttempt[] = [];
   let lastError: ProviderExecutionError | undefined;
 
@@ -118,7 +118,9 @@ export async function executeWithProviderFallback(input: {
     const circuitKey = `${candidate.provider}:${candidate.model ?? "tier-default"}`;
     const circuit = circuits.get(circuitKey);
     if (circuit?.openedAt && now() - circuit.openedAt < policy.circuitCooldownMs) {
-      attempts.push(attemptRecord(input.stageInput, candidate, 0, "skipped", "provider_outage", "Provider circuit is cooling down."));
+      const kind=circuit.failureKind??'provider_outage';
+      lastError=new ProviderExecutionError(kind,'Provider circuit is cooling down.');
+      attempts.push(attemptRecord(input.stageInput, candidate, 0, "skipped", kind, lastError.message));
       continue;
     }
     let provider: ModelProvider;
@@ -157,9 +159,10 @@ export async function executeWithProviderFallback(input: {
         if (failure.kind === "authentication" || failure.kind === "configuration") throw attachAttempts(failure, attempts);
         const state = circuits.get(circuitKey) ?? { failures: 0 };
         const retryable = failure.kind === "provider_outage" || failure.kind === "rate_limited";
-        if (retryable) {
+        if (retryable || failure.kind === 'account_quota') {
           state.failures += 1;
-          if (state.failures >= policy.circuitFailureThreshold) state.openedAt = now();
+          state.failureKind=failure.kind;
+          if (failure.kind === 'account_quota' || state.failures >= policy.circuitFailureThreshold) state.openedAt = now();
           circuits.set(circuitKey, state);
           if (circuitStatePath) await persistCircuits(circuitStatePath);
         }

@@ -10,12 +10,16 @@ import { assertCommandAllowed, commandSerializationResource, withDeveloperToolPa
 import {projectConfigSchema} from '../../agent-registry/src/schemas.js';
 
 test('required prepared execution has no host fallback and cannot delegate Git publication to the model',async()=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'prepared-git-contract-')));
+ try{
+ assert.equal(spawnSync('git',['init',root],{encoding:'utf8'}).status,0);
  const project=projectConfigSchema.parse({project:{name:'Required source'},actions:{allowed_commands:['node --version','git *']}});
- await assert.rejects(executeAllowedCommand({cwd:process.cwd(),project,commandLine:'node --version',environmentContext:{runId:'missing-profile',requireEnvironment:true,managedSource:true}}),/declared prepared environment/i);
- for(const commandLine of ['git commit -m bypass','git reset --hard','git add .'])await assert.rejects(executeAllowedCommand({cwd:process.cwd(),project,commandLine,environmentContext:{runId:'source',requireEnvironment:true,managedSource:true}}),/owned by the prepared runtime|blocked pattern/);
- const status=await executeAllowedCommand({cwd:process.cwd(),project,commandLine:'git status --porcelain',environmentContext:{runId:'source',requireEnvironment:true,managedSource:true}});
+ await assert.rejects(executeAllowedCommand({cwd:root,project,commandLine:'node --version',environmentContext:{runId:'missing-profile',requireEnvironment:true,managedSource:true}}),/declared prepared environment/i);
+ for(const commandLine of ['git commit -m bypass','git reset --hard','git add .'])await assert.rejects(executeAllowedCommand({cwd:root,project,commandLine,environmentContext:{runId:'source',requireEnvironment:true,managedSource:true}}),/owned by the prepared runtime|blocked pattern/);
+ const status=await executeAllowedCommand({cwd:root,project,commandLine:'git status --porcelain',environmentContext:{runId:'source',requireEnvironment:true,managedSource:true}});
  assert.equal(status.exitCode,0);
- await assert.rejects(executeAllowedCommand({cwd:process.cwd(),project,commandLine:'git diff --no-index /etc/passwd /etc/hosts',environmentContext:{runId:'source',requireEnvironment:true}}),/cannot escape/);
+ await assert.rejects(executeAllowedCommand({cwd:root,project,commandLine:'git diff --no-index /etc/passwd /etc/hosts',environmentContext:{runId:'source',requireEnvironment:true}}),/cannot escape/);
+ }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
 test('environment management is a runner capability even when no test selector matched the agent command',async()=>{

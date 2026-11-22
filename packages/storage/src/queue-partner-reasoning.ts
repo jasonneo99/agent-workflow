@@ -9,6 +9,7 @@ import {queueWorkingOccupancyOnClient} from './queue-coordinator.js';
 import {loadProjectConfig} from '../../agent-registry/src/loaders.js';
 import {resolveExecutionPolicy,canonicalJsonHash} from '../../policy-engine/src/index.js';
 import {assertFilePathAllowed} from '../../local-tools/src/file-writer.js';
+import {assertFileReadAllowed} from '../../local-tools/src/file-reader.js';
 import {sourceSubjectHash} from '../../workflow-engine/src/source-subject.js';
 import {computeReceiptHash} from '../../workflow-engine/src/receipt-chain.js';
 import {activeQueueSourceOnClient} from './queue-source-membership.js';
@@ -18,6 +19,7 @@ export interface PartnerReasoningReservation {
  owner:string;intentFence:string;fileScopes:string[];fingerprint:string;
  taskHash:string;policyHash:string;sourceHash:string|null;writePaths:string[];
  requiresVerifierSlot?:boolean;
+ discoveryPaths?:string[];discoveryHash?:string;
 }
 const active="('reserved','running','uncertain')";
 /** Lifetime ledger, not a per-watch or per-fingerprint counter. */
@@ -40,6 +42,9 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
   ||(input.requiresVerifierSlot!==undefined&&typeof input.requiresVerifierSlot!=='boolean')
   ||(input.writePaths.length>0)!==(input.sourceHash!==null))throw Error('Invalid Partner reasoning binding');
  const expected=input.writePaths.length?input.writePaths:[`runtime/queue-partner/recovery/${input.sourceRunId}`];
+ if(input.discoveryPaths!==undefined||input.discoveryHash!==undefined){
+  if(!exactPartnerPaths(input.discoveryPaths)||!input.discoveryPaths.length||!/^[a-f0-9]{64}$/u.test(input.discoveryHash??''))throw Error('Invalid discovery source binding');
+ }
  if(acceptanceDigest([...expected].sort())!==acceptanceDigest([...input.fileScopes].sort()))throw Error('Reasoning intent does not cover its exact effects');
  await c.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
  const row=(await c.query(`select r.id::text,r.project_id::text,r.run_set_id::text,r.task,r.status,r.policy_profile,r.evaluation_metadata metadata,p.root_uri
@@ -54,6 +59,10 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
  if(await fs.realpath(input.projectRootUri)!==input.projectRootUri)return null;
  const policy=resolveExecutionPolicy(await loadProjectConfig(input.projectRootUri),row.policy_profile).project;
  if(canonicalJsonHash(policy)!==input.policyHash)return null;
+ if(input.discoveryPaths){
+  for(const file of input.discoveryPaths)assertFileReadAllowed(file,policy);
+  if(await sourceSubjectHash(input.projectRootUri,input.discoveryPaths)!==input.discoveryHash)return null;
+ }
  const requiresVerifierSlot=input.writePaths.length>0&&policy.execution.repair_commits?.enabled===true;
  // A stale one-stage caller cannot reserve a newly opted-in repair pipeline.
  if(Boolean(input.requiresVerifierSlot)!==requiresVerifierSlot)return null;
@@ -70,6 +79,15 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
  union all select 1 from workflow_tasks where run_id in(select id from family) and status in ('leased','running')
  union all select 1 from action_approvals where run_id in(select id from family) and status in ('pending','executing') limit 1`,[input.projectId,row.run_set_id]);
  if(busy.rowCount)return null;
+ // Discovery observations and provider failures change the attempt fingerprint,
+ // but do not make unchanged task/policy inputs worth rediscovering. Keep this
+ // check under the coordinator lock so concurrent workers share one budget.
+ if(!input.writePaths.length&&(await c.query(`select 1 from action_receipts
+   where run_id=$1 and action_type='queue_partner_reasoning_reserved'
+     and metadata->>'taskHash'=$2 and metadata->>'policyHash'=$3
+     and coalesce(metadata->>'discoveryHash','')=$4
+     and metadata->'writePaths'='[]'::jsonb limit 1`,
+ [input.sourceRunId,input.taskHash,input.policyHash,input.discoveryHash??''])).rowCount)return null;
  const assignments=(await c.query(`select family_id,project_id::text,role,lane,file_scopes from queue_coordinator_assignments where state in ${active}`)).rows;
  const occupancy=await queueWorkingOccupancyOnClient(c);
  if(occupancy.count>=5||(requiresVerifierSlot&&occupancy.verifier)||occupancy.externalFamilyIds.includes(input.familyId)||assignments.some(a=>a.family_id===input.familyId))return null;

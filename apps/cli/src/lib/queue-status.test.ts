@@ -105,6 +105,13 @@ test('existing Partner reasoning callers retain their advisory evidence unless g
  const adapter={snapshot:async()=>snapshot()};const existing=await buildQueueStatusReport(undefined,adapter,true);assert.equal(existing.rows.length,1);assert.equal(existing.rows[0].runId,run);assert.equal(existing.rows[0].status,'Held');assert.equal(existing.queueSnapshot,undefined);
  const dashboard=await buildQueueStatusReport(undefined,adapter,true,canonical([]));assert.equal(dashboard.rows.length,0);assert.equal(dashboard.historyRows?.length,1);assert.equal(dashboard.queueSnapshot?.familyCount,0);
 });
+test('current queue activity requests restrict history reads to canonical family members',async()=>{
+ let requested:readonly string[]|undefined;
+ const adapter={snapshot:async(_project?:string,_include?:boolean,runIds?:readonly string[])=>{requested=runIds;return snapshot();}};
+ await buildQueueStatusReport(undefined,adapter,true,canonical(),true);
+ assert.deepEqual(new Set(requested),new Set([run,child]));
+ await buildQueueStatusReport(undefined,adapter,true,canonical());assert.equal(requested,undefined,'The explicit history surface keeps its full scope');
+});
 test('identity grouping mirrors explicit queue edges without cross-project or multi-source fusion',()=>{
  const identity=(runId:string,patch:Partial<Parameters<typeof groupQueueStatusIdentities>[0][number]>={})=>({runId,projectId:p,runSetId:runId,startedAt:'2026-01-01T00:00:00Z',replacementRunId:null,parentRunIds:[],idempotencyKey:null,source:null,actor:null,legacySources:null,runStatus:'blocked',visible:true,...patch});
  const next='55555555-5555-4555-8555-555555555555';

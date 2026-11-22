@@ -80,5 +80,5 @@ test("strict provider authorization covers every execution and disables environm
   assert.match(source, /executeStageFileWrites\(\{[\s\S]+route, routedStageInput, fallbackPolicy, guardedProviderFactory,/u);
   assert.match(fileActions, /guardedProviderFactory: NonNullable<FallbackInput\["providerFactory"\]>/u);
   assert.doesNotMatch(fileActions, /providerFromEnv|providerFallbackPolicyFromEnv/u);
-  assert.ok(source.includes("return providerWithInfluence(providerFromEnv(providerId));"));
+  assert.ok(source.includes("return guardProviderCalls(providerWithInfluence(providerFromEnv(providerId)));"));
 });

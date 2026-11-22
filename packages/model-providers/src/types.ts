@@ -50,6 +50,8 @@ export interface StageExecutionInput {
   acceptanceContract?: StructuredAcceptanceContract;
   /** Runtime task graph, excluding this stage and completed/cancelled tasks. */
   remainingStageIds?: string[];
+  /** Literal checks selected by prepared runtime policy, never model output. */
+  requiredVerificationCommands?: string[];
   /** Resolved local checkout used only by providers that support governed read-only inspection. */
   projectRootUri?: string;
   projectConfig: ProjectConfig;

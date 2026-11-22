@@ -27,6 +27,7 @@ export function renderQueueHistoryPanel():string{return `<section class="panel q
  <div id="queue-history-tooltip" class="queue-history-tooltip" role="tooltip" hidden></div>
  <details class="queue-history-disclosure" open><summary><span><strong>Queue totals</strong><small>Stacked queue volume by minute</small></span></summary><div id="queue-history-bars" class="queue-history-chart queue-history-bars" role="img" aria-label="Stacked queue totals, one observation per minute"></div></details>
  <div id="queue-history-signals" class="queue-history-signals" aria-label="Queue changes over the selected range"></div>
+ <p id="queue-delivery-yield" class="muted" role="status">Verified recovery yield: loading. Queue quality above measures load, not acceptance.</p>
  <p id="queue-history-status" class="muted" role="status" aria-live="polite"></p>
 </section>`;}
 
@@ -36,10 +37,12 @@ const scoreQueueQuality=${scoreQueueQuality.toString()};
 function startQueueHistory(){
  const chart=document.getElementById('queue-history-chart'),bars=document.getElementById('queue-history-bars'),tooltip=document.getElementById('queue-history-tooltip'),range=document.getElementById('queue-history-range'),status=document.getElementById('queue-history-status'),legend=document.getElementById('queue-history-legend'),signals=document.getElementById('queue-history-signals'),quality=document.getElementById('queue-history-quality');
  if(!chart||!bars||!tooltip||!range||!status||!legend||!signals||!quality)return {stop(){}};
+ const delivery=document.getElementById('queue-delivery-yield');
+ const loadDelivery=async()=>{try{const response=await fetch('/api/queue-resolution-metrics',{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('unavailable');const metrics=await response.json();if(delivery)delivery.textContent='Verified recovery families: '+metrics.verifiedFamilies+'/'+metrics.totalBlockedFamiliesObserved+' · verified attempts: '+metrics.totalAcceptanceGapsClosed+'/'+metrics.totalAttempts+' · latest 500 recovery outcomes. Archival does not count as acceptance.';}catch{if(delivery)delivery.textContent='Verified recovery yield is unavailable; queue load does not establish acceptance.';}};
  const colors={active:'#2563eb',waiting:'#d97706',blocked:'#7c3aed',failed:'#dc2626',completed:'#16a34a',total:'#0f172a'},labels={active:'Active',waiting:'Waiting',blocked:'Blocked',failed:'Failed',completed:'Completed since range start',total:'Total queue cards'};
  const stateKeys=['active','waiting','blocked','failed','completed'],lineKeys=[...stateKeys,'total'];
  const signed=value=>(value>0?'+':'')+value;
- let stopped=false,timer=null,controller=null;
+ let stopped=false,timer=null,controller=null,loading=false,refreshPending=false;
  const renderQuality=result=>{quality.className='queue-history-quality '+result.tone;quality.replaceChildren();const name=document.createElement('span'),value=document.createElement('strong'),label=document.createElement('small');name.textContent='Queue quality';value.textContent=result.score===null?'—':String(result.score);label.textContent=result.label;quality.append(name,value,label);quality.title=result.drivers.join(' · ');};
  const draw=points=>{
   chart.replaceChildren();bars.replaceChildren();legend.replaceChildren();signals.replaceChildren();tooltip.hidden=true;tooltip.replaceChildren();
@@ -64,7 +67,7 @@ function startQueueHistory(){
   for(let index=0;index<points.length;index+=labelEvery){const label=document.createElementNS(barSvg.namespaceURI,'text'),x=points.length===1?left+plotWidth/2:left+(index/(points.length-1))*plotWidth;label.setAttribute('x',String(x));label.setAttribute('y',String(barHeight-7));label.setAttribute('text-anchor','middle');label.setAttribute('class','queue-chart-x-label');label.textContent=new Date(points[index].at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});barSvg.append(label);}bars.append(barSvg);
   status.textContent=points.length+' observed minute'+(points.length===1?'':'s')+' · change from range start · latest '+new Date(points.at(-1).at).toLocaleTimeString()+(warnings.length?' · warning: '+warnings.join(', ')+' increased':'');
  };
- const load=async()=>{if(stopped)return;controller?.abort();controller=new AbortController();clearTimeout(timer);try{const url=new URL('/api/queue-history',location.origin);url.searchParams.set('range',range.value);url.searchParams.set('fresh','1');const project=new URL(location.href).searchParams.get('project');if(project)url.searchParams.set('project',project);const response=await fetch(url,{cache:'no-store',credentials:'same-origin',signal:controller.signal});if(!response.ok)throw Error('unavailable');const payload=await response.json();if(!Array.isArray(payload.points)||payload.points.length>1441)throw Error('invalid');draw(payload.points);}catch(error){if(!stopped&&error?.name!=='AbortError')status.textContent='Queue history is reconnecting; the last chart is preserved.';}finally{if(!stopped)timer=setTimeout(load,60000);}};
+ const load=async()=>{if(stopped)return;if(loading){refreshPending=true;return;}loading=true;void loadDelivery();controller=new AbortController();clearTimeout(timer);try{const url=new URL('/api/queue-history',location.origin);url.searchParams.set('range',range.value);url.searchParams.set('fresh','1');const project=new URL(location.href).searchParams.get('project');if(project)url.searchParams.set('project',project);const response=await fetch(url,{cache:'no-store',credentials:'same-origin',signal:controller.signal});if(!response.ok)throw Error('unavailable');const payload=await response.json();if(!Array.isArray(payload.points)||payload.points.length>1441)throw Error('invalid');draw(payload.points);}catch(error){if(!stopped&&error?.name!=='AbortError')status.textContent='Queue history is reconnecting; the last chart is preserved.';}finally{loading=false;if(!stopped)timer=setTimeout(load,refreshPending?0:60000);refreshPending=false;}};
  range.addEventListener('change',load);load();return {refresh:load,stop(){stopped=true;clearTimeout(timer);controller?.abort();}};
 }
 `;}

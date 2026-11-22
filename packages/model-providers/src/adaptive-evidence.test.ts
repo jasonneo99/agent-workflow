@@ -14,6 +14,15 @@ test("selects fresh passing evidence for the exact agent and task class", () => 
   assert.equal(decision.candidate?.providerId, "mock");
   assert.ok(decision.confidence > 0);
 });
+test('fresh credit exhaustion switches to a qualified funded model; stale credit is unknown',()=>{
+ const best=record({providerId:'best',quality:1,creditRemainingUsd:0,creditObservedAt:now.toISOString()});
+ const funded=record({providerId:'funded',quality:.85,creditRemainingUsd:2,costUsd:.1,creditObservedAt:now.toISOString()});
+ const choose=(rows:AdaptiveRouteEvidence[])=>selectAdaptiveEvidence(rows,{agentId:'test-engineer',taskClass:'verify',now});
+ assert.equal(choose([best,funded]).candidate?.providerId,'funded');
+ assert.equal(choose([{...best,creditObservedAt:'2026-09-22T12:00:00Z'},funded]).candidate?.providerId,'best');
+ assert.equal(choose([{...funded,creditRemainingUsd:.01}]).status,'poor-performance');
+ assert.equal(choose([{...funded,quality:.2}]).status,'poor-performance','Credit cannot bypass quality');
+});
 
 test("distinguishes insufficient evidence from poor performance and decays stale data", () => {
   assert.equal(selectAdaptiveEvidence([record({ samples: 2 })], { agentId: "test-engineer", taskClass: "verify", now }).status, "insufficient-evidence");

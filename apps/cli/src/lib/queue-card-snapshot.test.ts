@@ -22,11 +22,21 @@ test("returns bounded stale data immediately and exposes its age while refreshin
   const cache = new QueueCardSnapshotCache<string>(750, 30_000, () => now);
   await cache.get("all", async () => value);
   now = 900;
-  const prior = await cache.get("all", () => new Promise<string>((resolve) => { release = resolve; }), true);
+  const prior = await cache.get("all", () => new Promise<string>((resolve) => { release = resolve; }));
   assert.deepEqual(prior, { value: "first", capturedAt: 0, ageMs: 900, refreshing: true });
   release("second");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((await cache.get("all", async () => "unused")).value, "second");
+});
+
+test('explicit fresh reads wait for the post-mutation snapshot',async()=>{
+ const cache=new QueueCardSnapshotCache<string>();
+ await cache.get('all',async()=>'visible');
+ let release!:(value:string)=>void;
+ const fresh=cache.get('all',()=>new Promise<string>(resolve=>{release=resolve;}),true);
+ release('archived');
+ assert.equal((await fresh).value,'archived');
+ assert.equal((await fresh).refreshing,false);
 });
 
 test("does not serve a snapshot beyond the hard stale bound", async () => {

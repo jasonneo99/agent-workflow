@@ -27,6 +27,8 @@ test("direct specialist tasks honor role-specific file editing capabilities", ()
   assert.equal(createAgentTaskWorkflow(agent("backend-engineer", ["edit_backend_files"])).execution?.kind, "source-change");
   assert.equal(createAgentTaskWorkflow(agent("frontend-engineer", ["edit_frontend_files"])).execution?.kind, "source-change");
   assert.equal(createAgentTaskWorkflow(agent("implementation-agent", ["edit_local_files"])).execution?.kind, "source-change");
+  assert.equal(createAgentTaskWorkflow(agent("docs-maintainer", ["edit_docs"])).execution?.kind, "source-change");
+  assert.equal(createAgentTaskWorkflow(agent("docs-maintainer", ["update_changelog"])).execution?.kind, "source-change");
 });
 
 test("direct specialist tasks remain read-only without a file editing capability", () => {

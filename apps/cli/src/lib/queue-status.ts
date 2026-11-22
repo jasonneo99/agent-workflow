@@ -1,4 +1,5 @@
 import {withClient} from '../../../../packages/storage/src/client.js';
+import {queryQueuePresentation} from '../../../../packages/storage/src/queue-read-query.js';
 import type {WorkflowQueueItem} from '../../../../packages/storage/src/workflow-run-types.js';
 import {buildQueueCardTitle} from '../../../../packages/storage/src/run-presentation.js';
 import {projectIdentitySchemaAvailable} from '../../../../packages/storage/src/project-identity.js';
@@ -13,9 +14,23 @@ export type QueueStatusQueueSnapshot={items:WorkflowQueueItem[];capturedAt:numbe
 export type QueueStatusReport={version:1;authority:'evidence-only';scope:'partner'|'all';observedAt:string;rows:QueueStatusRow[];projects:Array<{id:string;name:string}>;truncated:boolean;historyRows?:QueueStatusRow[];acceptanceReviewRows?:QueueStatusRow[];queueSnapshot?:{capturedAt:string;ageMs:number;refreshing:boolean;limit:number;familyCount:number}};
 type SourceRow={runId:string;projectId:string;projectName:string;familyId:string;name:string;runStatus:string;currentStatus?:string|null;parentRunId?:string|null;queuedTasks:number;runningTasks:number;approvalCount:number;issue?:string|null;decision?:Record<string,unknown>|null;recordedAt?:string|null;attempts?:QueueStatusAttempt[];attemptCount?:number;openAttemptCount?:number;completedAttemptCount?:number};
 export type QueueStatusSnapshot={managed:SourceRow[];queue:SourceRow[];projects:QueueStatusProject[];truncated?:boolean};
-export interface QueueStatusAdapter{snapshot(projectId?:string,includeOther?:boolean):Promise<QueueStatusSnapshot>}
+export interface QueueStatusAdapter{snapshot(projectId?:string,includeOther?:boolean,runIds?:readonly string[]):Promise<QueueStatusSnapshot>}
 const uuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu;
 const clean=(v:unknown,max=1200)=>sanitizeAssistantText(typeof v==='string'?v:'',max);
+/** Match the newest authenticated observation within the current family. Do
+ * not compare receipt JSON for every historical decision before choosing it. */
+export const queueDecisionReadSql=`select a.content,a.created_at
+ from artifacts a join workflow_runs r on r.id=a.run_id
+ where a.run_id=any(qf.members) and a.kind='queue_partner_decision'
+  and a.content->>'version'='1' and a.content->>'authority'='evidence-only'
+  and a.content->>'projectId'=r.project_id::text and a.content->>'runId'=r.id::text
+  and a.content->>'familyId'=r.project_id::text||':'||r.run_set_id::text
+  and a.content->>'decision'<>'outcome' and ($1::uuid is null or r.project_id=$1::uuid)
+  and exists(select 1 from action_receipts rc where rc.run_id=r.id
+   and rc.agent_id='workflow-orchestrator' and rc.action_type='queue_partner_decision'
+   and rc.target=r.project_id::text||':'||r.run_set_id::text
+   and rc.metadata_serialization_version=2 and rc.metadata=a.content)
+ order by a.created_at desc,a.uri desc limit 1`;
 type FamilyIdentity={runId:string;projectId:string;runSetId:string;startedAt:string;replacementRunId:string|null;parentRunIds:string[];idempotencyKey:string|null;source:string|null;actor:string|null;legacySources:string|null;runStatus:string;visible:boolean};
 /** Historical tracking only, preserving each registered execution scope.
  * These components never determine canonical queue membership or family IDs. */
@@ -110,7 +125,7 @@ export function mirrorQueueStatusReport(advisory:QueueStatusReport,source:QueueS
  return {...advisory,observedAt:now.toISOString(),rows,historyRows,acceptanceReviewRows,projects:projects.filter(p=>uuid.test(p.id)&&(!projectId||p.id===projectId)).map(p=>({id:p.id,name:clean(p.name,120)})).slice(0,200),truncated:advisory.truncated||source.items.length>=(source.limit??100),queueSnapshot:{capturedAt:new Date(source.capturedAt).toISOString(),ageMs:Math.max(source.ageMs,now.getTime()-source.capturedAt,0),refreshing:source.refreshing,limit:source.limit??100,familyCount:source.items.length}};
 }
 
-const defaults:QueueStatusAdapter={snapshot:async(projectId,includeOther)=>{
+const defaults:QueueStatusAdapter={snapshot:async(projectId,includeOther,runIds)=>{
  const projects=await withClient(async c=>{const identity=await projectIdentitySchemaAvailable(c);return (await c.query<QueueStatusProject>(`select p.id::text,p.name,p.root_uri as "rootUri",${identity?'coalesce(l.identity_id,p.id)':'p.id'}::text as "identityId" from projects p ${identity?'left join project_identity_locations l on l.project_id=p.id':''} order by p.name,p.id limit 201`)).rows;});
  if(projectId&&!projects.some(p=>p.id===projectId))throw Error('Project not registered.');
  const identities=await withClient(async c=>(await c.query<FamilyIdentity>(`select r.id::text as "runId",r.project_id::text as "projectId",r.run_set_id::text as "runSetId",r.started_at::text as "startedAt",r.status as "runStatus",r.replacement_run_id::text as "replacementRunId",
@@ -121,18 +136,9 @@ const defaults:QueueStatusAdapter={snapshot:async(projectId,includeOther)=>{
  not(r.status in ('failed','blocked') and r.evaluation_metadata ? 'suiteId') and not exists(select 1 from action_receipts dismissed
    where dismissed.run_id=r.id and dismissed.action_type in ('failed_run_dismissed','failed_run_superseded') and not exists(select 1 from action_receipts reinstated
    where reinstated.run_id=r.id and reinstated.action_type='failed_run_reinstated' and reinstated.created_at>dismissed.created_at)) visible
- from workflow_runs r where ($1::uuid is null or r.project_id=$1::uuid) order by r.started_at desc,r.id desc limit 10001`,[projectId??null])).rows);
+ from workflow_runs r where ($1::uuid is null or r.project_id=$1::uuid) and ($2::uuid[] is null or r.id=any($2::uuid[])) order by r.started_at desc,r.id desc limit 10001`,[projectId??null,runIds??null])).rows);
  const familyIdentities=groupQueueStatusIdentities(identities.slice(0,10000));
- const families=await withClient(async c=>(await c.query<SourceRow>(`with latest as materialized (
-  select distinct on(r.project_id,r.run_set_id) r.id,r.project_id,r.run_set_id,r.status,r.task,r.construction_rationale,a.content,a.created_at
-  from artifacts a join workflow_runs r on r.id=a.run_id
-  join action_receipts rc on rc.run_id=r.id and rc.agent_id='workflow-orchestrator' and rc.action_type='queue_partner_decision'
-   and rc.target=r.project_id::text||':'||r.run_set_id::text and rc.metadata_serialization_version=2 and rc.metadata=a.content
-  where a.kind='queue_partner_decision' and a.content->>'version'='1' and a.content->>'authority'='evidence-only'
-   and a.content->>'projectId'=r.project_id::text and a.content->>'runId'=r.id::text and a.content->>'familyId'=rc.target
-   and a.content->>'decision'<>'outcome' and ($1::uuid is null or r.project_id=$1::uuid)
-  order by r.project_id,r.run_set_id,a.created_at desc,a.uri desc
- ) select original.id::text as "runId",original.project_id::text as "projectId",p.name as "projectName",
+ const families=await withClient(async c=>(await queryQueuePresentation<SourceRow>(c,`select original.id::text as "runId",original.project_id::text as "projectId",p.name as "projectName",
  original.project_id::text||':'||qf.version_set_id::text as "familyId",
  left(coalesce(original.construction_rationale->'presentation'->>'title',original.task),240) name,original.status as "runStatus",
  (select x.status from workflow_runs x where x.id=qf.latest_id) as "currentStatus",
@@ -152,14 +158,15 @@ const defaults:QueueStatusAdapter={snapshot:async(projectId,includeOther)=>{
  from jsonb_to_recordset($3::jsonb) qf(members uuid[],open_members uuid[],related_count int,version_set_id uuid,original_id uuid,latest_id uuid,open_count int)
  join workflow_runs original on original.id=qf.original_id
  join projects p on p.id=original.project_id
- left join lateral(select l.content,l.created_at from latest l where l.id=any(qf.members) order by l.created_at desc limit 1) decision on true
+ left join lateral(${queueDecisionReadSql}) decision on true
  where ($1::uuid is null or original.project_id=$1::uuid) and (($2::boolean and qf.open_count>0) or decision.content is not null)
  order by (qf.open_count>0) desc,decision.created_at desc nulls last,original.started_at desc limit 501`,[projectId??null,Boolean(includeOther),JSON.stringify(familyIdentities)])).rows);
  return {managed:families.slice(0,500),queue:[],projects:projects.slice(0,200),truncated:identities.length>10000||families.length>500||projects.length>200};
 }};
-export async function buildQueueStatusReport(projectId?:string,adapter:QueueStatusAdapter=defaults,includeOther=true,queueSnapshot?:QueueStatusQueueSnapshot):Promise<QueueStatusReport>{
+export async function buildQueueStatusReport(projectId?:string,adapter:QueueStatusAdapter=defaults,includeOther=true,queueSnapshot?:QueueStatusQueueSnapshot,currentQueueOnly=false):Promise<QueueStatusReport>{
  if(projectId&&!uuid.test(projectId))throw Error('Invalid project ID.');
- const data=await adapter.snapshot(projectId,includeOther),advisory=projectQueueStatus(data,projectId,new Date(),includeOther);
+ const runIds=currentQueueOnly&&queueSnapshot?[...new Set(queueSnapshot.items.flatMap(item=>[item.runId,...(item.familyAttempts??[]).map(attempt=>attempt.id)]))]:undefined;
+ const data=await adapter.snapshot(projectId,includeOther,runIds),advisory=projectQueueStatus(data,projectId,new Date(),includeOther);
  // Preserve existing Partner reasoning/selection callers. Dashboard routes
  // explicitly supply /queue's snapshot; they must not start another queue read.
  return queueSnapshot?mirrorQueueStatusReport(advisory,queueSnapshot,data.projects,projectId):advisory;

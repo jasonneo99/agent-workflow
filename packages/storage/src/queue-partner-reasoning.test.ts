@@ -56,6 +56,36 @@ test('exact discovery suggestions reject broad, secret, alias and malformed path
  assert.equal(exactPartnerPaths([]),true);assert.equal(exactPartnerPaths(['src/main.ts','tests/main.test.ts']),true);
  for(const paths of [['/tmp/source'],['../source'],['src/*'],['vendor/source.ts'],['.env'],['src/./source.ts'],['src/a.ts','src/a.ts'],['C:/source.ts'],['src/bad\nname.ts']])assert.equal(exactPartnerPaths(paths),false,JSON.stringify(paths));
 });
+test('unchanged discovery cannot restart by changing its evidence fingerprint',async()=>fixture(async(c,make)=>{
+ const input=await make('stable-discovery');
+ const first=await reservePartnerReasoningOnClient(c,input);assert.ok(first);
+ await c.query("update queue_coordinator_assignments set state='held' where id=$1",[first.id]);
+ assert.equal(await reservePartnerReasoningOnClient(c,{...input,fingerprint:acceptanceDigest('new failure prose')}),null);
+ const repair={...input,writePaths:['src/main.ts'],fileScopes:['src/main.ts'],sourceHash:await sourceSubjectHash(input.projectRootUri,['src/main.ts']),fingerprint:acceptanceDigest('concrete repair')};
+ await c.query('update work_intents set file_scopes=$2 where owner=$1',[input.owner,JSON.stringify(repair.fileScopes)]);
+ assert.ok(await reservePartnerReasoningOnClient(c,repair),'A concrete permitted repair remains eligible after discovery');
+}));
+test('discovery follows relevant manual bytes while unrelated dirty files coexist',async()=>fixture(async(c,make,root)=>{
+ const input=await make('manual-source');
+ const bound={...input,discoveryPaths:['src/main.ts'],discoveryHash:await sourceSubjectHash(root,['src/main.ts'])};
+ const first=await reservePartnerReasoningOnClient(c,bound);assert.ok(first);
+ await c.query("update queue_coordinator_assignments set state='held' where id=$1",[first.id]);
+ await fs.writeFile(path.join(root,'src/unrelated.ts'),'// User work remains untouched');
+ assert.equal(await reservePartnerReasoningOnClient(c,{...bound,fingerprint:acceptanceDigest('unrelated edit')}),null);
+ await fs.writeFile(path.join(root,'src/main.ts'),'export const valid = false; // Manual relevant change');
+ assert.equal(await reservePartnerReasoningOnClient(c,bound),null,'Stale captured bytes cannot be reused');
+ assert.ok(await reservePartnerReasoningOnClient(c,{...bound,discoveryHash:await sourceSubjectHash(root,['src/main.ts']),fingerprint:acceptanceDigest('relevant edit')}));
+ assert.equal(await fs.readFile(path.join(root,'src/unrelated.ts'),'utf8'),'// User work remains untouched');
+}));
+test('a discovery hash cannot read files excluded by current project policy',async()=>fixture(async(c,make,root)=>{
+ const input=await make('read-policy');
+ const project=await loadProjectConfig(root);project.actions.blocked_read_paths.push('src/main.ts');
+ await fs.writeFile(path.join(root,'.agent-workflow/project.yaml'),YAML.stringify(project));
+ const bound={...input,policyHash:canonicalJsonHash(resolveExecutionPolicy(await loadProjectConfig(root),'local').project),
+  discoveryPaths:['src/main.ts'],discoveryHash:await sourceSubjectHash(root,['src/main.ts'])};
+ await assert.rejects(reservePartnerReasoningOnClient(c,bound),/File read rejected/);
+ assert.equal((await c.query('select count(*)::int count from queue_coordinator_assignments')).rows[0].count,0);
+}));
 test('reasoning admission honors exact external family reservations before selecting a lane or inserting a child',async()=>{
  const source=await fs.readFile(new URL('./queue-partner-reasoning.ts',import.meta.url),'utf8');
  const guard=source.indexOf('occupancy.externalFamilyIds.includes(input.familyId)');
@@ -190,7 +220,10 @@ test('a newer reservation or unsealed blocked result never falls back to an olde
  const createdAt=new Date().toISOString(),oldProof=chainReceipt('GENESIS',{runId:oldChild,agentId:worker,actionType:'stage_completed',target:oldTask,summary:oldContent.summary,metadata:JSON.stringify(oldContent),metadataSerializationVersion:2,createdAt});
  await c.query("insert into action_receipts(run_id,agent_id,action_type,target,summary,metadata,prev_hash,receipt_hash,created_at,metadata_serialization_version) values($1,$2,'stage_completed',$3,$4,$5,$6,$7,$8,2)",[oldChild,worker,oldTask,oldContent.summary,JSON.stringify(oldContent),oldProof.prevHash,oldProof.receiptHash,createdAt]);
  assert.deepEqual(await latestPartnerReasoningScopeOnClient(c,input.sourceRunId),oldContent.proposedSourcePaths);
- const current=await reservePartnerReasoningOnClient(c,{...input,fingerprint:acceptanceDigest({prior:input.fingerprint,newEvidence:true})});assert.ok(current);
+ const nextPolicy=await loadProjectConfig(input.projectRootUri);
+ nextPolicy.project.summary='A changed project policy permits a fresh discovery';
+ await fs.writeFile(path.join(input.projectRootUri,'.agent-workflow/project.yaml'),YAML.stringify(nextPolicy));
+ const current=await reservePartnerReasoningOnClient(c,{...input,policyHash:canonicalJsonHash(resolveExecutionPolicy(nextPolicy,'local').project),fingerprint:acceptanceDigest({prior:input.fingerprint,newEvidence:true})});assert.ok(current);
  assert.deepEqual(await latestPartnerReasoningScopeOnClient(c,input.sourceRunId),[],'An outstanding current reservation cannot reuse an earlier result');
  const child=randomUUID(),task=randomUUID(),uri=`db://workflow_tasks/${task}/output`;
  const content={runId:child,taskId:task,agentId:worker,outcome:'blocked',summary:'New result lacks a producer digest',proposedSourcePaths:['src/transport.ts','tests/transport.test.ts']};
@@ -278,7 +311,7 @@ test('changed source and exact intent drift refuse effects, and no model suggest
  await assert.rejects(()=>reservePartnerReasoningOnClient(c,{...fresh,fileScopes:['docs/outside.md'],writePaths:['docs/outside.md']}),/not allowed|allowlist|Write path/i);
 }));
 test('five-turn lifetime breaker preserves the prior three turns and is not reset by fingerprints or watch restarts',async()=>fixture(async(c,make)=>{
- const input=await make('bounded');
+ const input=await make('bounded',['src/main.ts']);
  for(let i=0;i<5;i++){
   const claim=await reservePartnerReasoningOnClient(c,{...input,fingerprint:acceptanceDigest({iteration:i})});assert.ok(claim);
   await c.query("update queue_coordinator_assignments set state='held' where id=$1",[claim.id]);

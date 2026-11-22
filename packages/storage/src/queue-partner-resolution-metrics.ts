@@ -2,7 +2,7 @@ import {withClient} from './client.js';
 
 export const queuePartnerResolutionStrategies=['verify-sealed-candidate','reconcile-owned-effects','repair-exact-source','discover-missing-scope','fresh-delivery','unknown'] as const;
 export type QueuePartnerResolutionStrategy=typeof queuePartnerResolutionStrategies[number];
-export interface QueuePartnerResolutionObservation {sourceRunId:string;strategy:string;state:string;blockedSince:string|null;settledAt:string}
+export interface QueuePartnerResolutionObservation {sourceRunId:string;familyId?:string;strategy:string;state:string;blockedSince:string|null;settledAt:string;attemptOrdinal?:number}
 export interface QueuePartnerResolutionMetric {strategy:QueuePartnerResolutionStrategy;blockedFamiliesObserved:number;attempts:number;acceptanceGapsClosed:number;nonResolvingTurns:number;verifiedClosureRate:number|null;averageTimeToVerifiedMs:number|null}
 const shadowMinimumSamples=20;
 function wilsonLowerBound(successes:number,total:number):number{
@@ -16,12 +16,12 @@ function wilsonLowerBound(successes:number,total:number):number{
 export function summarizeQueuePartnerResolutionYield(rows:readonly QueuePartnerResolutionObservation[]){
  const validState=new Set(['held','failed','verified','uncertain']);
  const normalized=rows.slice(0,500).filter(row=>row.sourceRunId&&validState.has(row.state)&&Number.isFinite(Date.parse(row.settledAt))).map(row=>({
-  ...row,strategy:(queuePartnerResolutionStrategies as readonly string[]).includes(row.strategy)?row.strategy as QueuePartnerResolutionStrategy:'unknown' as const
+  ...row,familyId:row.familyId||row.sourceRunId,strategy:(queuePartnerResolutionStrategies as readonly string[]).includes(row.strategy)?row.strategy as QueuePartnerResolutionStrategy:'unknown' as const
  }));
  const metrics:QueuePartnerResolutionMetric[]=queuePartnerResolutionStrategies.map(strategy=>{
   const selected=normalized.filter(row=>row.strategy===strategy),verified=selected.filter(row=>row.state==='verified');
   const durations=verified.map(row=>row.blockedSince?Date.parse(row.settledAt)-Date.parse(row.blockedSince):NaN).filter(value=>Number.isFinite(value)&&value>=0);
-  return {strategy,blockedFamiliesObserved:new Set(selected.map(row=>row.sourceRunId)).size,attempts:selected.length,
+  return {strategy,blockedFamiliesObserved:new Set(selected.map(row=>row.familyId)).size,attempts:selected.length,
    acceptanceGapsClosed:verified.length,nonResolvingTurns:selected.filter(row=>row.state!=='verified').length,
    verifiedClosureRate:selected.length?verified.length/selected.length:null,
    averageTimeToVerifiedMs:durations.length?Math.round(durations.reduce((sum,value)=>sum+value,0)/durations.length):null};
@@ -29,7 +29,18 @@ export function summarizeQueuePartnerResolutionYield(rows:readonly QueuePartnerR
  const eligible=metrics.filter(metric=>metric.strategy!=='unknown'&&metric.attempts>=shadowMinimumSamples).map(metric=>({
   strategy:metric.strategy,attempts:metric.attempts,verifiedClosureLowerBound:Number(wilsonLowerBound(metric.acceptanceGapsClosed,metric.attempts).toFixed(6)),averageTimeToVerifiedMs:metric.averageTimeToVerifiedMs
  })).sort((a,b)=>b.verifiedClosureLowerBound-a.verifiedClosureLowerBound||(a.averageTimeToVerifiedMs??Number.MAX_SAFE_INTEGER)-(b.averageTimeToVerifiedMs??Number.MAX_SAFE_INTEGER)||a.strategy.localeCompare(b.strategy));
- return {version:1,window:'latest-500-outcomes',bodyFree:true,totalAttempts:normalized.length,totalBlockedFamiliesObserved:new Set(normalized.map(row=>row.sourceRunId)).size,
+ const families=new Set(normalized.map(row=>row.familyId)),verifiedFamilies=new Set(normalized.filter(row=>row.state==='verified').map(row=>row.familyId));
+ const first=normalized.filter(row=>row.attemptOrdinal===1),firstFamilies=new Set(first.map(row=>row.familyId));
+ const verified=normalized.filter(row=>row.state==='verified');
+ const durations=verified.map(row=>row.blockedSince?Date.parse(row.settledAt)-Date.parse(row.blockedSince):NaN).filter(value=>Number.isFinite(value)&&value>=0);
+ return {version:1,window:'latest-500-outcomes',bodyFree:true,totalAttempts:normalized.length,totalBlockedFamiliesObserved:families.size,
+  verifiedFamilies:verifiedFamilies.size,verifiedFamilyRate:families.size?verifiedFamilies.size/families.size:null,
+  verifiedAttemptRate:normalized.length?normalized.filter(row=>row.state==='verified').length/normalized.length:null,
+  firstAttemptAcceptance:{familiesWithFirstAttempt:firstFamilies.size,accepted:first.filter(row=>row.state==='verified').length,
+   rate:first.length?first.filter(row=>row.state==='verified').length/first.length:null,
+   familyCoverage:families.size?firstFamilies.size/families.size:null},
+  timeToVerified:{samples:durations.length,verifiedAttempts:verified.length,coverage:verified.length?durations.length/verified.length:null,
+   averageMs:durations.length?Math.round(durations.reduce((sum,value)=>sum+value,0)/durations.length):null},
   totalAcceptanceGapsClosed:normalized.filter(row=>row.state==='verified').length,strategies:metrics,
   adaptiveRankingShadow:{applied:false,minimumSamplesPerStrategy:shadowMinimumSamples,eligibleStrategies:eligible.length,
    promotionEligible:eligible.length>=2&&eligible[0]!.verifiedClosureLowerBound-eligible[1]!.verifiedClosureLowerBound>=0.1,proposedOrder:eligible}};
@@ -38,8 +49,9 @@ export function summarizeQueuePartnerResolutionYield(rows:readonly QueuePartnerR
 export async function queuePartnerResolutionYield(){return withClient(async c=>{
  const exists=Boolean((await c.query("select to_regclass('queue_partner_outcome_journal') name")).rows[0]?.name);
  if(!exists)return summarizeQueuePartnerResolutionYield([]);
- const rows=(await c.query(`select source_run_id::text "sourceRunId",coalesce(payload->>'resolutionStrategy','unknown') strategy,state,
-  payload->>'blockedSince' "blockedSince",created_at::text "settledAt" from queue_partner_outcome_journal
+ const rows=(await c.query(`select source_run_id::text "sourceRunId",coalesce(nullif(payload->>'familyId',''),source_run_id::text) "familyId",coalesce(payload->>'resolutionStrategy','unknown') strategy,state,
+  payload->>'blockedSince' "blockedSince",created_at::text "settledAt",
+  (row_number() over(partition by coalesce(nullif(payload->>'familyId',''),source_run_id::text) order by created_at,assignment_id))::int "attemptOrdinal" from queue_partner_outcome_journal
   order by created_at desc,assignment_id desc limit 500`)).rows as QueuePartnerResolutionObservation[];
  return summarizeQueuePartnerResolutionYield(rows);
 });}

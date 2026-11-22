@@ -35,7 +35,9 @@ test("operator-signed grants and canonical callback claims fail closed across re
     const originalUserInfo = os.userInfo;
     const oldSettings = Object.fromEntries(Object.keys(environment).map(key => [key, process.env[key]]));
     try {
-      os.userInfo = (() => ({ ...originalUserInfo(), homedir: dir })) as typeof os.userInfo;
+      // Numeric container users may have no passwd entry. The fixture supplies
+      // its own complete OS identity without depending on the host account.
+      os.userInfo = (() => ({ homedir: dir, username:'synthetic-operator',uid:10001,gid:10001,shell:'/bin/sh' })) as typeof os.userInfo;
       syncBuiltinESMExports();
       Object.assign(process.env, environment);
       assert.equal(await loadRepairGrant(), null, "Project environment cannot issue operator authority");

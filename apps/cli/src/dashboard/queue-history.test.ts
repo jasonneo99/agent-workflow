@@ -40,3 +40,20 @@ test('queue history client is bounded, read-only and refreshes every minute',()=
  assert.match(code,/\/api\/queue-history/);assert.match(code,/searchParams\.set\('fresh','1'\)/);assert.match(code,/refresh:load/);assert.match(code,/60000/);assert.match(code,/points\.length>1441/);assert.doesNotMatch(code,/innerHTML|method:\s*['"]POST/);
  new Function(code+';return startQueueHistory;')();
 });
+test('repeated card refreshes do not abort an unfinished history read',async()=>{
+ const elements=new Map<string,any>();
+ const element=()=>({textContent:'',className:'',hidden:false,replaceChildren(){},append(){},addEventListener(){}});
+ const document={getElementById(id:string){if(!elements.has(id))elements.set(id,element());return elements.get(id);},createElement:element};
+ let resolveHistory!:(value:unknown)=>void;const requests:AbortSignal[]=[];
+ const fetch=async(url:unknown,options:{signal:AbortSignal})=>{
+  if(String(url).includes('queue-resolution-metrics'))return {ok:true,json:async()=>({})};
+  requests.push(options.signal);return new Promise(resolve=>{resolveHistory=resolve;});
+ };
+ const timers:number[]=[];
+ const start=new Function('document','fetch','location','setTimeout','clearTimeout',queueHistoryScript()+';return startQueueHistory;')(document,fetch,{origin:'http://localhost',href:'http://localhost/queue'},(_fn:unknown,ms:number)=>{timers.push(ms);return 1;},()=>{});
+ const api=start();await api.refresh();await api.refresh();
+ assert.equal(requests.length,1);assert.equal(requests[0].aborted,false);
+ resolveHistory({ok:true,json:async()=>({points:[]})});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(requests[0].aborted,false);assert.ok(timers.includes(0));api.stop();
+});

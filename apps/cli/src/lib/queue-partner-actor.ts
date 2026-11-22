@@ -1,4 +1,6 @@
 import {randomUUID} from 'node:crypto';
+import {queueProviderReadiness} from './queue-provider-readiness.js';
+import {assertFileReadAllowed} from '../../../../packages/local-tools/src/file-reader.js';
 import fs from 'node:fs/promises';
 import type {CliContext} from './context.js';
 import {loadAgents,loadProjectConfig,loadWorkflows} from '../../../../packages/agent-registry/src/loaders.js';
@@ -374,6 +376,14 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
     for(const file of paths)assertFilePathAllowed(file,resolved.project);
     if(paths.length){sourceHash=await sourceSubjectHash(source.root_uri,paths);writePaths=[...paths].sort();}
    }catch{scopeGap='The previous scope is unsafe, inaccessible or outside current policy; independently discover a safe exact repair scope. No source-write permission was inferred.';}
+   // Read-only discovery may observe files outside the write allowlist. Bind
+   // their current bytes so manual changes wake discovery without making
+   // unrelated dirty files a repository-wide stop condition.
+   let discoveryPaths:string[]=[],discoveryHash:string|undefined;
+   if(!writePaths.length&&exactPartnerPaths(paths)&&paths.length)try{
+    for(const file of paths)assertFileReadAllowed(file,resolved.project);
+    discoveryHash=await sourceSubjectHash(source.root_uri,paths);discoveryPaths=paths;
+   }catch{scopeGap='The prior discovery inputs are unavailable or outside current read policy; discover a new exact permitted scope.';}
    const policy=projectConfigSchema.parse({...resolved.project,actions:{...resolved.project.actions,
     allowed_write_paths:writePaths,allowed_commands:writePaths.length?partnerRecoveryCommands(resolved.project,writePaths):[],isolate_command_writes:true}});
    const admission=writePaths.length?await preparePartnerAdmission({sourceRunId:source.id,projectId:family.projectId,projectRootUri:source.root_uri,
@@ -393,11 +403,16 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
    const comparisonEvidence=compactPartnerComparisonEvidence(comparisons,repairPlaybooks,writePaths);
    const reason=[holdReasons.get(family.familyId)??'Technical queue recovery',scopeGap].filter(Boolean).join('; ');
    const binding={projectId:family.projectId,projectRootUri:source.root_uri,sourceRunId:source.id,familyId:family.familyId,
+    ...(discoveryHash?{discoveryPaths,discoveryHash}:{}),
     fileScopes:writePaths.length?writePaths:[`runtime/queue-partner/recovery/${source.id}`],taskHash:acceptanceHash,policyHash,sourceHash,writePaths,
     ...(writePaths.length?{requiresVerifierSlot:true}:{}),
     fingerprint:partnerActorFingerprint({task:source.task,blocker:source.blocker,reason,policyHash,sourceHash,writePaths,provider:null,tier:null,
      commands:policy.actions.allowed_commands,evidenceDigest:partnerRecoveryEvidenceDigest(priorFacts)})};
-   return {binding,...(admission?{admission:(owner:string,fence:string)=>pipelineGap?Promise.resolve({ready:false,reason:pipelineGap}):enforcePartnerAdmission(admission,owner,fence)}:{}),execute:async claim=>{
+   return {binding,admission:async(owner:string,fence:string)=>{
+    if(pipelineGap)return {ready:false,reason:pipelineGap};
+    if(admission){const decision=await enforcePartnerAdmission(admission,owner,fence);if(!decision.ready)return decision;}
+    return queueProviderReadiness(policy,selectPartnerWorkerAgent(writePaths));
+   },execute:async claim=>{
     let renewalLost=false,childId:string|undefined,guideSampleRate=.5;
     const timer=setInterval(()=>{void renewWorkIntent({projectId:claim.projectId,owner:claim.owner,fencingToken:claim.intentFence,ttlSeconds:900}).then(ok=>{if(!ok)renewalLost=true;}).catch(()=>{renewalLost=true;});},60_000);
     try{

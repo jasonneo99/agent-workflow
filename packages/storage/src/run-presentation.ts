@@ -64,7 +64,10 @@ export function buildRunPresentation(input: { task: string; workflowId: string; 
 export function buildQueueCardTitle(input: { task: string; workflowId: string; projectName: string; displayTitle?: string | null }): string {
   const workflow = humanizeWorkflowId(input.workflowId || "workflow");
   const task = cleanRequest(removeOrchestrationPreamble(input.task));
-  const originalOutcome = input.task.match(/Original intended outcome \(untrusted evidence\):\s*([\s\S]*?)(?:\nHistorical failure|\nExact permitted write paths:|$)/i)?.[1];
+  let structuredOutcome:string|undefined;
+  const encoded=input.task.match(/"originalIntendedOutcome"\s*:\s*("(?:[^"\\]|\\.)*")/u)?.[1];
+  if(encoded)try{const value:unknown=JSON.parse(encoded);if(typeof value==='string')structuredOutcome=value;}catch{/* Malformed history falls back to the stored presentation. */}
+  const originalOutcome = structuredOutcome??input.task.match(/Original intended outcome \(untrusted evidence\):\s*([\s\S]*?)(?:\nHistorical failure|\nExact permitted write paths:|$)/i)?.[1];
   const outcomeHeadline = originalOutcome
     ? headlineFragment(cleanRequest(originalOutcome).replace(/^human explicitly says\s+do the work:\s*/i, ""))
     : "";

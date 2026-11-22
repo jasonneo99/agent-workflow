@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { classifyProviderFailure, executeWithProviderFallback, ProviderExecutionError, resetProviderFallbackCircuits, type ProviderFallbackPolicy } from "./fallback.js";
 import type { ModelProvider, StageExecutionInput } from "./types.js";
 
@@ -7,6 +10,34 @@ const stageInput = { runId: "run-1", taskId: "task-1", workflowId: "build-featur
 const policy = (chains: ProviderFallbackPolicy["chains"], overrides: Partial<ProviderFallbackPolicy> = {}): ProviderFallbackPolicy => ({ chains, maxRetries: 1, circuitFailureThreshold: 3, circuitCooldownMs: 60_000, allowQuotaFallback: false, ...overrides });
 const success = (id: string, model = "model-a"): ModelProvider => ({ id, async executeStage() { return { summary: "ok", artifact: { provider: id, model } }; } });
 const failure = (id: string, error: Error, counter?: { calls: number }): ModelProvider => ({ id, async executeStage() { if (counter) counter.calls += 1; throw error; } });
+
+test('primary execution preserves the model explicitly selected by routing',async()=>{
+ resetProviderFallbackCircuits();let observed:string|undefined;
+ await executeWithProviderFallback({providerId:'primary',stageInput:{...stageInput,modelOverride:'selected-model'},policy:policy({}),circuitStatePath:null,
+  providerFactory:()=>({id:'primary',async executeStage(input){observed=input.modelOverride;return {summary:'ok',artifact:{}};}})});
+ assert.equal(observed,'selected-model');
+});
+test('an exhausted account is skipped by subsequent calls while approved fallback continues',async()=>{
+ resetProviderFallbackCircuits();const counter={calls:0};
+ const input={providerId:'exhausted',stageInput,policy:policy({exhausted:[{provider:'funded',fleetApproved:true,dataPolicy:'approved'}]},{allowQuotaFallback:true}),circuitStatePath:null,now:()=>1000,
+  providerFactory:(id:string)=>id==='exhausted'?failure(id,new ProviderExecutionError('account_quota','Quota exhausted'),counter):success(id)};
+ assert.equal((await executeWithProviderFallback(input)).actualProvider,'funded');
+ const next=await executeWithProviderFallback(input);
+ assert.equal(next.actualProvider,'funded');assert.equal(counter.calls,1);
+ assert.equal(next.attempts[0].outcome,'skipped');
+});
+test('quota cooldown retains fallback approval requirements after process state is reloaded',async()=>{
+ resetProviderFallbackCircuits();const directory=await fs.mkdtemp(path.join(os.tmpdir(),'provider-quota-'));
+ const statePath=path.join(directory,'circuits.json');let backupCalls=0;
+ const input={providerId:'exhausted',stageInput,policy:policy({exhausted:[{provider:'unapproved'}]},{allowQuotaFallback:true}),circuitStatePath:statePath,now:()=>1000,
+  providerFactory:(id:string)=>id==='exhausted'?failure(id,new ProviderExecutionError('account_quota','Quota exhausted')):{id,async executeStage(){backupCalls++;return {summary:'ok',artifact:{}};}}};
+ try{
+  await assert.rejects(executeWithProviderFallback(input),{kind:'account_quota'});
+  resetProviderFallbackCircuits();
+  await assert.rejects(executeWithProviderFallback(input),{kind:'account_quota'});
+  assert.equal(backupCalls,0);
+ }finally{await fs.rm(directory,{recursive:true,force:true});resetProviderFallbackCircuits();}
+});
 
 test("separate calls in the same stage retain distinct invocation identities and direct latency", async () => {
   resetProviderFallbackCircuits();

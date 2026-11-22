@@ -10,6 +10,9 @@ export type AdaptiveRouteEvidence = {
   latencyMs?: number;
   costUsd?: number;
   observedAt: string;
+  /** Optional measured account headroom; absent or stale means unknown. */
+  creditRemainingUsd?: number;
+  creditObservedAt?: string;
 };
 
 export type AdaptiveEvidenceDecision = {
@@ -34,7 +37,14 @@ export function selectAdaptiveEvidence(
   if (!sufficientlySampled.length) {
     return { status: "insufficient-evidence", confidence: 0, reason: "No fresh candidate has the minimum three samples for this agent and task class." };
   }
-  const passing = sufficientlySampled.filter(({ item }) => item.quality >= 0.7 && item.taskSuccess >= 0.8 && item.fallbackRate <= 0.1);
+  const passing = sufficientlySampled.filter(({ item }) => {
+    const creditAge=now.getTime()-Date.parse(item.creditObservedAt??'');
+    const freshCredit=Number.isFinite(creditAge)&&creditAge>=0&&creditAge<=5*60_000;
+    const available=item.creditRemainingUsd;
+    const unfunded=freshCredit&&typeof available==='number'&&Number.isFinite(available)
+      &&(available<=0||(typeof item.costUsd==='number'&&Number.isFinite(item.costUsd)&&item.costUsd>available));
+    return !unfunded&&item.quality >= 0.7 && item.taskSuccess >= 0.8 && item.fallbackRate <= 0.1;
+  });
   if (!passing.length) {
     return { status: "poor-performance", confidence: 0, reason: "Fresh candidates exist, but none pass the quality, task-success, and fallback gates." };
   }

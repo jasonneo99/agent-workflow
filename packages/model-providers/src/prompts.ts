@@ -1,6 +1,7 @@
 import type { StageExecutionInput, StageExecutionOutput, StructuredAcceptanceContract } from "./types.js";
 import { foldStateDeltas, renderFactSet } from "./state-deltas.js";
 import {controllerCommandBoundary,workerAllowedCommands} from '../../local-tools/src/controller-commands.js';
+import {verificationCommandMatches} from '../../run-environments/src/evidence.js';
 
 export interface StageJsonArtifact {
   /** Evidence suggestions only; owning-project scope validation remains separate. */
@@ -157,10 +158,15 @@ function candidateVerificationPrompt(input: StageExecutionInput): string[] {
   const candidate = prior.artifact.repairCheckpoint as Record<string, unknown>;
   const profileName = typeof candidate.environmentProfile === "string" ? candidate.environmentProfile : "";
   const profile = input.projectConfig.execution.environments?.profiles[profileName];
-  const checks = profile?.verification.flatMap(rule => rule.commands.map(command => ({
+  const declarations=profile?.verification??[];
+  const selected=input.requiredVerificationCommands;
+  const checks = selected!==undefined?selected.flatMap(command=>{
+    const rule=declarations.find(rule=>rule.commands.some(pattern=>verificationCommandMatches(command,pattern)));
+    return rule?[{command,format:rule.format,minimumTests:rule.minimum_tests,...(rule.expected_tests===undefined?{}:{expectedTests:rule.expected_tests})}]:[];
+  }):declarations.flatMap(rule => rule.commands.map(command => ({
     command, format: rule.format, minimumTests: rule.minimum_tests,
     ...(rule.expected_tests === undefined ? {} : { expectedTests: rule.expected_tests })
-  }))) ?? [];
+  })));
   const files = Array.isArray(candidate.files) ? candidate.files.filter((file): file is string => typeof file === "string") : [];
   return [
     "Runtime candidate verification plan (complete fields below, independent of truncated historical previews; context only, no execution authority):",
@@ -170,7 +176,7 @@ function candidateVerificationPrompt(input: StageExecutionInput): string[] {
       selectedProfile: profileName || null, profileAvailable: Boolean(profile),
       platform: profile?.platform ?? null, environmentKind: profile?.kind ?? null,
       sourcePaths: files.slice(0, 40), omittedSourcePathCount: Math.max(0, files.length - 40),
-      requiredChecks: checks.slice(0, 32), requiredChecksComplete: Boolean(profile) && checks.length > 0 && checks.length <= 32,
+      requiredChecks: checks.slice(0, 32), requiredChecksComplete: Boolean(profile) && checks.length > 0 && checks.length <= 32 && (selected===undefined||checks.length===selected.length),
       omittedRequiredCheckCount: Math.max(0, checks.length - 32), grantsExecutionAuthority: false }),
     "Execute the candidate's declared required checks first with fresh current-stage receipts. Preserve an explicitly required full suite when it is in this plan or the frozen acceptance contract. A different default profile's command catalog does not add a full-suite requirement to this candidate. Do not request unrelated whole-repository discovery merely because it appears in that catalog. Additional failed or unexecuted checks remain explicit findings, never passing evidence.",
     "This prepared source phase precedes trusted integration. Package source evidence and retain installation, deployment, launch, screenshot and visible product acceptance as pending downstream obligations. Completing this phase never completes those obligations or establishes overall product acceptance. If this plan is unavailable or incomplete, identify the exact missing plan fields; never infer a successful or empty test collection. Every command still passes ordinary policy and exact approval gates.",

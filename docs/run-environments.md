@@ -89,6 +89,25 @@ CLI profile overrides selectors, then the default applies. A project can define
 an exact `run` selector for an individual task. Undeclared profiles are rejected.
 Profiles and selectors are trusted project policy, not free-form model arguments.
 
+Declare every input consumed by the selected verification command. A full
+repository suite may read policies, schemas, migration catalogs, evaluation
+fixtures and CI definitions outside the implementation directories. Include
+those directories in `source_paths`. When `source_extensions` filters binary
+assets, list the exact required assets in `fixture_paths`; do not copy private
+configuration or the host's Git metadata to make a test pass. Tests that need
+Git should create a disposable repository, and tests that mock OS identity
+should supply a synthetic identity rather than require a host account entry.
+Readiness proves tool and service availability; only the actual test command
+proves its collection and assertions. Preserve a failed full-suite result even
+when a focused test passes.
+
+Environment verification patterns select the parser for a literal command;
+they are not commands to expand and execute. Prepared authoring and independent
+verification both use the source-scoped recipes selected by the runtime. The
+candidate prompt lists those literal checks explicitly. A profile catalog must
+not add a whole-suite requirement when an exact source recipe applies; an
+explicit original requirement to run the full suite remains required.
+
 `baseline_profile` optionally names the source baseline used during prepared
 source planning and verification-command selection, including before a task has
 identified individual files. It must name a declared profile. It grants no

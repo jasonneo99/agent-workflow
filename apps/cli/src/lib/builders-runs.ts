@@ -105,7 +105,8 @@ export async function assessRunStaleInputs(ctx: CliContext, runId: string): Prom
 }
 
 export function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {
-  const canEditProjectFiles = agent.can.some((capability) => /^edit_[a-z0-9_]*files$/u.test(capability));
+  const canEditProjectFiles = agent.can.some((capability) => /^edit_[a-z0-9_]*files$/u.test(capability)
+    || ['edit_docs','update_changelog','update_decision_log'].includes(capability));
   return {
     id: `agent-task-${agent.id}`,
     name: `Agent Task - ${agent.display_name}`,

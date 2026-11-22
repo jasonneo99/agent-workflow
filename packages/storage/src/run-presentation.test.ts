@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildQueueCardTitle, buildRunPresentation, storedRunPresentation } from "./run-presentation.js";
 
+test('recovery cards retain the original deliverable from the structured brief',()=>{
+ const task='Queue Partner recovery assignment\n'+JSON.stringify({originalIntendedOutcome:'Review message delivery for reliability.\n---\nLarge source body'});
+ const title=buildQueueCardTitle({task,workflowId:'partner-recovery-technical-architect',projectName:'Example',displayTitle:'Partner recovery assignment'});
+ assert.match(title,/Review message delivery for reliability/);
+ assert.doesNotMatch(title,/Partner recovery assignment|Large source body/);
+});
+
 test("creates a clear workflow and project headline for vague human input", () => {
   assert.deepEqual(buildRunPresentation({ task: "fix it", workflowId: "debug-failure", projectName: "Example App" }), {
     title: "Debug Failure for Example App",

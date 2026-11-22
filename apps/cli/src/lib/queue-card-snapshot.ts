@@ -28,7 +28,7 @@ export class QueueCardSnapshotCache<T> {
     const shouldRefresh = requestRefresh || !current || ageMs > this.maxAgeMs;
     const pending = shouldRefresh ? this.#refresh(key, load) : this.#loads.get(key);
 
-    if (!current || ageMs > this.maxStaleMs) {
+    if (requestRefresh || !current || ageMs > this.maxStaleMs) {
       const next = await (pending ?? this.#refresh(key, load));
       return { value: next.value, capturedAt: next.capturedAt, ageMs: 0, refreshing: false };
     }

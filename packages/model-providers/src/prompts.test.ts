@@ -50,6 +50,10 @@ test('prepared candidate verification plans survive large prior artifacts withou
  assert.ok(!buildStagePrompt({...input,priorStageArtifacts:[{...input.priorStageArtifacts[0],artifact:{repairCheckpoint:{...candidate,runId:'foreign-run'}}}]}).includes('Runtime candidate verification plan ('));
  const requiredFull=structuredClone(input);requiredFull.projectConfig.execution.environments!.profiles['selected-widget']!.verification=[{commands:[broad],format:'unittest',minimum_tests:1}];
  assert.ok(buildStagePrompt(requiredFull).split('Runtime candidate verification plan (')[1].includes(broad),'An explicitly declared full suite is retained literally');
+ const scoped=structuredClone(input);scoped.projectConfig.execution.environments!.profiles['selected-widget']!.verification=[{commands:['node --test *','npm test'],format:'node-test',minimum_tests:1}];
+ const selectedPlan=buildStagePrompt({...scoped,requiredVerificationCommands:[focused]}).split('Runtime candidate verification plan (')[1].split('Compiled project/workflow brief:')[0];
+ assert.ok(selectedPlan.includes(focused));assert.ok(!selectedPlan.includes('"command":"node --test *"'));assert.ok(!selectedPlan.includes('"command":"npm test"'));assert.match(selectedPlan,/"requiredChecksComplete":true/);
+ const invalidPlan=buildStagePrompt({...scoped,requiredVerificationCommands:['unmatched check']}).split('Runtime candidate verification plan (')[1];assert.match(invalidPlan,/"requiredChecksComplete":false/);
  assert.match(prompt,/return that exact command here so the runtime can prepare its bounded policy-change approval/);
  assert.match(prompt,/Explicitly blocked commands and unsafe shell syntax remain forbidden/);
 });
