@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {providerAvailabilityScopeKey} from '../../model-providers/src/provider-account-scope.js';
 import {classifyProviderFailure,ProviderExecutionError,type ProviderFallbackPolicy} from '../../model-providers/src/fallback.js';
 import type {ModelProvider} from '../../model-providers/src/types.js';
 import {claimProviderAvailability,recordProviderAvailable,recordProviderFailure,renewProviderProbe} from '../../storage/src/provider-availability.js';
@@ -14,7 +14,7 @@ export function createProviderCallGuard(policy:ProviderFallbackPolicy,options:{l
   // Reserve before asynchronous admission so concurrent callers cannot overspend.
   calls++;
   // Synthetic providers remain deterministic and do not mutate live availability.
-  const key=createHash('sha256').update(JSON.stringify([provider.id,options.accountScope??process.env.AGENTFLOW_PROVIDER_ACCOUNT_SCOPE??'default'])).digest('hex');
+  const key=providerAvailabilityScopeKey(provider.id,{accountScope:options.accountScope});
   let claim:Awaited<ReturnType<typeof claimProviderAvailability>>|null;
   try{claim=provider.id==='mock'?null:await claimProviderAvailability(key);}
   catch{calls--;throw new ProviderExecutionError('configuration','Provider availability admission could not be established; no model call was dispatched.');}
