@@ -8,6 +8,7 @@ export interface WithdrawRunInput {
   projectId: string; runId: string; originatingThreadId?: string; originalTaskDigest: string;
   operatorSessionId?: string; originalOriginDigest?: string;
   owner: string; intentFence: string; actor: string; instruction: string; confirmation: string;
+  expectedStatus?: 'failed'|'blocked'|'cancelled';
 }
 
 function deterministicParserRejection(error:unknown):boolean {
@@ -57,6 +58,7 @@ export async function withdrawUnacceptedRunOnClient(client: Client, input: Withd
   const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu;
   if (![input.projectId,input.runId].every(id => uuid.test(id))
     || !/^[a-f0-9]{64}$/u.test(input.originalTaskDigest) || !input.actor.trim() || !input.instruction.trim()
+    || (input.expectedStatus!==undefined&&!['failed','blocked','cancelled'].includes(input.expectedStatus))
     || input.confirmation !== WITHDRAW_RUN_CONFIRMATION) throw Error("Exact direct-human run withdrawal required.");
   await client.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
   const run = (await client.query(`select id::text,project_id::text,task,status,evaluation_metadata,
@@ -72,6 +74,7 @@ export async function withdrawUnacceptedRunOnClient(client: Client, input: Withd
   const operatorBound=chatOrigin==null&&input.originatingThreadId===undefined
     &&uuid.test(input.operatorSessionId??'')&&input.originalOriginDigest===acceptanceDigest(originalRunOrigin);
   if (!run || !["blocked","failed","cancelled"].includes(run.status)
+    || (input.expectedStatus!==undefined&&run.status!==input.expectedStatus)
     || !(chatBound||operatorBound)
     || acceptanceDigest(run.task) !== input.originalTaskDigest || run.evaluation_metadata?.acceptance === "accepted") {
     throw Error("Withdrawal requires the exact unaccepted terminal run and its unchanged source origin.");

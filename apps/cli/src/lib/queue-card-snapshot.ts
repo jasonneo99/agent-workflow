@@ -15,6 +15,10 @@ type Entry<T> = { value: T; capturedAt: number };
 export class QueueCardSnapshotCache<T> {
   readonly #entries = new Map<string, Entry<T>>();
   readonly #loads = new Map<string, Promise<Entry<T>>>();
+  #generation=0;
+
+  /** Pre-mutation reads must never repopulate a view after confirmed removal. */
+  invalidate():void{this.#generation++;this.#entries.clear();this.#loads.clear();}
 
   constructor(
     readonly maxAgeMs = 750,
@@ -42,11 +46,12 @@ export class QueueCardSnapshotCache<T> {
   #refresh(key: string, load: () => Promise<T>): Promise<Entry<T>> {
     const existing = this.#loads.get(key);
     if (existing) return existing;
+    const generation=this.#generation;
     const pending = load().then((value) => {
       const entry = { value, capturedAt: this.now() };
-      this.#entries.set(key, entry);
+      if(generation===this.#generation)this.#entries.set(key, entry);
       return entry;
-    }).finally(() => this.#loads.delete(key));
+    }).finally(() => {if(this.#loads.get(key)===pending)this.#loads.delete(key);});
     this.#loads.set(key, pending);
     return pending;
   }

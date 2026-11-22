@@ -30,6 +30,13 @@ test('explicit withdrawal preserves unsuccessful terminal history and records no
  const rows=(await client.query('select metadata from action_receipts')).rows;assert.equal(rows.length,1);
  assert.equal(rows[0].metadata.disposition,'withdrawn-unaccepted');assert.equal(rows[0].metadata.originalAcceptanceChanged,false);assert.equal(rows[0].metadata.executionAuthorityGranted,false);
 }));
+test('reviewed failed-only withdrawal refuses a changed terminal state under lock',()=>fixture(async({client,input})=>{
+ await assert.rejects(withdrawUnacceptedRunOnClient(client,{...input,expectedStatus:'failed'}),/exact unaccepted terminal run/);
+ assert.equal((await client.query('select count(*)::int count from artifacts')).rows[0].count,0);
+ await client.query("update workflow_runs set status='failed' where id=$1",[input.runId]);
+ await withdrawUnacceptedRunOnClient(client,{...input,expectedStatus:'failed'});
+ assert.equal((await client.query('select status from workflow_runs where id=$1',[input.runId])).rows[0].status,'failed');
+}));
 test('explicit withdrawal closes only a quiescent uncertain reservation with a terminal child',()=>fixture(async({client,input})=>{
  const child=randomUUID();
  await client.query("insert into workflow_runs values($1,$2,'Cancelled replacement','cancelled','{}')",[child,input.projectId]);

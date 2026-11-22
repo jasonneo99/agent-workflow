@@ -111,3 +111,22 @@ Those skips remain disclosed and do not count as strict verification evidence.
 Installed local worker/dashboard checks are separate from a published package
 release. Continue the remaining account-headroom integration and broader live
 delivery cases under the same evidence and policy boundaries.
+
+## Human removal of failed cards
+
+Manual removal uses direct-human withdrawal, separately from generic Partner
+dismissal or accepted-replacement archival. The review freezes every currently
+visible failed attempt represented by the selected family cards, including task
+digests. New arrivals are not swept in; changed tasks or terminal states are
+refused. Each attempt requires a fresh exact intent and retains the ordinary
+active-work, approval and unresolved-effect checks. Partial success is reported
+explicitly. Failed statuses, original contracts, tasks, approvals and evidence
+remain unchanged; withdrawal grants no execution or acceptance authority.
+
+The interface shows the number of failed attempts as well as cards. Removing
+only the newest attempt must not silently reveal an older failed attempt from
+the same reviewed family. Confirmed removal invalidates queue snapshots, and
+pre-mutation in-flight loads cannot restore withdrawn cards into the cache.
+Database guards, malformed/stale review tests, partial-result tests, and the
+actual browser control were exercised. The live removal preserved all sampled
+original run, task and approval snapshots, with zero failed cards left visible.

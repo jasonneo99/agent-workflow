@@ -48,3 +48,14 @@ test("does not serve a snapshot beyond the hard stale bound", async () => {
   assert.equal(next.value, "second");
   assert.equal(next.refreshing, false);
 });
+test('a pre-removal load cannot restore withdrawn cards or release a newer in-flight load',async()=>{
+ const cache=new QueueCardSnapshotCache<string>();await cache.get('all',async()=>'initial');
+ let finishOld!:(value:string)=>void,finishNew!:(value:string)=>void;
+ const old=cache.get('all',()=>new Promise<string>(resolve=>{finishOld=resolve;}),true);
+ cache.invalidate();
+ const fresh=cache.get('all',()=>new Promise<string>(resolve=>{finishNew=resolve;}),true);
+ finishOld('before removal');await old;
+ const shared=cache.get('all',async()=>{throw Error('Old cleanup released the new load');},true);
+ finishNew('after removal');assert.equal((await fresh).value,'after removal');assert.equal((await shared).value,'after removal');
+ assert.equal((await cache.get('all',async()=>'unused')).value,'after removal');
+});

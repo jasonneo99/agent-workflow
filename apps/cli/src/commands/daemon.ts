@@ -89,6 +89,7 @@ import {renderQueuePartnerHistory} from '../dashboard/queue-partner-history.js';
 import {queueHistoryScript,renderQueueHistoryPanel} from '../dashboard/queue-history.js';
 import {queueLifecyclePresentation} from '../dashboard/queue-lifecycle.js';
 import {queueHistoryRangeMinutes,recordAndLoadQueueHistory} from '../lib/queue-history.js';
+import {failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards,withFailedCardRemovalCandidates,type FailedCardRemoval} from '../lib/queue-removal.js';
 import {discardGuideEvidenceReductionCheckpoint,guideEvidenceCheckpointStorageKey,loadOrCreateGuideEvidenceCheckpointKey,persistGuideEvidenceReductionCheckpoint,readGuideEvidenceReductionCheckpoint} from '../lib/guide-evidence-checkpoint-store.js';
 import {loadQueuePartnerHistoryForRuns,type QueuePartnerHistorySummary} from '../lib/queue-partner-memory.js';
 import { buildQueuePartnerActivity } from "../lib/queue-partner-activity.js";
@@ -525,7 +526,7 @@ type RoadmapSuggestionDecisionLog = {
   decisions: RoadmapSuggestionDecision[];
 };
 
-type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number]&{liveActivity?:QueueCardActivity;waitReason?:QueueWaitReason};
+type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number]&{liveActivity?:QueueCardActivity;waitReason?:QueueWaitReason;failedRemovalCandidates?:FailedCardRemoval[]};
 type DashboardQueueSnapshot = {
   queue: DashboardQueueItem[];
   historicalRuns: DashboardRunStatus[];
@@ -3720,9 +3721,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         workerConcurrency: form.get("workerConcurrency") ?? "",
         project: form.get("project") ?? "",
         reason: form.get("reason") ?? "",
+        removals:form.get('removals')??'',expectedTaskDigest:form.get('expectedTaskDigest')??undefined,
         confirmed: form.get("confirmed") === "on"
       });
-      respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, "/queue"));
+      const removalAction=['withdraw-unaccepted','remove-failed-visible'].includes(form.get('action')??'');
+      if(removalAction&&result.ok)queueCardSnapshots.invalidate();
+      respondDashboardAction(request, response, form, result, removalAction?'/queue':dashboardResultRunPath(result, "/queue"));
       return;
     }
 
@@ -7359,8 +7363,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         } : null;
         return { ...item, ...(waitReason ? { waitReason } : {}), runtimeRemedy };
       });
-      const partnerHistory = await loadQueuePartnerHistoryForRuns(enrichedQueue.map((item) => item.runId));
-      return { queue: enrichedQueue, historicalRuns, partnerProjects, partnerHistory };
+      const removalQueue=await withFailedCardRemovalCandidates(enrichedQueue);
+      const partnerHistory = await loadQueuePartnerHistoryForRuns(removalQueue.map((item) => item.runId));
+      return { queue: removalQueue, historicalRuns, partnerProjects, partnerHistory };
     }, requestRefresh);
   }
 
@@ -10442,9 +10447,28 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     reason: string;
     confirmed: boolean;
     actor?: string;
+    removals?:string;
+    expectedTaskDigest?:string;
+    expectedRunStatus?:'failed';
   }): Promise<DashboardFollowUpResult> {
     const action = input.action.trim();
     const runId = input.runId.trim();
+
+    if(action==='remove-failed-visible'){
+      if(!input.confirmed)return {ok:false,error:'Confirm removal of the exact displayed failed cards first.'};
+      let selected;try{selected=parseFailedCardRemovals(input.removals??'');}catch(error){return {ok:false,error:error instanceof Error?error.message:'Invalid removal selection.'};}
+      const result=await removeReviewedFailedCards(selected,async item=>{
+        const outcome=await processDashboardQueueAction({...input,action:'withdraw-unaccepted',runId:item.runId,
+          expectedTaskDigest:item.taskDigest,expectedRunStatus:'failed',actor:'Human via dashboard',
+          reason:input.reason.trim()||'Remove this reviewed failed card from the queue without accepting it.'});
+        return outcome.ok?{ok:true}:{ok:false,error:outcome.error};
+      });
+      if(!result.removed.length&&result.refused.length)return {ok:false,error:`No failed cards removed; ${result.refused.length} need review. ${result.refused[0].reason}`};
+      return {ok:true,title:`Removed ${result.removed.length} failed attempt${result.removed.length===1?'':'s'}; ${result.refused.length} need review`,
+        output:[`Removed: ${result.removed.length}`,`Not removed: ${result.refused.length}`,
+          ...result.refused.map(item=>`${item.runId}: ${item.reason}`),
+          'Original failed statuses, contracts, approvals and evidence were preserved. No acceptance or execution authority was granted.','Open: /queue'].join('\n')};
+    }
 
     if (action === "process") {
       const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
@@ -10783,7 +10807,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         dismissed = await dismissFailedWorkflowRun({ runId, actor: "dashboard", reason });
       } catch (error) {
         if (error instanceof PartnerManagedRunRecoveryError) {
-          return { ok: false, error: "This is Partner-managed work. Use ‘Archive from active views’ on this exact card; generic dismissal cannot change its governed history." };
+          return { ok: false, error: "This is Partner-managed work. Use ‘Remove from queue’ with exact human confirmation on this card; generic dismissal remains protected." };
         }
         throw error;
       }
@@ -10807,11 +10831,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const row = await withClient(async client => (await client.query<{
         projectId:string; task:string; evaluationMetadata:Record<string,unknown> | null;
         requester:string|null;requesterChannel:string|null;
-      }>(`select project_id::text as "projectId",task,evaluation_metadata as "evaluationMetadata",requester,requester_channel as "requesterChannel"
+        status:string;
+      }>(`select project_id::text as "projectId",task,status,evaluation_metadata as "evaluationMetadata",requester,requester_channel as "requesterChannel"
           from workflow_runs where id=$1::uuid`,[runId])).rows[0]);
       const originatingThreadId = typeof row?.evaluationMetadata?.codexThreadId === "string"
         ? row.evaluationMetadata.codexThreadId : "";
       if (!row) return { ok:false,error:`Unknown workflow run: ${runId}` };
+      if((input.expectedTaskDigest&&input.expectedTaskDigest!==acceptanceDigest(row.task))||(input.expectedRunStatus&&input.expectedRunStatus!==row.status))return {ok:false,error:'This run changed after review. Refresh the queue and review it again.'};
       const owner = `dashboard-withdrawal:${runId}`;
       const intent = await acquireWorkIntent({
         projectId:row.projectId,owner,
@@ -10819,13 +10845,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         fileScopes:[`runtime/withdrawals/${runId}`],ttlSeconds:120
       });
       try {
-        const instruction=input.reason.trim()||"Archive this exact unsuccessful run from active queue views without accepting it.";
+        const instruction=input.reason.trim()||"Remove this exact unsuccessful run from queue views without accepting it.";
         const originBinding=originatingThreadId?{originatingThreadId}:{operatorSessionId:randomUUID(),
           originalOriginDigest:acceptanceDigest({requester:row.requester,requesterChannel:row.requesterChannel,evaluationMetadata:row.evaluationMetadata})};
         await withdrawUnacceptedRun({projectId:row.projectId,runId,...originBinding,
+          ...(input.expectedRunStatus?{expectedStatus:input.expectedRunStatus}:{}),
           originalTaskDigest:acceptanceDigest(row.task),owner,intentFence:intent.fencingToken,
           actor:input.actor?.trim()||"Human via dashboard",instruction,confirmation:WITHDRAW_RUN_CONFIRMATION});
-        return {ok:true,title:"Run archived from active views",runId,output:[
+        return {ok:true,title:"Unsuccessful run removed from queue",runId,output:[
           `Run: ${runId}`,`Instruction: ${instruction}`,
           "Original failed status, contracts, approvals, artifacts, and receipts remain in history.",
           "No execution or acceptance authority was granted.","Open: /queue"
@@ -11658,22 +11685,24 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  function queueDismissAllForm(): string {
+  function queueDismissAllForm(queue:DashboardQueueItem[]): string {
+    const removals=failedCardRemovalSnapshot(queue);
+    if(!removals.length)return '<p class="muted">No failed cards in this view.</p>';
     return `<form class="bulk-dismiss-form" method="post" action="/api/queue-action">
-      <input type="hidden" name="action" value="dismiss-all-failed">
-      <label>Project path (optional)<input name="project" placeholder="All projects"></label>
-      <label>Reason<input name="reason" placeholder="Bulk-dismissed after review"></label>
-      <label class="check-row"><input type="checkbox" name="confirmed" required> I reviewed these failures and want to dismiss them.</label>
-      <button class="danger" type="submit">${iconLabel("trash", "Dismiss Failed Runs")}</button>
+      <input type="hidden" name="action" value="remove-failed-visible"><input type="hidden" name="removals" value="${escapeHtml(JSON.stringify(removals))}">
+      <label>Reason<input name="reason" placeholder="Optional removal reason"></label>
+      <label class="check-row"><input type="checkbox" name="confirmed" required> Remove these ${removals.length} reviewed failed attempts in ${queue.filter(item=>item.runStatus==='failed').length} cards; preserve failed statuses and history.</label>
+      <button class="danger" type="submit">${iconLabel("trash", "Remove failed cards")}</button>
     </form>`;
   }
 
-  function queueDismissRunForm(runId: string): string {
-    return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="dismiss-failed"><input name="reason" aria-label="Dismissal reason" placeholder="Optional reason"><button class="danger" type="submit">${iconLabel("trash", "Dismiss")}</button></form>`;
-  }
-
-  function queueWithdrawRunForm(runId: string): string {
-    return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="withdraw-unaccepted"><input name="reason" aria-label="Withdrawal instruction" placeholder="Why this attempt is obsolete"><label class="check-row"><input type="checkbox" name="confirmed" required> This exact unsuccessful run may leave active views.</label><button class="danger" type="submit">${iconLabel("archive", "Archive from active views")}</button></form>`;
+  function queueWithdrawRunForm(item:DashboardQueueItem): string {
+    if(item.runStatus==='failed'){
+      const removals=failedCardRemovalSnapshot([item]);
+      if(!removals.length)return '<span class="muted">This family has no current failed attempts to remove.</span>';
+      return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="remove-failed-visible"><input type="hidden" name="removals" value="${escapeHtml(JSON.stringify(removals))}"><input name="reason" aria-label="Removal reason" placeholder="Optional removal reason"><label class="check-row"><input type="checkbox" name="confirmed" required> Remove these ${removals.length} failed family attempts; preserve history.</label><button class="danger" type="submit">${iconLabel("archive", "Remove from queue")}</button></form>`;
+    }
+    return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(item.runId)}"><input type="hidden" name="expectedTaskDigest" value="${acceptanceDigest(item.task)}"><input type="hidden" name="action" value="withdraw-unaccepted"><input name="reason" aria-label="Withdrawal instruction" placeholder="Optional removal reason"><label class="check-row"><input type="checkbox" name="confirmed" required> Remove this exact unsuccessful run; preserve its status and history.</label><button class="danger" type="submit">${iconLabel("archive", "Remove from queue")}</button></form>`;
   }
 
   function queueItemPrimaryForms(item: DashboardQueueItem): string {
@@ -11706,8 +11735,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       if (item.runStatus === "blocked") {
         forms.push(queueRunActionForm(item.runId, "repair-blocked", "Diagnose as New Run"));
       }
-      forms.push(queueDismissRunForm(item.runId));
-      forms.push(queueWithdrawRunForm(item.runId));
+      forms.push(queueWithdrawRunForm(item));
     }
     if (item.runStatus === "queued" || item.runStatus === "running") {
       forms.push(queueRunActionForm(item.runId, "cancel", "Cancel"));
@@ -16836,8 +16864,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <div data-queue-live-region="attention">
       ${failed.length ? `<section class="panel warn-panel">
         <h2>Clear Failed Queue Items</h2>
-        <p class="muted">Dismissal removes failed runs from this queue without deleting their history, artifacts, or receipts.</p>
-        ${queueDismissAllForm()}
+        <p class="muted">Remove reviewed failed cards while preserving their failed statuses and evidence. Active work, approvals, or unresolved effects must be reconciled first.</p>
+        ${queueDismissAllForm(queue)}
       </section>` : ""}
       ${recovering.length ? `<section class="panel">
         <div class="section-heading"><div><h2>Recovery in Progress</h2><span class="muted">Source failures remain immutable history. Current work is counted once through the active recovery run.</span></div></div>
