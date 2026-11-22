@@ -19,7 +19,11 @@ async function waitForPid(file: string): Promise<number> {
   for (let count = 0; count < 300; count++) {
     try {
       const pid = Number(await fs.readFile(file, "utf8"));
-      assert.ok(Number.isSafeInteger(pid) && pid > 1); return pid;
+      // A present-but-unparseable read is a torn read of a file the owned
+      // fixture is still writing (open with truncate, then write): keep
+      // polling instead of failing on a transient empty/partial value.
+      // A fixture that never publishes a valid PID still fails below.
+      if (Number.isSafeInteger(pid) && pid > 1) return pid;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     await delay(10);
   }
