@@ -89,7 +89,7 @@ import {renderQueuePartnerHistory} from '../dashboard/queue-partner-history.js';
 import {queueHistoryScript,renderQueueHistoryPanel} from '../dashboard/queue-history.js';
 import {queueLifecyclePresentation} from '../dashboard/queue-lifecycle.js';
 import {queueHistoryRangeMinutes,recordAndLoadQueueHistory} from '../lib/queue-history.js';
-import {failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards,withFailedCardRemovalCandidates,type FailedCardRemoval} from '../lib/queue-removal.js';
+import {queueRemovalRefusal,failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards,withFailedCardRemovalCandidates,type FailedCardRemoval} from '../lib/queue-removal.js';
 import {discardGuideEvidenceReductionCheckpoint,guideEvidenceCheckpointStorageKey,loadOrCreateGuideEvidenceCheckpointKey,persistGuideEvidenceReductionCheckpoint,readGuideEvidenceReductionCheckpoint} from '../lib/guide-evidence-checkpoint-store.js';
 import {loadQueuePartnerHistoryForRuns,type QueuePartnerHistorySummary} from '../lib/queue-partner-memory.js';
 import { buildQueuePartnerActivity } from "../lib/queue-partner-activity.js";
@@ -10857,6 +10857,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           "Original failed status, contracts, approvals, artifacts, and receipts remain in history.",
           "No execution or acceptance authority was granted.","Open: /queue"
         ].join("\n")};
+      } catch(error) {
+        const refusal=queueRemovalRefusal(error);
+        if(refusal)return {ok:false,error:refusal};
+        throw error;
       } finally {
         await releaseWorkIntent({projectId:row.projectId,owner,fencingToken:intent.fencingToken});
       }

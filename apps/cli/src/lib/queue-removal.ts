@@ -37,3 +37,15 @@ export async function removeReviewedFailedCards(items:readonly FailedCardRemoval
  catch(error){refused.push({runId:item.runId,reason:error instanceof Error?error.message:'Removal was refused.'});}
  return {removed,refused};
 }
+
+/** Refusal messages are fixed public contracts; unexpected diagnostics stay private. */
+export function queueRemovalRefusal(error:unknown):string|null {
+ const message=error instanceof Error?error.message:'';
+ return [
+  'Exact direct-human run withdrawal required.',
+  'Withdrawal requires the exact unaccepted terminal run and its unchanged source origin.',
+  'Fresh exact withdrawal intent required.',
+  'Stop or reconcile active work and unresolved effects before withdrawing this run.',
+  'A prior withdrawal is bound to a different task or source origin.'
+ ].includes(message)?message:null;
+}

@@ -109,7 +109,7 @@ product or fleet acceptance.
 The final full regression run reported 2,193 passes, five skips and no failures.
 Those skips remain disclosed and do not count as strict verification evidence.
 Installed local worker/dashboard checks are separate from a published package
-release. Continue the remaining account-headroom integration and broader live
+release. Continue provider-specific account-headroom measurement and broader live
 delivery cases under the same evidence and policy boundaries.
 
 ## Human removal of failed cards
@@ -130,3 +130,37 @@ pre-mutation in-flight loads cannot restore withdrawn cards into the cache.
 Database guards, malformed/stale review tests, partial-result tests, and the
 actual browser control were exercised. The live removal preserved all sampled
 original run, task and approval snapshots, with zero failed cards left visible.
+
+## Prepared authoring and account isolation proof
+
+A second live bounded delivery created the credential-aware availability scope
+module, its behavioral tests, and its call-guard integration. Prepared authoring
+and the separate independent verifier each ran the exact 24-test collection
+with zero skips. Governed integration admitted only the three authorized files.
+The 136-record receipt chain verified, all unrelated index entries remained
+identical, and manually edited instruction bytes were preserved. This is source
+delivery evidence, separately from published-package or fleet adoption.
+
+That delivery exposed an automatic-check ordering defect. An author may declare
+a test before creating its file; automatic scheduling now waits for the missing
+test input. Explicit baseline requests still run, and independent verifiers do
+not defer missing tests. Worker regressions create and execute a real new test,
+reject completion without creating it, and retain stale-evidence rejection.
+Prepared workers consume runtime-owned work intents instead of invoking nested
+host ownership mutations inside their isolated environment.
+
+Account availability keys preserve explicit scope bindings, otherwise fingerprint
+applicable configured credentials, and use opaque host/principal isolation when
+account identity cannot be determined. Raw credentials and identities are never
+stored in these keys; credential files and billing services are not queried.
+Unknown account balances remain unknown. Existing provider authorization, model
+selection, finite call budgets, probe ownership and independent acceptance gates
+remain in force.
+
+Prepared source pipelines also suppress fallback scope-discovery dispatch: an
+already compiled source contract with a missing test, environment or enrollment
+needs its named readiness prerequisite repaired, not another inferred contract.
+Legacy unscoped investigation retains its existing governed path. Manual
+withdrawal explains protected active work and unresolved effects with a fixed
+public refusal instead of a generic server error; unexpected diagnostics remain
+private.

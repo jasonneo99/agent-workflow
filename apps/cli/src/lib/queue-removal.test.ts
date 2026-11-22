@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
-import {failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards} from './queue-removal.js';
+import {queueRemovalRefusal,failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards} from './queue-removal.js';
 test('manual selection includes only displayed failed cards and binds original task bytes',()=>{
  const runId=randomUUID(),items=[{runId,runStatus:'failed',task:'Original requirement'},...['running','queued','blocked','completed'].map(runStatus=>({runId:randomUUID(),runStatus,task:'Other work'}))];
  const selected=failedCardRemovalSnapshot(items);assert.equal(selected.length,1);assert.equal(selected[0].runId,runId);
@@ -23,4 +23,11 @@ test('partial manual removal retains successful receipts and reports every refus
  const result=await removeReviewedFailedCards(items,async item=>{calls.push(item.runId);if(item===items[1])throw Error('Unresolved effect');return {ok:item===items[0],error:'Source changed'};});
  assert.deepEqual(calls,items.map(item=>item.runId));assert.deepEqual(result.removed,[items[0].runId]);
  assert.deepEqual(result.refused.map(item=>item.reason),['Unresolved effect','Source changed']);
+});
+
+test('withdrawal refusals explain protected work without exposing unexpected diagnostics',()=>{
+ const message='Stop or reconcile active work and unresolved effects before withdrawing this run.';
+ assert.equal(queueRemovalRefusal(Error(message)),message);
+ assert.equal(queueRemovalRefusal(Error('database detail with private values')),null);
+ assert.equal(queueRemovalRefusal({message}),null);
 });

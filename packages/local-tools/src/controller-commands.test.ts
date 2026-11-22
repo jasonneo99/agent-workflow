@@ -32,3 +32,15 @@ test('nested controller rejection precedes project scripts and npm dependency di
   }
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
 });
+
+test('prepared workers cannot mutate host ownership through reliability wrappers', () => {
+ for (const command of [
+  'npm run reliability -- intent acquire --project .',
+  'npm exec -- tsx apps/cli/src/reliability-command.ts intent acquire --project .',
+  'node dist/apps/cli/src/reliability-command.js intent renew --project .',
+  'agentflow-reliability intent release --project .',
+  'npx tsx "apps/cli/src/reliability-command.ts" intent acquire --project .'
+ ]) assert.equal(isControllerCommand(command), true, command);
+ for (const command of ['npm run reliability -- report', 'npm run reliability -- intent list', 'node scripts/check-intent.js intent acquire'])
+  assert.equal(isControllerCommand(command), false, command);
+});

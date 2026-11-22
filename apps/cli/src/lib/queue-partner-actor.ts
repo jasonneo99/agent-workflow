@@ -121,8 +121,13 @@ export function buildPartnerRecoveryTask(input:{strategy:string;workerAgentId:Pa
 }
 /** This chooses technical work, not permission. Every effect has fresh policy,
  * source, project identity, family and durable storage checks afterward. */
+const hasCompiledSourcePipeline=(source:PartnerActorSource)=>source.metadata?.executionPipeline?.required===true&&source.metadata.executionPipeline.sourceChanges===true;
 export function partnerCanInvestigate(f:QueueCoordinatorFamily,source:PartnerActorSource,reason:string):boolean{
  return partnerSourceLifecycleEligible(source)&&f.canonical&&!f.activeRunIds.length&&!f.reconciliationHoldReason&&!f.pendingApprovalIds.length
+  // A compiled source pipeline already declares its scope. Missing author
+  // inputs, verification recipes or enrollment are readiness holds, not a
+  // reason to pay another discovery agent to infer a replacement contract.
+  &&!hasCompiledSourcePipeline(source)
   &&!(f.originalAcceptancePresent&&f.sourceEvidenceReady)
   &&!source.metadata?.suiteId&&!source.metadata?.evaluationId&&!/eval(?:uation)?|training/iu.test(String(source.metadata?.source??''))
   &&!['sourceRunId','replayOfRunId','repairOriginRunId','parentRunId'].some(k=>Object.hasOwn(source.metadata??{},k))
@@ -300,7 +305,7 @@ export async function recoverInterruptedPartnerChildren(options:{projectRoots:re
 }
 
 export async function runPartnerActor(family:QueueCoordinatorFamily,source:PartnerActorSource,adapter:PartnerActorAdapter,options:{shouldStop?:()=>boolean;onSettled?:()=>void}={}){
- if(!partnerSourceLifecycleEligible(source))return {familyId:family.familyId,state:'suppressed',reason:'Source lifecycle or active membership is ineligible for autonomous recovery; no preparation, intent or model work was started.'};
+ if(!partnerSourceLifecycleEligible(source)||hasCompiledSourcePipeline(source))return {familyId:family.familyId,state:'suppressed',reason:'Source lifecycle, active membership or an already compiled source pipeline is ineligible for scope discovery; no preparation, intent or model work was started.'};
  let intent:{fencingToken:string}|undefined,claim:CoordinatorClaim|null=null,finalized=false;
  const owner=`queue-partner-actor:${randomUUID()}`;
  try{

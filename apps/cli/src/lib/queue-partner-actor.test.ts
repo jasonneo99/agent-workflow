@@ -309,3 +309,13 @@ test('interrupted child recovery refuses an empty explicit project scope',async(
  const {recoverInterruptedPartnerChildren}=await import('./queue-partner-actor.js');
  assert.deepEqual(await recoverInterruptedPartnerChildren({projectRoots:[]}),[]);
 });
+
+test('compiled source pipeline readiness failures never dispatch duplicate scope discovery',async()=>{
+ for(const blocker of ['Missing declared test file','Prepared environment unavailable','Missing original acceptance enrollment']){
+  const h=harness();h.adapter.prepare=async()=>{assert.fail('Known prepared scope cannot start discovery');};
+  const s={...source(),blocker,metadata:{executionPipeline:{required:true,sourceChanges:true,sourcePaths:['src/new.ts','src/new.test.ts']},taskGrant:{sourceWritePaths:['src/new.ts','src/new.test.ts']}}};
+  assert.equal(partnerCanInvestigate(family(),s,'missing source evidence or original acceptance'),false);
+  assert.equal((await runPartnerActor(family(),s,h.adapter)).state,'suppressed');assert.deepEqual(h.events,[]);
+ }
+ assert.equal(partnerCanInvestigate(family(),source(),'missing source evidence or original acceptance'),true,'Unscoped legacy investigation remains separately governed');
+});

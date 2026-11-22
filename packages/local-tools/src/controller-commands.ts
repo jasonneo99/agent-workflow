@@ -1,8 +1,11 @@
 /** Runtime capability tokens are enrollment authority, never worker commands. */
-export const controllerCommandBoundary = 'Controller commands are runtime-owned and excluded even by broad command wildcards; request the underlying authorized test command and consume supplied workflow evidence instead.';
+export const controllerCommandBoundary = 'Controller commands are runtime-owned and excluded even by broad command wildcards; request the underlying authorized test command and consume supplied workflow evidence instead. The runtime acquires and renews work intents for prepared effects; workers must not acquire, renew or release host ownership from inside the prepared environment.';
 
 export function isControllerCommand(commandLine: string): boolean {
   const words = Array.from(commandLine.matchAll(/"([^"]*)"|'([^']*)'|[^\s]+/gu), match => match[1] ?? match[2] ?? match[0]);
+  const intentIndex = words.indexOf('intent');
+  if (intentIndex > 0 && ['acquire', 'renew', 'release'].includes(words[intentIndex + 1] ?? '')
+    && words.slice(0, intentIndex).some(word => /^(?:agentflow-reliability(?:\.cmd|\.exe)?|reliability|reliability-command\.[cm]?[jt]s)$/iu.test(word.replace(/^.*[\\/]/u, '')))) return true;
   const executable=(words[0]??'').replace(/^.*[\\/]/u,'');
   if (/^agentflow(?:\.cmd|\.exe)?$/iu.test(executable)) return true;
   if (!/^npm(?:\.cmd|\.exe)?$/iu.test(executable)) return false;

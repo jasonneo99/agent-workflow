@@ -12,7 +12,7 @@ const at = (relative: string) => pathToFileURL(path.join(repository, relative)).
 
 test("actual worker refreshes verification and Git observations without replaying arbitrary effects", async t => {
   if (!process.env.AGENTFLOW_DECLARED_WORKER_ROOT) {
-    for (const scenario of ["fresh", "stale-evidence", "verifier-scoped"]) await t.test(scenario, async subtest => {
+    for (const scenario of ["fresh", "stale-evidence", "verifier-scoped", "new-test", "missing-test"]) await t.test(scenario, async subtest => {
       const owned = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "declared-verification-worker-")));
       subtest.after(() => fs.rm(owned, { recursive: true, force: true }));
       const home = path.join(owned, "home"); await fs.mkdir(home);
@@ -31,9 +31,10 @@ test("actual worker refreshes verification and Git observations without replayin
   }
   const owned = process.env.AGENTFLOW_DECLARED_WORKER_ROOT;
   const scenario = process.env.AGENTFLOW_DECLARED_WORKER_CASE;
-  assert.ok(scenario === "fresh" || scenario === "stale-evidence" || scenario === 'verifier-scoped');
+  assert.ok(scenario === "fresh" || scenario === "stale-evidence" || scenario === 'verifier-scoped' || scenario === 'new-test' || scenario === 'missing-test');
   const canonical = path.join(owned, "project"), paths = ["src/first.txt", "src/second.txt"];
-  for (const directory of ["src", "scripts"]) await fs.mkdir(path.join(canonical, directory), { recursive: true });
+  for (const directory of ["src", "scripts", "tests"]) await fs.mkdir(path.join(canonical, directory), { recursive: true });
+  await fs.writeFile(path.join(canonical, "tests/.gitkeep"), "");
   for (const relative of paths) await fs.writeFile(path.join(canonical, relative), "before\n");
   await fs.writeFile(path.join(canonical, "scripts/check_source.py"),
     "from pathlib import Path\n" +
@@ -54,16 +55,16 @@ test("actual worker refreshes verification and Git observations without replayin
   const { planRunEnvironment, ENVIRONMENT_COMMAND } = await import(at("packages/run-environments/src/index.ts"));
   const { prepareRunWorkspace } = await import(at("packages/run-environments/src/workspace.ts"));
   const { REPAIR_COMMIT_COMMAND } = await import(at("packages/run-environments/src/repair-checkpoint.ts"));
-  const command = "python3 scripts/check_source.py --group portable", effectCommand = "python3 scripts/record_effect.py";
+  const command = (scenario === "new-test" || scenario === "missing-test") ? "node --test tests/new.test.mjs" : "python3 scripts/check_source.py --group portable", effectCommand = "python3 scripts/record_effect.py";
   const hashCommand = "git hash-object src/first.txt src/second.txt";
   const unrelatedCommand='python3 scripts/unrelated_profile_check.py';
   const project = projectConfigSchema.parse({ project: { name: "Synthetic declared verification" },
     execution: { repair_commits: { enabled: true, stages: ["repair"] }, environments: { default_profile: "native", profiles: {
       native: { kind: "native", platform: process.platform + "/" + (process.arch === "x64" ? "amd64" : process.arch),
-        source_paths: ["src", "scripts"], readiness: [{ argv: ["python3", "--version"] }],
-        verification: [{ commands: scenario==='verifier-scoped'?[command,unrelatedCommand]:[command], format: "pytest", expected_tests: 1 }] }
+        source_paths: ["src", "scripts", "tests"], readiness: [{ argv: ["python3", "--version"] }],
+        verification: [{ commands: scenario==='verifier-scoped'?[command,unrelatedCommand]:[command], format: (scenario === "new-test" || scenario === "missing-test") ? "node-test" : "pytest", expected_tests: 1 }] }
     } } }, policies: { require_approval_for_external_actions: false },
-    actions: { allowed_commands: [command, unrelatedCommand, effectCommand, hashCommand, "python3 --version", ENVIRONMENT_COMMAND, REPAIR_COMMIT_COMMAND], allowed_write_paths: paths,
+    actions: { allowed_commands: [command, unrelatedCommand, effectCommand, hashCommand, "python3 --version", ENVIRONMENT_COMMAND, REPAIR_COMMIT_COMMAND], allowed_write_paths: [...paths, "tests/new.test.mjs"],
       verification_recipes:scenario==='verifier-scoped'?[{source_paths:paths,test_paths:['scripts/check_source.py'],commands:[command],output_paths:[]}]:[] } });
   await fs.mkdir(path.join(canonical, ".agent-workflow"));
   await fs.writeFile(path.join(canonical, ".agent-workflow/project.yaml"), JSON.stringify(project));
@@ -76,7 +77,7 @@ test("actual worker refreshes verification and Git observations without replayin
     stageGoal: "Consume actual current-source verification", compiledBrief: "Synthetic source freshness fixture", projectId: "synthetic-project",
     projectRootUri: canonical, workerId: "synthetic-worker", fencingToken: "1", priorReceipts: [], projectConfig: project,
     stagePattern: { type: "react", maxIterations: 10, requiresVerifier: false, promotionGate: "none", stopConditions: [] },
-    executionPipeline: { version: 1, required: true, isolation: "worktree", sourceChanges: true, sourcePaths: paths, checkpointStageIds: ["repair"] }, executionWritePaths: paths };
+    executionPipeline: { version: 1, required: true, isolation: "worktree", sourceChanges: true, sourcePaths: (scenario === "new-test" || scenario === "missing-test") ? [...paths, "tests/new.test.mjs"] : paths, checkpointStageIds: ["repair"] }, executionWritePaths: (scenario === "new-test" || scenario === "missing-test") ? [...paths, "tests/new.test.mjs"] : paths };
   if(scenario==='verifier-scoped')Object.assign(task,{stageId:'verify',checkpointAfter:false,stagePattern:{type:'verifier'},executionWritePaths:[],
     priorStageArtifacts:[{stageId:'repair',agentId:'implementation-agent',summary:'Synthetic retained candidate',artifact:{repairCheckpoint:{files:paths,environmentProfile:'native'}}}]});
   const records: any[] = [], artifacts = new Map<string, any>(), effects = new Map<string, any>();
@@ -114,7 +115,7 @@ test("actual worker refreshes verification and Git observations without replayin
   }, true);
   await replace("packages/workflow-engine/src/stage-authority.ts", { createRenewingStageAuthority: async () => async () => {} });
   await replace("packages/workflow-engine/src/run-preparation.ts", { prepareTaskExecution: async () => ({ root: workspace.root, workspace, commands: [command],
-    beforeWrite: async (relative: string) => assert.ok(paths.includes(relative)), assertAuthority: async () => {}, release: async () => {} }) });
+    beforeWrite: async (relative: string) => assert.ok([...paths, "tests/new.test.mjs"].includes(relative)), assertAuthority: async () => {}, release: async () => {} }) });
   await replace("packages/workflow-engine/src/recovery-evidence.ts", { recoveryEvidence: async () => "" });
   await replace("packages/workflow-engine/src/fleet-usage.ts", { recordDirectProviderUsage: async () => 0 });
   await replace("packages/workflow-engine/src/memory-graph-wiring.ts", { buildMemoryContextForStage: async () => [], recordStageMemoryGraph: async () => {} });
@@ -131,6 +132,10 @@ test("actual worker refreshes verification and Git observations without replayin
   } });
   await replace("packages/model-providers/src/index.ts", { providerFromEnv: () => { throw Error("No real provider permitted"); }, executeWithProviderFallback: async () => {
     calls++;
+    if (scenario === 'new-test' || scenario === 'missing-test') return { output: { outcome: 'completed', summary: 'Create the declared behavioral test and consume its real results.', artifact: { findings: ['New test delivery'] },
+      requestedFileReads: calls === 1 ? paths : [],
+      requestedFileWrites: calls === 2 && scenario === 'new-test' ? [...paths.map(relative => ({path: relative, content: 'after\n'})), {path: 'tests/new.test.mjs', content: "import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs'; test('actual new behavior', () => {assert.equal(fs.readFileSync('src/first.txt','utf8'),'after\\n'); assert.equal(fs.readFileSync('src/second.txt','utf8'),'after\\n');});\n"}] : [] },
+      attempts: [], actualProvider: 'mock', fallbackUsed: false };
     if(scenario==='verifier-scoped')return {output:{outcome:'completed',summary:'Consumed the executed scoped checker evidence.',artifact:{findings:['Scoped verification']}},attempts:[],actualProvider:'mock',fallbackUsed:false};
     return { output: { outcome: "completed", summary: "Consume the governed fixture source and actual checker results.", artifact: { findings: ["Synthetic current-source evidence"] },
       requestedCommands: calls === 1 ? [command, effectCommand, hashCommand] : calls === 3 ? [effectCommand]
@@ -149,6 +154,19 @@ test("actual worker refreshes verification and Git observations without replayin
     hashes: hashes.map(r => ({ stdout: r.artifactContent.stdout, subject: r.artifactContent.governedWriteSubject })),
     hashReuses: hashReuses.length, effectExecutions: other.length, blockedReason: blocked?.reason, failed }));
   assert.equal(failed, undefined);
+  if (scenario === 'missing-test') {
+    assert.equal(checkerInvocations, 0); assert.equal(completed, undefined); assert.ok(blocked);
+    assert.equal(records.some(r => r.artifactKind === 'repair_commit_candidate'), false);
+    assert.equal(git('status', '--porcelain'), ''); return;
+  }
+  if (scenario === 'new-test') {
+    assert.equal(checkerInvocations, 1, 'Automatic verification waits until the new test is written');
+    assert.equal(checks[0]?.artifactContent.exitCode, 0);
+    assert.match(checks[0]?.artifactContent.stdout, /pass 1/u);
+    assert.equal(blocked, undefined); assert.equal(result.completed, 1);
+    assert.ok(records.find(r => r.artifactKind === 'repair_commit_candidate'));
+    assert.equal(git('status', '--porcelain'), ''); return;
+  }
   if(scenario==='verifier-scoped'){
     assert.equal(checkerInvocations,1,'The real verifier executes the exact source recipe once');
     assert.equal(records.some(r=>r.artifactContent?.commandLine===unrelatedCommand),false,'Profile defaults cannot replace the scoped candidate recipe');
