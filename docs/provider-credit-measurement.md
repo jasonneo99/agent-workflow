@@ -13,6 +13,7 @@ Supported measurements:
 | --- | --- | --- |
 | DeepSeek | Reported USD or CNY balance and API availability | CNY is never converted into an invented USD balance. |
 | OpenRouter | Current-key spending cap; account credits only when the key reports management capability | A spending cap or unlimited key is not proof of account funds. |
+| Codex CLI | Reported quota windows and optional native credits through its read-only app-server meter | Native credits and subscription allowance are never treated as USD. |
 | Other providers | Explicit unknown with an unsupported-API reason | Subscription access, successful inference and usage totals do not establish a prepaid balance. |
 
 The collector uses only already-configured provider credentials, qualifies the
@@ -44,7 +45,18 @@ text. It does not make network requests during route selection. Recurring
 collection and installed-runtime adoption must be verified separately from the
 collector, storage and routing tests. Unsupported balances remain unknown.
 
-Codex CLI native quota coverage is a remaining qualification item. Its documented
-[app-server account meter](https://learn.chatgpt.com/docs/app-server) can report
-usage windows and optional provider-native credits. Those units must remain
-separate from USD balance measurements, and missing fields must remain unknown.
+Codex CLI uses its documented [app-server account meter](https://learn.chatgpt.com/docs/app-server).
+The probe runs from a neutral directory with the existing restricted CLI
+environment, issues only initialization and `account/rateLimits/read`, bounds
+response size and execution time, and terminates only its own stdio child. It
+never starts a thread, runs inference, reads credential files, redeems reset
+credits, changes login state, or sends messages. Zero additional credits can
+coexist with remaining subscription allowance; neither becomes a USD balance.
+
+The existing learning daemon can refresh these observations without creating
+workflow runs. Enable `AGENTFLOW_PROVIDER_CREDIT_MEASUREMENT=1` in its owner-
+controlled environment. The default refresh interval is four minutes; optional
+`AGENTFLOW_PROVIDER_CREDIT_INTERVAL_MS` is bounded between 30 seconds and one
+hour. Overlapping ticks coalesce. Failures are counted separately and do not stop
+other providers or project learning. The daemon heartbeat exposes collection
+status and counts, while balances remain in the account-scoped observation store.

@@ -1,3 +1,4 @@
+import {createProviderCreditMonitor} from '../lib/provider-credit-monitor.js';
 import type { CliContext } from "../lib/context.js";
 import { automaticRepairProjectAllowed } from "../repair-project-boundary.js";
 import { decidePromotions as decideUnifiedPromotions, parsePromotionIds as parseUnifiedPromotionIds, type PromotionKind } from "../../../../packages/promotions/src/index.js";
@@ -2636,6 +2637,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const approvalAutopilotOverride = options.disableApprovalAutopilot ? false : options.approvalAutopilot ? true : undefined;
       const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile ?? path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json"));
       const startedAt = new Date().toISOString();
+      const providerCreditMonitor=createProviderCreditMonitor();
       let stop = false;
       let ticks = 0;
       let lastStatus: LearningDaemonHeartbeat | null = null;
@@ -2678,6 +2680,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         const heartbeat: LearningDaemonHeartbeat = {
           ...await ctx.runtimeVersionMetadata,
           kind: "agentflow_learning_daemon_status",
+          providerCreditMeasurement:providerCreditMonitor.status(),
           pid: process.pid,
           daemonId,
           projectRootUri: statusProjectDir,
@@ -2809,6 +2812,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const runTick = async (): Promise<void> => {
         ticks += 1;
         try {
+          await providerCreditMonitor.tick();
           const discoveredTargets = allProjects
             ? await loadLearningDaemonProjectTargets(projectDir)
             : [{ projectDir, enabled: true, paused: false, mode, limit }];

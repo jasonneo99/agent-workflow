@@ -15,7 +15,7 @@ test('CNY balances are measured but never invented as USD',async()=>{
 });
 test('unsupported, unconfigured and custom endpoints do not dispatch credential requests',async()=>{
  const network=fake(()=>{throw Error('Must not dispatch');});
- for(const [providerId,env] of [['codex-cli',{}],['openai',{OPENAI_API_KEY:'synthetic'}],['deepseek',{}],['deepseek',{...deep,DEEPSEEK_BASE_URL:'http://localhost:1234/v1'}],['deepseek',{...deep,DEEPSEEK_BASE_URL:'https://api.deepseek.com.evil.invalid/v1'}]] as const){const value=await collectProviderCredits(providerId,{env,now,fetch:network});assert.equal(value.status,'unknown');assert.deepEqual(value.balances,[]);}
+ for(const [providerId,env] of [['openai',{OPENAI_API_KEY:'synthetic'}],['deepseek',{}],['deepseek',{...deep,DEEPSEEK_BASE_URL:'http://localhost:1234/v1'}],['deepseek',{...deep,DEEPSEEK_BASE_URL:'https://api.deepseek.com.evil.invalid/v1'}]] as const){const value=await collectProviderCredits(providerId,{env,now,fetch:network});assert.equal(value.status,'unknown');assert.deepEqual(value.balances,[]);}
 });
 test('HTTP failures and malformed payloads remain unknown rather than zero',async()=>{
  for(const status of [401,402,403,429,500]){const value=await collectProviderCredits('deepseek',{env:deep,now,fetch:fake(()=>response({error:'synthetic-secret'},status))});assert.equal(value.reason,'http-'+status);assert.equal(measuredCreditRemainingUsd(value,now),undefined);assert.ok(!JSON.stringify(value).includes('synthetic-secret'));}
@@ -30,4 +30,11 @@ test('OpenRouter account balance is measured only with reported management capab
 });
 test('network diagnostics and redirect failures are scrubbed, and unknown does not reuse old funds',async()=>{
  const value=await collectProviderCredits('deepseek',{env:deep,fetch:fake(()=>{throw Error('synthetic-secret');})});assert.equal(value.reason,'measurement-unavailable');assert.equal(JSON.stringify(value).includes('synthetic-secret'),false);assert.deepEqual(value.balances,[]);
+});
+
+test('Codex subscription quota and zero native credits never become a zero USD balance',async()=>{
+ const value=await collectProviderCredits('codex-cli',{env:{},now,readCodex:async()=>({rateLimits:{primary:{usedPercent:51,windowDurationMins:10080,resetsAt:1900000000},credits:{hasCredits:false,unlimited:false,balance:'0'},accountId:'synthetic-private-account'}})});
+ assert.equal(value.status,'measured');assert.equal(value.nativeQuota?.primary?.usedPercent,51);assert.equal(value.nativeQuota?.credits?.balance,0);
+ assert.equal(measuredCreditRemainingUsd(value,now),undefined);assert.equal(value.availableForCalls,undefined);assert.equal(JSON.stringify(value).includes('synthetic-private-account'),false);
+ const unknown=await collectProviderCredits('codex-cli',{env:{},readCodex:async()=>undefined});assert.equal(unknown.status,'unknown');assert.deepEqual(unknown.balances,[]);
 });

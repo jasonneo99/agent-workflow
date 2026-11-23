@@ -1093,6 +1093,7 @@ export type LearningActionReceiptLog = {
 export type LearningActionReceiptStatus = "planned" | "applied" | "superseded" | "rejected";
 
 export type LearningDaemonHeartbeat = {
+  providerCreditMeasurement?:import("./provider-credit-monitor.js").ProviderCreditMonitorStatus;
   runtimeVersion: string;
   bundleVersion: string;
   protocolVersions: CliContext["protocolVersions"];

@@ -8,6 +8,8 @@ test('database observations isolate accounts, reject stale overwrite and retain 
  assert.equal(await recordProviderCreditsOnClient(c,observation({observedAt:new Date(Date.parse(first.observedAt)-1000).toISOString(),balances:[{currency:'USD',remaining:999}]})),false);
  assert.equal((await readProviderCreditsOnClient(c,first.scopeKey))?.balances[0].remaining,4);assert.equal(await readProviderCreditsOnClient(c,'b'.repeat(64)),null);
  const unknown=observation({observedAt:new Date(Date.parse(first.observedAt)+1000).toISOString(),status:'unknown',reason:'measurement-unavailable',balances:[]});assert.equal(await recordProviderCreditsOnClient(c,unknown),true);assert.deepEqual((await readProviderCreditsOnClient(c,first.scopeKey))?.balances,[]);
+ const native=observation({providerId:'codex-cli',scopeKey:'c'.repeat(64),source:'codex-rate-limits',balances:[],nativeQuota:{credits:{hasCredits:false,unlimited:false,balance:0,unit:'codex-native-credits'}}});
+ assert.equal(await recordProviderCreditsOnClient(c,native),true);assert.equal((await readProviderCreditsOnClient(c,native.scopeKey))?.nativeQuota?.credits?.balance,0);
  await assert.rejects(()=>recordProviderCreditsOnClient(c,observation({observedAt:new Date(Date.now()+60000).toISOString()})),/Invalid/);
  await assert.rejects(()=>recordProviderCreditsOnClient(c,observation({reason:'synthetic-secret'})),/Invalid/);
  await assert.rejects(()=>recordProviderCreditsOnClient(c,observation({keyLimitRemainingUsd:NaN})),/Invalid/);

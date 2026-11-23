@@ -1,11 +1,13 @@
+import {parseCodexNativeQuota,readCodexRateLimits,type CodexNativeQuota} from './codex-credit-probe.js';
 import {providerAvailabilityScopeKey} from './provider-account-scope.js';
 
 export interface ProviderCreditObservation {
  version:1;providerId:string;scopeKey:string;observedAt:string;
  status:'measured'|'unknown';reason:string;
  balances:Array<{currency:'USD'|'CNY';remaining:number}>;
+ nativeQuota?:CodexNativeQuota;
  keyLimitRemainingUsd?:number;credentialScopeKey?:string;availableForCalls?:boolean;
- source:'deepseek-balance'|'openrouter-key'|'openrouter-credits'|'unsupported';
+ source:'deepseek-balance'|'openrouter-key'|'openrouter-credits'|'codex-rate-limits'|'unsupported';
 }
 const numeric=(value:unknown):number|undefined=>{
  if(typeof value!=='number'&&(typeof value!=='string'||!/^\d+(?:\.\d+)?$/u.test(value)))return undefined;
@@ -20,10 +22,14 @@ async function readJson(response:Response):Promise<any>{
  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 /** Provider-reported data only. No inference, credential-file reads or purchases. */
-export async function collectProviderCredits(providerId:string,options:{env?:NodeJS.ProcessEnv;fetch?:typeof fetch;now?:Date}={}):Promise<ProviderCreditObservation>{
+export async function collectProviderCredits(providerId:string,options:{env?:NodeJS.ProcessEnv;fetch?:typeof fetch;now?:Date;readCodex?:()=>Promise<unknown>}={}):Promise<ProviderCreditObservation>{
  if(!/^[a-z0-9-]{1,64}$/u.test(providerId))throw Error('Invalid provider id');
  const env=options.env??process.env,observedAt=(options.now??new Date()).toISOString();
  const base:ProviderCreditObservation={version:1,providerId,scopeKey:providerAvailabilityScopeKey(providerId,{env}),observedAt,status:'unknown',reason:'unsupported-balance-api',balances:[],source:'unsupported'};
+ if(providerId==='codex-cli'){
+  let nativeQuota:CodexNativeQuota|undefined;try{nativeQuota=parseCodexNativeQuota(await (options.readCodex??(()=>readCodexRateLimits({env})))());}catch{}
+  return nativeQuota?{...base,status:'measured',reason:'provider-reported',source:'codex-rate-limits',nativeQuota}:{...base,reason:'measurement-unavailable',source:'codex-rate-limits'};
+ }
  if(!['deepseek','openrouter'].includes(providerId))return base;
  const deepseek=providerId==='deepseek',credentialName=deepseek?'DEEPSEEK_API_KEY':'OPENROUTER_API_KEY',key=env[credentialName];
  if(!key?.trim())return {...base,reason:'credential-not-configured'};

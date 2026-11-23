@@ -186,3 +186,10 @@ response limits, stale overwrite, currency separation and key-cap versus funds.
 See [provider credit measurement](provider-credit-measurement.md). Recurring
 collection, packaged adoption and the five-case cohort
 remain separate qualification work.
+
+Native credit collection now includes the read-only Codex quota meter. Its
+subscription usage windows and optional native credit amount are kept distinct
+from currency balances. The existing learning daemon has an opt-in bounded
+measurement pass with visible heartbeat counts, isolated provider failures and
+no additional queue entries. Candidate tests establish these contracts; installed
+daemon, MCP, Studio and fleet adoption still require explicit runtime evidence.
