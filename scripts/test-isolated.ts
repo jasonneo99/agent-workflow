@@ -50,7 +50,7 @@ try {
   if (!fixtureReadiness.ready) throw new Error(`Disposable PostgreSQL fixture failed schema readiness at ${fixtureReadiness.endpoint}.`);
   console.log(JSON.stringify({ kind: "isolated_test_database", database: name, configuredDatabaseUsedForTests: false }));
   const requestedTests = process.argv.slice(2);
-  const testFiles = requestedTests.length ? requestedTests : ["packages/**/*.test.ts", "apps/**/*.test.ts", "scripts/test-environment.test.ts"];
+  const testFiles = requestedTests.length ? requestedTests : ["packages/**/*.test.ts", "apps/**/*.test.ts", "scripts/test-environment.test.ts", "scripts/live-development-qualification.test.mjs"];
   const child = spawn(process.execPath, ["--import", "./scripts/test-environment.mjs", "--import", "tsx", "--test", "--test-concurrency=4", ...testFiles], { stdio: "inherit", env: process.env });
   const terminate = () => child.kill("SIGTERM");
   process.once("SIGTERM", terminate);

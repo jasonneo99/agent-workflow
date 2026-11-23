@@ -1,4 +1,4 @@
-import {createProviderCreditMonitor} from '../lib/provider-credit-monitor.js';
+import {createProviderCreditMonitor,startProviderCreditMonitor} from '../lib/provider-credit-monitor.js';
 import type { CliContext } from "../lib/context.js";
 import { automaticRepairProjectAllowed } from "../repair-project-boundary.js";
 import { decidePromotions as decideUnifiedPromotions, parsePromotionIds as parseUnifiedPromotionIds, type PromotionKind } from "../../../../packages/promotions/src/index.js";
@@ -3002,18 +3002,20 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       };
 
       await writeStatus("starting");
+      const stopCreditMonitor=startProviderCreditMonitor(providerCreditMonitor);
+      let queueRecoveryTimer: ReturnType<typeof setInterval> | undefined;
+      try {
       const recoveredApprovalExecutions = await recoverInterruptedActionApprovalExecutions({ actor: daemonId });
       if (!options.json && recoveredApprovalExecutions.length) {
         console.log(`Recovered ${recoveredApprovalExecutions.length} interrupted approval execution${recoveredApprovalExecutions.length === 1 ? "" : "s"} for ${daemonId}.`);
       }
       await runQueueRecoveryLane();
-      const queueRecoveryTimer = setInterval(() => {
+      queueRecoveryTimer = setInterval(() => {
         void runQueueRecoveryLane().catch((error) => {
           console.error(`Queue recovery lane failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }, Math.min(intervalMs, 10_000));
       queueRecoveryTimer.unref();
-      try {
         await runTick();
         if (options.once) {
           const stopped = await writeStatus("stopped");
@@ -3037,7 +3039,8 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         const stopped = await writeStatus("stopped");
         if (options.json) console.log(JSON.stringify(stopped, null, 2));
       } finally {
-        clearInterval(queueRecoveryTimer);
+        if(queueRecoveryTimer)clearInterval(queueRecoveryTimer);
+        stopCreditMonitor();
       }
     });
 

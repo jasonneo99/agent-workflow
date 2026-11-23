@@ -18,3 +18,16 @@ export function createProviderCreditMonitor(options:{env?:NodeJS.ProcessEnv;now?
   try{await pending;}finally{pending=null;}
  }};
 }
+
+/** A slow project learning pass must not let financial observations expire. */
+export function startProviderCreditMonitor(
+ monitor: Pick<ReturnType<typeof createProviderCreditMonitor>, 'tick'>,
+ schedule: (wake:()=>void)=>()=>void = wake => {
+  const timer=setInterval(wake,30000);timer.unref();return ()=>clearInterval(timer);
+ }
+):()=>void {
+ let stopped=false;
+ const wake=()=>{if(!stopped)void monitor.tick().catch(()=>console.error('Provider credit observation pass failed.'));};
+ wake();const cancel=schedule(wake);
+ return ()=>{stopped=true;cancel();};
+}

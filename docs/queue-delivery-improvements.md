@@ -167,6 +167,24 @@ private.
 
 ## Next qualification program
 
+The packaged-runtime live cohort now has a passing bounded baseline followed by
+bug-fix, library/CLI, refactor, legitimate no-change, and intentional-failure
+controls. All five positive deliveries completed with fresh independent source
+verification and integration. Forty positive behavioral assertions executed
+without skips; the negative control remained blocked after its real check failed.
+Candidate/source identities and receipt chains matched, and unrelated staged
+manual changes, immutable tests, and policy were preserved in every fixture.
+Positive end-to-end durations ranged from 71 to 102 seconds. This establishes
+bounded source delivery, not installed/native/product acceptance or fleet rollout.
+An earlier fixture-path failure remains separately recorded; its attempts were
+not reset or counted as success. The passing cohort needed no outside repairs.
+
+The maintained `scripts/live-development-qualification.mjs` runner requires
+explicit execution, a selected built runtime, reviewed schema, an owned output
+directory, disposable storage, and frozen per-case requirements. It preserves
+full evidence before removing its database and stops the cohort on a mismatch.
+Provider-reported cost and catalog estimates remain distinct.
+
 The next five deliverables are packaged release qualification, MCP adoption,
 native Studio/fleet verification, the frozen five-case live development
 benchmark, and provider-specific credit measurement. Keep their evidence

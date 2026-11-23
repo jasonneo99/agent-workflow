@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';import test from 'node:test';
-import {createProviderCreditMonitor} from './provider-credit-monitor.js';import type {ProviderCreditObservation} from '../../../../packages/model-providers/src/provider-credits.js';
+import {createProviderCreditMonitor,startProviderCreditMonitor} from './provider-credit-monitor.js';import type {ProviderCreditObservation} from '../../../../packages/model-providers/src/provider-credits.js';
 const observation=(providerId:string):ProviderCreditObservation=>({version:1,providerId,scopeKey:'a'.repeat(64),observedAt:new Date().toISOString(),status:'unknown',reason:'measurement-unavailable',balances:[],source:'unsupported'});
 test('measurement is opt-in, coalesces overlap and refreshes without queue jobs',async()=>{
  let now=1000000,calls=0,records=0;const env:NodeJS.ProcessEnv={};let release!:()=>void;const wait=new Promise<void>(resolve=>release=resolve);
@@ -10,4 +10,13 @@ test('measurement is opt-in, coalesces overlap and refreshes without queue jobs'
 test('a provider or storage failure remains visible and does not stop other measurements',async()=>{
  const monitor=createProviderCreditMonitor({env:{AGENTFLOW_PROVIDER_CREDIT_MEASUREMENT:'true'},collect:async id=>{if(id==='deepseek')throw Error('synthetic private detail');return observation(id);},record:async()=>{}});
  await monitor.tick();assert.equal(monitor.status().status,'partial');assert.equal(monitor.status().failed,1);assert.equal(monitor.status().unknown,2);assert.equal(JSON.stringify(monitor.status()).includes('private'),false);
+});
+test('independent clock refreshes during unrelated stalled work and stops cleanly',async()=>{
+ let now=1000000,records=0,wake!:()=>void,cancelled=false;
+ const monitor=createProviderCreditMonitor({env:{AGENTFLOW_PROVIDER_CREDIT_MEASUREMENT:'1'},now:()=>now,collect:async id=>observation(id),record:async()=>{records++;}});
+ const stop=startProviderCreditMonitor(monitor,callback=>{wake=callback;return()=>{cancelled=true;};});
+ await monitor.tick();assert.equal(records,3);
+ // No completion of a project tick is needed to advance the measurement clock.
+ now+=240001;wake();await monitor.tick();assert.equal(records,6);
+ stop();assert(cancelled);now+=240001;wake();await new Promise(resolve=>setImmediate(resolve));assert.equal(records,6);
 });

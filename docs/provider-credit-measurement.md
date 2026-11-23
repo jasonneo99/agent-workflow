@@ -57,6 +57,8 @@ The existing learning daemon can refresh these observations without creating
 workflow runs. Enable `AGENTFLOW_PROVIDER_CREDIT_MEASUREMENT=1` in its owner-
 controlled environment. The default refresh interval is four minutes; optional
 `AGENTFLOW_PROVIDER_CREDIT_INTERVAL_MS` is bounded between 30 seconds and one
-hour. Overlapping ticks coalesce. Failures are counted separately and do not stop
+hour. A separate timer wakes the collector while project learning is waiting;
+collection never waits for the entire fleet learning pass to finish. The timer
+is cleaned up on daemon exit. Overlapping ticks coalesce. Failures are counted separately and do not stop
 other providers or project learning. The daemon heartbeat exposes collection
 status and counts, while balances remain in the account-scoped observation store.
