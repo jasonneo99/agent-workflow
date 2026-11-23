@@ -1,3 +1,5 @@
+import {collectProviderCredits} from '../../../../packages/model-providers/src/provider-credits.js';
+import {recordProviderCredits} from '../../../../packages/storage/src/provider-credits.js';
 import type { CliContext } from "../lib/context.js";
 import type { Command } from "commander";
 import type { DashboardRoleGovernanceReport } from "../lib/cli-types.js";
@@ -118,6 +120,18 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         console.log("docker compose -f infra/docker-compose.yml up -d");
         process.exitCode = 1;
       }
+    });
+
+  program.command('provider-credits')
+    .description('Measure configured provider credits; unsupported or unavailable balances remain unknown')
+    .option('--providers <ids>', 'Comma-separated provider ids', 'codex-cli,openai,anthropic,gemini,deepseek,openrouter,muse,groq,bedrock,local,byo,kiro')
+    .option('--persist', 'Persist scrubbed account-scoped observations for routing evidence')
+    .action(async (options:{providers:string;persist?:boolean})=>{
+      const ids=[...new Set(options.providers.split(',').map(value=>value.trim()))];
+      if(ids.length>20||ids.some(id=>!/^[a-z0-9-]{1,64}$/u.test(id)))throw Error('Select at most 20 exact provider ids');
+      const observations=[];
+      for(const id of ids){const observation=await collectProviderCredits(id);if(options.persist)await recordProviderCredits(observation);observations.push(observation);}
+      console.log(JSON.stringify({kind:'provider-credit-observations',version:1,authority:'measurement-only',observations},null,2));
     });
 
   program

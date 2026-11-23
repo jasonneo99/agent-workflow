@@ -164,3 +164,25 @@ Legacy unscoped investigation retains its existing governed path. Manual
 withdrawal explains protected active work and unresolved effects with a fixed
 public refusal instead of a generic server error; unexpected diagnostics remain
 private.
+
+## Next qualification program
+
+The next five deliverables are packaged release qualification, MCP adoption,
+native Studio/fleet verification, the frozen five-case live development
+benchmark, and provider-specific credit measurement. Keep their evidence
+separate; source version equality alone cannot prove loaded-runtime adoption.
+
+Initial release inspection passed definitions, signature/checksum metadata,
+typecheck and package verification. Strict release readiness remains held while
+the source branch is ahead of its upstream and the evaluation gate has not run.
+The benchmark must preserve the stabilization contract's bug fix, library/CLI,
+refactor, legitimate no-change and intentional-negative cases. A machinery fix
+ends that cohort instead of silently converting it into a passing one.
+
+The maintained credit collector and account-scoped storage now expose provider
+measurements and explicit unknown reasons through `provider-credits`. Collector
+and database regressions cover credential scrubbing, endpoint qualification,
+response limits, stale overwrite, currency separation and key-cap versus funds.
+See [provider credit measurement](provider-credit-measurement.md). Recurring
+collection, packaged adoption and the five-case cohort
+remain separate qualification work.

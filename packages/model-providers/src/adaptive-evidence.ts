@@ -13,6 +13,7 @@ export type AdaptiveRouteEvidence = {
   /** Optional measured account headroom; absent or stale means unknown. */
   creditRemainingUsd?: number;
   creditObservedAt?: string;
+  creditAvailableForCalls?: boolean;
 };
 
 export type AdaptiveEvidenceDecision = {
@@ -43,7 +44,7 @@ export function selectAdaptiveEvidence(
     const available=item.creditRemainingUsd;
     const unfunded=freshCredit&&typeof available==='number'&&Number.isFinite(available)
       &&(available<=0||(typeof item.costUsd==='number'&&Number.isFinite(item.costUsd)&&item.costUsd>available));
-    return !unfunded&&item.quality >= 0.7 && item.taskSuccess >= 0.8 && item.fallbackRate <= 0.1;
+    return !(freshCredit&&item.creditAvailableForCalls===false)&&!unfunded&&item.quality >= 0.7 && item.taskSuccess >= 0.8 && item.fallbackRate <= 0.1;
   });
   if (!passing.length) {
     return { status: "poor-performance", confidence: 0, reason: "Fresh candidates exist, but none pass the quality, task-success, and fallback gates." };

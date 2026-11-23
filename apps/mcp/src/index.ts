@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fsSync from "node:fs";
+import {createHash} from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { shortDiagnosticHash as shortHash } from "./diagnostics.js";
@@ -10,11 +11,12 @@ import { z } from "zod/v3";
 import { appendFreshRunFamilyArgs, freshRunFamilyToolSchema } from "./fresh-run-family-options.js";
 import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { registerContextGatewayTools, registerContextThresholdTool } from "./tools/context.js";
-import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
+import { registerAcceptedOutcomeTool, registerProviderCreditTool } from "./tools/reporting.js";
 import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
 import { bindCodexToolOrigins, codexRequestEnvironment } from "./codex-origin.js";
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const packageVersion = readPackageVersion(rootDir);
+const loadedEntrypointIdentity={pid:process.pid,startedAt:new Date().toISOString(),entrypointSha256:createHash("sha256").update(fsSync.readFileSync(new URL(import.meta.url))).digest("hex")};
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
 const mcpLogPath = process.env.AGENTFLOW_MCP_LOG_FILE || path.join(rootDir, ".agent-workflow", "runtime", "mcp", "stdio.log");
 const { append: appendMcpLog, appendSyncSafe: appendMcpLogSyncSafe } = createMcpLogger(mcpLogPath);
@@ -81,6 +83,7 @@ bindCodexToolOrigins(server);
 const executeTool = async (args: string[], timeoutMs: number) => toolResult(await runAgentflow(args, { timeoutMs }));
 registerContextThresholdTool(server, executeTool);
 registerAcceptedOutcomeTool(server, executeTool);
+registerProviderCreditTool(server, executeTool);
 
 server.registerTool(
   "agentflow_client_capabilities",
@@ -88,7 +91,7 @@ server.registerTool(
     title: "AgentFlow client capabilities",
     description: "Read the versioned runtime capability and compatibility contract before rendering or invoking client actions."
   },
-  async () => ({ content: [{ type: "text", text: JSON.stringify(buildClientCapabilityContract(packageVersion), null, 2) }] })
+  async () => ({ content: [{ type: "text", text: JSON.stringify({...buildClientCapabilityContract(packageVersion),loadedEntrypointIdentity}, null, 2) }] })
 );
 
 server.registerTool(

@@ -1,3 +1,4 @@
+import {enrichAdaptiveRouteCredits} from './provider-credit-evidence.js';
 import type { ModelTier, StageExecutionInput } from "./types.js";
 import { providerFromEnv } from "./index.js";
 import { compileAirHeader } from "../../context-compiler/src/air.js";
@@ -56,7 +57,7 @@ export async function selectModelRoute(
   const learnedDecision = mode !== "fixed" ? decideRouting(input, routingEngine, modelTier) : undefined;
   const learnedProvider = learnedDecision?.decision.preferredProviderByTier[modelTier];
   const learnedRoute = learnedProvider ? await selectLearnedProvider(learnedProvider) : undefined;
-  const taskEvidence = mode !== "fixed" ? selectAdaptiveEvidence(parseAdaptiveRouteEvidence(input.compiledBrief), { agentId: input.agentId, taskClass: input.stageId }) : undefined;
+  const taskEvidence = mode !== "fixed" ? selectAdaptiveEvidence(await enrichAdaptiveRouteCredits(parseAdaptiveRouteEvidence(input.compiledBrief)), { agentId: input.agentId, taskClass: input.stageId }) : undefined;
   const evidenceRoute = taskEvidence?.status === "selected" && taskEvidence.candidate
     ? await selectLearnedProvider(taskEvidence.candidate.providerId)
     : undefined;
