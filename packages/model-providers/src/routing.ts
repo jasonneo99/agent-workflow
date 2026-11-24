@@ -235,7 +235,7 @@ export function autoProviderCandidates(modelTier: ModelTier, workflowId?: string
     ? splitProviderList(process.env.AGENTFLOW_SMOKE_PROVIDERS)
     : [];
   if (workflowId === "provider-smoke") {
-    return unique([...(smokeConfigured.length ? smokeConfigured : ["openai", "anthropic", "gemini", "codex-cli", "deepseek", "groq", "openrouter", "local", "byo", "bedrock", "openai-compatible", "muse", "kiro"]), "mock"]);
+    return unique([...(smokeConfigured.length ? smokeConfigured : ["openai", "anthropic", "gemini", "codex-cli", "deepseek", "groq", "openrouter", "nvidia", "local", "byo", "bedrock", "openai-compatible", "muse", "kiro"]), "mock"]);
   }
   const configured = splitProviderList(process.env.AGENTFLOW_AUTO_PROVIDERS);
   if (configured.length) {
@@ -243,12 +243,12 @@ export function autoProviderCandidates(modelTier: ModelTier, workflowId?: string
   }
 
   if (modelTier === "fast") {
-    return ["local", "byo", "bedrock", "openai-compatible", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "kiro", "mock"];
+    return ["local", "byo", "bedrock", "openai-compatible", "deepseek", "gemini", "groq", "openrouter", "nvidia", "codex-cli", "openai", "anthropic", "muse", "kiro", "mock"];
   }
   if (modelTier === "reasoning") {
-    return ["codex-cli", "openai", "anthropic", "gemini", "deepseek", "groq", "openrouter", "muse", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
+    return ["codex-cli", "openai", "anthropic", "gemini", "deepseek", "groq", "openrouter", "nvidia", "muse", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
   }
-  return ["local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  return ["local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "nvidia", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
 }
 
 function splitProviderList(value?: string): string[] {

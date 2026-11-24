@@ -40,6 +40,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `gemini` | Google Gemini through the official OpenAI-compatible endpoint | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
 | `groq` | Groq fast inference through the OpenAI-compatible API (free tier) | `GROQ_API_KEY`, optional `GROQ_MODEL` |
 | `openrouter` | OpenRouter free `:free` models through the OpenAI-compatible API | `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL` |
+| `nvidia` | NVIDIA NIM free models through the OpenAI-compatible API (slow, background only) | `NVIDIA_NIM_API_KEY`, optional `NVIDIA_NIM_MODEL` |
 | `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
@@ -256,6 +257,43 @@ npm run agentflow -- contract-test --provider openrouter --live-provider
 A stronger free alternative is `nvidia/nemotron-3-ultra-550b-a55b:free`.
 Do not commit keys or put them in runtime artifacts.
 
+### NVIDIA NIM provider
+
+Create a free NVIDIA NIM API key at build.nvidia.com (NVIDIA Developer
+Program account, phone verification required) and keep it only in the local
+`.env`. NVIDIA's API is OpenAI-compatible, so the dedicated adapter shares the
+structured stage-artifact, usage, routing, fallback, and receipt contract
+used by other hosted providers. The default model is the free
+`z-ai/glm-5.3-flash` (Free tier: 40 requests/min, 10,000 requests/day, no
+card required; key valid 1 year):
+
+```env
+DEFAULT_MODEL_PROVIDER=nvidia
+NVIDIA_NIM_API_KEY=<redacted>
+# NVIDIA_NIM_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_NIM_MODEL=z-ai/glm-5.3-flash
+NVIDIA_NIM_MODEL_FAST=z-ai/glm-5.3-flash
+NVIDIA_NIM_MODEL_STANDARD=z-ai/glm-5.3-flash
+NVIDIA_NIM_MODEL_REASONING=z-ai/glm-5.3-flash
+```
+
+```bash
+npm run agentflow -- provider-use nvidia --check
+npm run agentflow -- contract-test --provider nvidia --live-provider
+```
+
+Other free models on the same endpoint include
+`nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3.5-lightning-30b-a3b`,
+`deepseek-ai/deepseek-v4.1-flash`, `minimaxai/minimax-m3.1-flash`,
+`google/gemma-4-31b-it`, `openai/gpt-oss-20b`, and `meta/muse-glimmer-30b`;
+the free roster churns, so pin an exact model id with `NVIDIA_NIM_MODEL`
+when you need reproducible runs.
+
+The endpoint is slow (measured ~60s per call, 116s cold), so this provider
+is for background and bulk work, not interactive use. NVIDIA may use inputs
+and outputs to train models, so do not send sensitive code through it. Do
+not commit keys or put them in runtime artifacts.
+
 ### AWS Bedrock provider
 
 Bedrock uses the AWS SDK credential chain and the Bedrock Converse API. For a
@@ -303,7 +341,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,groq,openrouter,codex-cli,openai,anthropic,muse,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,groq,openrouter,nvidia,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding

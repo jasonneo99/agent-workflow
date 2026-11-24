@@ -6,6 +6,7 @@ import { GroqProvider } from "./groq.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { MuseProvider } from "./muse.js";
+import { NvidiaProvider } from "./nvidia.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
 import { OpenRouterProvider } from "./openrouter.js";
@@ -57,6 +58,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "openrouter") {
     return new OpenRouterProvider();
+  }
+
+  if (provider === "nvidia") {
+    return new NvidiaProvider();
   }
 
   if (provider === "openai-compatible") {
@@ -123,6 +128,9 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.OPENROUTER_API_KEY) {
     return "openrouter";
+  }
+  if (process.env.NVIDIA_NIM_API_KEY) {
+    return "nvidia";
   }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";

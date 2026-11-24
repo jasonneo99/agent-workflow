@@ -51,4 +51,6 @@ test("normalizeProviderRef maps aliases and normalizes unknown providers", () =>
   assert.equal(normalizeProviderRef("openai/gpt-oss-120b"), "groq");
   assert.equal(normalizeProviderRef("OpenRouter"), "openrouter");
   assert.equal(normalizeProviderRef("google/gemma-4-31b-it:free"), "openrouter");
+  assert.equal(normalizeProviderRef("Nvidia"), "nvidia");
+  assert.equal(normalizeProviderRef("z-ai/glm-5.3-flash"), "nvidia");
 });

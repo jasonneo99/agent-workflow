@@ -420,7 +420,7 @@ type DashboardHomeHealth = {
 };
 
 type DashboardModelCatalogProvider = {
-  providerId: "openai" | "anthropic" | "deepseek" | "gemini" | "groq" | "openrouter" | "byo" | "openai-compatible" | "bedrock";
+  providerId: "openai" | "anthropic" | "deepseek" | "gemini" | "groq" | "openrouter" | "nvidia" | "byo" | "openai-compatible" | "bedrock";
   label: string;
   configured: boolean;
   status: "ready" | "missing" | "not configured";
@@ -7872,6 +7872,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         configuredForTier: (tier) => process.env[`OPENROUTER_MODEL_${tier.toUpperCase()}`] || process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free"
       }),
       loadProviderCatalogExplanation({
+        providerId: "nvidia",
+        label: "NVIDIA NIM",
+        configured: Boolean(process.env.NVIDIA_NIM_API_KEY),
+        catalogProvider: "compatible",
+        catalogSource: "NVIDIA NIM OpenAI-compatible /models",
+        modelEnv: "NVIDIA_NIM_MODEL",
+        configuredModel: process.env.NVIDIA_NIM_MODEL || "z-ai/glm-5.3-flash",
+        baseUrl: safeDisplayUrl(process.env.NVIDIA_NIM_BASE_URL || "https://integrate.api.nvidia.com/v1"),
+        apiKeyStatus: process.env.NVIDIA_NIM_API_KEY ? "configured" : "missing",
+        loadModels: () => loadOpenAICompatibleModelIds(process.env.NVIDIA_NIM_BASE_URL || "https://integrate.api.nvidia.com/v1", process.env.NVIDIA_NIM_API_KEY),
+        configuredForTier: (tier) => process.env[`NVIDIA_NIM_MODEL_${tier.toUpperCase()}`] || process.env.NVIDIA_NIM_MODEL || "z-ai/glm-5.3-flash"
+      }),
+      loadProviderCatalogExplanation({
         providerId: "byo",
         label: "BYO / OpenAI-compatible gateway",
         configured: Boolean(process.env.BYO_MODEL_BASE_URL),
@@ -9665,7 +9678,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return "";
     }
     const normalized = normalizeProviderRef(trimmed);
-    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "openai-compatible", "bedrock", "kiro"]);
+    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "nvidia", "muse", "openai-compatible", "bedrock", "kiro"]);
     return supported.has(normalized) ? normalized : undefined;
   }
 
@@ -16469,9 +16482,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       : info.provider.selected === "auto"
         ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
         : `<p class="muted">This provider has no selectable live model list.</p>`;
-    const providerIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const executionProviderIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+    const providerIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "nvidia", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const executionProviderIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "groq", "openrouter", "nvidia", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "deepseek", "gemini", "groq", "openrouter", "nvidia", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
     const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
     const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
       const selected = value === selectedValue ? " selected" : "";
@@ -20581,7 +20594,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const updates: Record<string, string> = {
       DEFAULT_MODEL_PROVIDER: provider,
       AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,deepseek,gemini,groq,openrouter,openai,anthropic,openai-compatible,kiro",
+      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,deepseek,gemini,groq,openrouter,nvidia,openai,anthropic,openai-compatible,kiro",
       AGENTFLOW_PROVIDER_FAST: fastProvider,
       AGENTFLOW_PROVIDER_STANDARD: standardProvider,
       AGENTFLOW_PROVIDER_REASONING: reasoningProvider,

@@ -15,6 +15,7 @@ const credentialNames: Readonly<Record<string, readonly string[]>> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],
   groq: ["GROQ_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],
+  nvidia: ["NVIDIA_NIM_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],
   "openai-compatible": ["OPENAI_COMPATIBLE_API_KEY"],
   byo: ["BYO_MODEL_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],
   local: ["LOCAL_MODEL_API_KEY", "OPENAI_COMPATIBLE_API_KEY"],

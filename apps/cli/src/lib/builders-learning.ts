@@ -3960,7 +3960,7 @@ export async function loadPreferenceScorecard(input: {
 export function loadRoutingConfig(ctx: CliContext): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,gemini,groq,openrouter,codex-cli,openai,anthropic,muse,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,gemini,groq,openrouter,nvidia,codex-cli,openai,anthropic,muse,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",

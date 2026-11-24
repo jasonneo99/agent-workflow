@@ -171,12 +171,12 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
     .command("provider-use")
     .alias("model-use")
     .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, deepseek, gemini, groq, openrouter, muse, openai-compatible, bedrock, or kiro")
+    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, deepseek, gemini, groq, openrouter, nvidia, muse, openai-compatible, bedrock, or kiro")
     .option("--login", "authenticate interactively before selecting a CLI provider")
     .option("--device-auth", "use Codex device-code login for a headless machine")
     .option("--check", "run provider-check after switching")
     .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "muse", "openai-compatible", "bedrock", "kiro"];
+      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "nvidia", "muse", "openai-compatible", "bedrock", "kiro"];
       const providerId = normalizeProviderRef(provider);
       if (!supported.includes(providerId)) {
         console.error(`Unsupported provider: ${provider}`);
@@ -225,6 +225,8 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         console.log("Using Groq's hosted OpenAI-compatible API. Requires GROQ_API_KEY; GROQ_MODEL defaults to openai/gpt-oss-120b (free tier).");
       } else if (providerId === "openrouter") {
         console.log("Using OpenRouter's hosted OpenAI-compatible API. Requires OPENROUTER_API_KEY; OPENROUTER_MODEL defaults to google/gemma-4-31b-it:free (free tier).");
+      } else if (providerId === "nvidia") {
+        console.log("Using NVIDIA NIM's hosted OpenAI-compatible API. Requires NVIDIA_NIM_API_KEY; NVIDIA_NIM_MODEL defaults to z-ai/glm-5.3-flash (free tier, slow: background/bulk only).");
       } else if (providerId === "muse") {
         console.log("Using Meta Muse via the Meta Model API. Requires MUSE_API_KEY. MUSE_MODEL defaults to muse-spark-1.1.");
       } else if (providerId === "auto") {
