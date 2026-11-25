@@ -52,8 +52,8 @@ import { type ModelTier } from "../../../../packages/model-providers/src/types.j
 import { type ObservabilityReport, buildObservabilityReport } from "../../../../packages/observability/src/index.js";
 import { canonicalJsonHash, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { type GovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
-import { type ServerRoadmapSnapshot, parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap-snapshot/src/index.js";
-import { resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../../packages/roadmap-planner/src/index.js";
+import { type ServerRoadmapSnapshot, parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap/src/index.js";
+import { resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../../packages/roadmap/src/index.js";
 import { type CostQualityReport, type PreferenceScorecard, type TuningApprovalHistory, type TuningHistoryStatus, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildTuningApplicationPlan, buildTuningProposals, formatCandidateComparisonPlan, formatTuningApplicationPlan } from "../../../../packages/run-reporter/src/index.js";
 import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";

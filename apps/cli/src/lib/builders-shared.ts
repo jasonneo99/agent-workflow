@@ -24,7 +24,7 @@ import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../../packa
 import { indexProjectFiles } from "../../../../packages/project-indexer/src/index.js";
 import { reliabilityProtocolVersions } from "../../../../packages/reliability-control/src/index.js";
 import { type GovernedReusePlan, buildGovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
-import { type RoadmapSnapshot, readRoadmapSnapshotFromProject } from "../../../../packages/roadmap-snapshot/src/index.js";
+import { type RoadmapSnapshot, readRoadmapSnapshotFromProject } from "../../../../packages/roadmap/src/index.js";
 import { type CostQualityReport, buildCostQualityReport } from "../../../../packages/run-reporter/src/index.js";
 import { resolveLocalProjectPath } from "../../../../packages/runtime-root/src/index.js";
 import { claimActionApprovalExecution, createWorkflowRun, decideActionApproval, deleteProjectFiles, findRunActionByIdempotencyKey, getActionApproval, getArtifactById, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listWorkflowReuseEvidence, markActionApprovalExecution, recordRunAction, resumeWorkflowRunFromCheckpoint, seedRegistry, upsertProject, upsertProjectFiles, upsertProjectIndexState } from "../../../../packages/storage/src/postgres.js";

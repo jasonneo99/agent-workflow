@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildRoadmapSnapshot, paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot } from "./index.js";
+import { buildRoadmapSnapshot, paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot } from "./snapshot.js";
 
 const base = { projectId: "project-1", projectName: "Example", source: "docs/roadmap.md", publishingHost: "host-a" };
 

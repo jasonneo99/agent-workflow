@@ -10,7 +10,7 @@ import { createCodegenPlan, finishCodegenPlan, readCodegenPlan } from "../../../
 import { executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../../../packages/local-tools/src/file-writer.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
-import { resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
+import { resolveContainedProjectPath } from "../../../../packages/roadmap/src/index.js";
 import { upsertProject } from "../../../../packages/storage/src/postgres.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";

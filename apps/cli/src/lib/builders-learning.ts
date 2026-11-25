@@ -12,8 +12,8 @@ import { type LearningApprovalQueue, type LearningProposalPriority, type Learnin
 import { normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { type LocalRoutingFeedbackEvent, buildSavingsAwareLocalRoutingRecommendations } from "../../../../packages/model-providers/src/local-routing-recommendations.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
-import { resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
-import { parseRoadmapSnapshot, roadmapSnapshotNeedsPublication } from "../../../../packages/roadmap-snapshot/src/index.js";
+import { resolveContainedProjectPath } from "../../../../packages/roadmap/src/index.js";
+import { parseRoadmapSnapshot, roadmapSnapshotNeedsPublication } from "../../../../packages/roadmap/src/index.js";
 import { type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningProposalSet, type WorkflowShapeOptimizationReport, appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildTuningProposals, buildWorkflowShapeOptimizationReport, formatTuningApprovalHistoryMarkdown } from "../../../../packages/run-reporter/src/index.js";
 import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";

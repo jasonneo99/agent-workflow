@@ -10,7 +10,7 @@ import { type IdeClient, buildIdeConfigSnippet, mergeIdeConfig } from "../../../
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { type GovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
-import { resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
+import { resolveContainedProjectPath } from "../../../../packages/roadmap/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { listProjectFileSummaries, listProjectStorageSummaries } from "../../../../packages/storage/src/postgres.js";
 import { parsePositiveInteger } from "../numeric-options.js";

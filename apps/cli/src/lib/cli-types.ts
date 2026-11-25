@@ -7,7 +7,7 @@ import { type FailureTriageRisk } from "../../../../packages/failure-triage/src/
 import { type LearningApplicationAction, type LearningProposalPriority, type LearningRiskLevel } from "../../../../packages/learning-governance/src/index.js";
 import { type LocalRoutingFeedbackRating, type LocalRoutingRecommendation } from "../../../../packages/model-providers/src/local-routing-recommendations.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
-import { type RoadmapSuggestionReport } from "../../../../packages/roadmap-planner/src/index.js";
+import { type RoadmapSuggestionReport } from "../../../../packages/roadmap/src/index.js";
 import { type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan } from "../../../../packages/run-reporter/src/index.js";
 import type { checkServices } from "../../../../packages/storage/src/doctor.js";
 import type { listActionApprovals, listProjectStorageSummaries, listWorkflowRuns, reconcileStaleTerminalWorkflowRuns, listWorkflowStageRunsForRuns, listWorkflowHandoffs, listWorkflowStageHealthForRuns } from "../../../../packages/storage/src/postgres.js";

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveContainedProjectPath } from "../../roadmap-planner/src/index.js";
+import { resolveContainedProjectPath } from "./planner.js";
 
 export const ROADMAP_MAX_BYTES = 1_000_000;
 export const ROADMAP_MAX_ITEMS = 500;

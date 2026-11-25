@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath } from "./index.js";
+import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath } from "./planner.js";
 
 test("suggests unchecked roadmap tasks in document order with section context", () => {
   const report = buildRoadmapSuggestionReport({

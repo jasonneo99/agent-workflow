@@ -4,7 +4,7 @@ import { writeProjectBundleState } from "./builders-bundle.js";
 import { discoverProjectRoadmap, orderedUnique } from "./builders-learning.js";
 import { commandAvailable, execFileText, exists, indexProjectForRun, objectValue, pathExists, resolveDashboardProjectPath, shellQuote, stringValue } from "./builders-shared.js";
 import { type ProjectConfig } from "../../../../packages/agent-registry/src/schemas.js";
-import { resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
+import { resolveContainedProjectPath } from "../../../../packages/roadmap/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { listProjectStorageSummaries } from "../../../../packages/storage/src/postgres.js";
 import { logicalProjectIdentityKeys, projectIdentityVisibility } from "../dashboard/project-identity.js";

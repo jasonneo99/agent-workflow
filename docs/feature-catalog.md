@@ -517,8 +517,7 @@ This index maps every committed runtime package to its primary feature area.
 | `reliability-suite` | Baselines, manifests, failure matrix, and reliability reports. |
 | `repository-maintenance` | Hygiene/security scan, size ratchet, and scoped commits. |
 | `reuse-engine` | Result reuse, continuation, and source-evidence fingerprints. |
-| `roadmap-planner` | Roadmap extraction and next-item planning. |
-| `roadmap-snapshot` | Bounded roadmap publication and freshness classification. |
+| `roadmap` | Roadmap extraction, next-item planning, bounded snapshot publication, and freshness classification. |
 | `run-reporter` | Run exports, cost/quality, outcome accuracy, and tuning history. |
 | `runtime-root` | Packaged and development runtime-path resolution. |
 | `schema-registry` | Discoverable JSON Schema resources. |
