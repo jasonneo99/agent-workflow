@@ -546,12 +546,9 @@ Goal: improve quality and cost while keeping personalization auditable and porta
     reproducible benchmark configuration. Keep weights, credentials, runtime
     installation, endpoints, and hardware configuration outside the core
     source tree.
-  - Progress: a provider-neutral `typed-decisions` foundation now validates
-    candidate provenance, models boolean/choice/ordinal holdouts, scores
-    accuracy, calibration, false approvals, abstention, latency, and cost by
-    task class, fails closed to deterministic rules, and emits metadata-only
-    hashed evaluation receipts. Runtime adapters and real candidate holdouts
-    remain intentionally unpromoted.
+  - Progress: an earlier provider-neutral `typed-decisions` prototype was
+    removed on 2026-11-25 because no runtime path imported it; a future
+    decision-holdout harness should start from the evaluation packages.
   - Phase 3 — matched shadow evaluation: run every available candidate read-only
     beside the rules control and current-model baseline on the same versioned
     holdouts. It must not route work, approve actions, change risk, or block
