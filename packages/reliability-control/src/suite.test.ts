@@ -13,7 +13,7 @@ import {
   scrubReliabilityBaseline,
   validateReliabilityManifestFiles,
   type ReliabilityCaseResult
-} from "./index.js";
+} from "./suite.js";
 
 const manifest = reliabilitySuiteManifestSchema.parse({
   schema_version: 1,

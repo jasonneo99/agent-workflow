@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { adversarialSuiteSchema, adversarialThreatClasses } from "../packages/guarded-autonomy/src/index.js";
-import { reliabilityBaselineSchema, reliabilityMetricKinds } from "../packages/reliability-suite/src/index.js";
+import { reliabilityBaselineSchema, reliabilityMetricKinds } from "../packages/reliability-control/src/suite.js";
 
 const root = process.cwd();
 const baseline = reliabilityBaselineSchema.parse(JSON.parse(await fs.readFile(path.join(root, "evals/reliability-suite/baseline.v1.json"), "utf8")));

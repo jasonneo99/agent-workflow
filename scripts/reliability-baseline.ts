@@ -8,7 +8,7 @@ import {
   scrubReliabilityBaseline,
   validateReliabilityManifestFiles,
   type ReliabilityCaseResult
-} from "../packages/reliability-suite/src/index.js";
+} from "../packages/reliability-control/src/suite.js";
 
 const repositoryRoot = process.cwd();
 const manifestPath = path.join(repositoryRoot, "evals/reliability-suite/manifest.v1.json");
@@ -22,7 +22,7 @@ const rawManifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 const manifest = await validateReliabilityManifestFiles(repositoryRoot, rawManifest);
 async function runIsolatedEvaluator(payload: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", "tsx", "packages/reliability-evaluator/src/runner.ts"], { cwd: repositoryRoot, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--import", "tsx", "packages/reliability-control/src/evaluator-runner.ts"], { cwd: repositoryRoot, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });

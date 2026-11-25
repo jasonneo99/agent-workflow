@@ -1,4 +1,4 @@
-import { evaluateCandidate } from "./index.js";
+import { evaluateCandidate } from "./evaluator.js";
 
 let input = "";
 for await (const chunk of process.stdin) input += String(chunk);

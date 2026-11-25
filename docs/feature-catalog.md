@@ -510,9 +510,7 @@ This index maps every committed runtime package to its primary feature area.
 | `perf-harness` | Performance summaries and regression comparisons. |
 | `policy-engine` | Profiles, action policy, risk, approvals, and snapshots. |
 | `project-indexer` | Full and incremental source indexing. |
-| `reliability-control` | Run ownership, fencing, state transitions, and SLOs. |
-| `reliability-evaluator` | Isolated hidden candidate evaluation. |
-| `reliability-suite` | Baselines, manifests, failure matrix, and reliability reports. |
+| `reliability-control` | Run ownership, fencing, state transitions, and SLOs; reliability baselines, manifests, failure matrix and reports (`suite.ts`); isolated hidden candidate evaluation (`evaluator.ts`). |
 | `repository-maintenance` | Hygiene/security scan, size ratchet, and scoped commits. |
 | `reuse-engine` | Result reuse, continuation, and source-evidence fingerprints. |
 | `roadmap` | Roadmap extraction, next-item planning, bounded snapshot publication, and freshness classification. |
