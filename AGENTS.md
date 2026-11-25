@@ -164,3 +164,4 @@ Use `npm run init-project -- --project /path/to/project --profile enterprise` fo
 - Apply the open-source/personal boundary to every file type and contribution,
   including tests and documentation.
 - Merge, don't overwrite: when editing a file you did not create, integrate your changes into the existing content with surgical edits - never rewrite the file from scratch. Full-file rewrites are only for files you created yourself. Append-only files (decisions, receipts, logs) are appended to, never replaced.
+- Trunk-based automated work (owner rule, 2026-11-18): automated work commits directly to main, one commit per turn — no feature branches. Branches are only for when Jason is manually working. If automated work breaks something, roll back the commit (revert) rather than isolating it on a branch.
