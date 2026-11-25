@@ -51,3 +51,4 @@ templates/project/docs/
 
 .agent-workflow/bin/
 .agent-workflow/*-recovery-*/
+codex-handoff-models-and-free-usage.md
