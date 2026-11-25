@@ -41,9 +41,9 @@ import { constructDynamicWorkflow } from "../../../../packages/dynamic-workflow/
 import { type FleetUsageReceipt, readFleetUsageReceipts, summarizeFleetUsage } from "../../../../packages/fleet-model-gateway/src/index.js";
 import { type HighRiskApprovalInbox, buildHighRiskApprovalInbox, redactApprovalCardText } from "../../../../packages/governance/src/high-risk-approval-inbox.js";
 import { type GovernanceReport, buildGovernanceReport } from "../../../../packages/governance/src/index.js";
-import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
+import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-loop/src/governance.js";
 import { type LearningLoopDashboard, buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence } from "../../../../packages/learning-loop/src/index.js";
-import { buildLearningProposalSet } from "../../../../packages/learning-proposals/src/index.js";
+import { buildLearningProposalSet } from "../../../../packages/learning-loop/src/proposals.js";
 import { executeAllowedCommand, probeCommandExecutionCapabilities, type ExecutionCapabilityProbe } from "../../../../packages/local-tools/src/command-executor.js";
 import { type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy, explainModelCatalogSelection, normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";

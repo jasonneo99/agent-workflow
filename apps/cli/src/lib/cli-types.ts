@@ -4,7 +4,7 @@ import { type AgentCard, type ProjectConfig } from "../../../../packages/agent-r
 import { type ConversationRequest, type classifyConversationIntent } from "../../../../packages/conversation-contract/src/index.js";
 import { type DaemonTrustSettings } from "../../../../packages/daemon-control/src/index.js";
 import { type FailureTriageRisk } from "../../../../packages/failure-triage/src/index.js";
-import { type LearningApplicationAction, type LearningProposalPriority, type LearningRiskLevel } from "../../../../packages/learning-governance/src/index.js";
+import { type LearningApplicationAction, type LearningProposalPriority, type LearningRiskLevel } from "../../../../packages/learning-loop/src/governance.js";
 import { type LocalRoutingFeedbackRating, type LocalRoutingRecommendation } from "../../../../packages/model-providers/src/local-routing-recommendations.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
 import { type RoadmapSuggestionReport } from "../../../../packages/roadmap/src/index.js";

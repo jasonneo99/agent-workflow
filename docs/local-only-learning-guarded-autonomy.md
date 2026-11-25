@@ -32,8 +32,8 @@ Reuse rather than replace these current foundations:
 
 - `packages/evaluation`: suites, variants, comparison rows, frozen-baseline
   regression gates, quality, latency, fallback, and cost evidence;
-- `packages/learning-evidence`, `learning-proposals`, and
-  `learning-governance`: local reports, proposals, approval queues, application
+- `packages/learning-loop` (`evidence.ts`, `proposals.ts`, and
+  `governance.ts`): local reports, proposals, approval queues, application
   plans, risk levels, and owned-state boundaries;
 - `packages/policy-engine`: command/write allowlists, approval rules, autonomy
   levels, immutable execution-policy snapshots, and fail-closed decisions;

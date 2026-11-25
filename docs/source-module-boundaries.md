@@ -8,16 +8,16 @@ The CLI entry point now composes these contracts instead of owning their logic.
 
 Learning approval queue construction, explicit approval decisions, risk-aware
 auto-approval, and application-plan construction live in
-`packages/learning-governance/`. CLI and dashboard entry points consume that
+`packages/learning-loop/src/governance.ts`. CLI and dashboard entry points consume that
 shared policy contract so they cannot silently diverge.
 
-Learning report evidence aggregation now lives in `packages/learning-evidence/`:
+Learning report evidence aggregation now lives in `packages/learning-loop/src/evidence.ts`:
 failed-run selection, repeated-stage failure patterns, routing/cost opportunity
 selection, route-feedback grouping, evaluation-gap analysis, and proposal-preview
 counts. The CLI remains responsible only for loading storage-backed inputs and
 assembling the stable report envelope.
 
-Learning proposal construction now lives in `packages/learning-proposals/`:
+Learning proposal construction now lives in `packages/learning-loop/src/proposals.ts`:
 stable proposal IDs, prioritization and risk gates, summaries, console and
 Markdown formatting, and project-contained JSON/Markdown persistence. CLI,
 dashboard, and daemon paths consume the same proposal contract; the CLI retains

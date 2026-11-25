@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildLearningProposalSet, formatLearningProposalMarkdown, formatLearningProposalSet, writeLearningProposalFiles } from "./index.js";
+import { buildLearningProposalSet, formatLearningProposalMarkdown, formatLearningProposalSet, writeLearningProposalFiles } from "./proposals.js";
 test("proposal generation preserves risk gates, stable ids, summaries, and formats", () => { const set = buildLearningProposalSet({ projectDir: "/portable/project", generatedAt: "2026-01-01", runsAnalyzed: 3, evaluationRuns: 0, repeatedFailurePatterns: [{ workflowId: "build", stageId: "test", agentId: "tester", failedTasks: 2, totalTasks: 3, failureRate: .667 }], costOpportunities: [], routeFeedback: { total: 0, counts: {}, latestAt: null, costlyGroups: [], helpfulGroups: [] }, evalGaps: ["Run evaluation coverage."], proposalPreview: { total: 0, highPriority: 0, byKind: {} } }); const ids = set.proposals.map((p) => p.id);
     assert.ok(ids.every((id) => /^learn-[0-9a-f]{12}$/.test(id)), "content-hash IDs");
     assert.equal(new Set(ids).size, ids.length, "IDs are unique");

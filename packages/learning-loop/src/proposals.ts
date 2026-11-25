@@ -1,7 +1,7 @@
-import type { LearningProposal, LearningProposalSet } from "../../learning-governance/src/index.js";
-import type { LearningCostOpportunity, LearningFailurePattern, LearningRouteFeedbackSummary } from "../../learning-evidence/src/index.js";
+import type { LearningProposal, LearningProposalSet } from "./governance.js";
+import type { LearningCostOpportunity, LearningFailurePattern, LearningRouteFeedbackSummary } from "./evidence.js";
 
-export { writeLearningProposalFiles, type LearningProposalFileSet } from "./storage.js";
+export { writeLearningProposalFiles, type LearningProposalFileSet } from "./proposals-storage.js";
 
 export type LearningProposalEvidence = { projectDir: string; generatedAt: string; runsAnalyzed: number; evaluationRuns: number; repeatedFailurePatterns: LearningFailurePattern[]; costOpportunities: LearningCostOpportunity[]; routeFeedback: LearningRouteFeedbackSummary; evalGaps: string[]; proposalPreview: { total: number; highPriority: number; byKind: Record<string, number> } };
 const counts = (values: string[]) => values.reduce<Record<string, number>>((out, value) => { out[value] = (out[value] ?? 0) + 1; return out; }, {});

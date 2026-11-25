@@ -15,9 +15,9 @@ import { buildClientCapabilityContract } from "../../../../packages/client-capab
 import { daemonLanes } from "../../../../packages/daemon-control/src/index.js";
 import { lowerTrustLevel } from "../../../../packages/daemon-control/src/settings.js";
 import { classifyFailureForTriage, failureTriageRiskAllowed } from "../../../../packages/failure-triage/src/index.js";
-import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningProposal, type LearningProposalSet, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
+import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningProposal, type LearningProposalSet, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-loop/src/governance.js";
 import { type LearningLoopSchedulerReceipt } from "../../../../packages/learning-loop/src/index.js";
-import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../../packages/learning-proposals/src/index.js";
+import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../../packages/learning-loop/src/proposals.js";
 import { executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { type RepositoryMaintenanceReport, commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt } from "../../../../packages/repository-maintenance/src/index.js";

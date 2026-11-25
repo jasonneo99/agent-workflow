@@ -503,9 +503,7 @@ This index maps every committed runtime package to its primary feature area.
 | `guarded-autonomy` | Promotion evidence, canary decisions, and rollback gates. |
 | `ide-onboarding` | Editor/MCP onboarding and schema setup. |
 | `idempotency-lease` | Idempotency and lease coordination primitives. |
-| `learning-evidence` | Normalized learning evidence and health. |
-| `learning-governance` | Learning approval, application, and promotion boundaries. |
-| `learning-proposals` | Ranked prompt, context, route, and workflow recommendations. |
+| `learning-loop` | Learning loop runtime plus normalized evidence (`evidence.ts`), approval/application/promotion boundaries (`governance.ts`), and ranked recommendations (`proposals.ts`). |
 | `local-tools` | Governed local file and command operations. |
 | `model-providers` | Provider adapters, routing, prompts, quality, and telemetry. |
 | `observability` | OpenTelemetry-compatible spans, metrics, and redaction. |

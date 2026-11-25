@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { LearningProposalSet } from "../../learning-governance/src/index.js";
-import { formatLearningProposalMarkdown } from "./index.js";
+import type { LearningProposalSet } from "./governance.js";
+import { formatLearningProposalMarkdown } from "./proposals.js";
 
 export type LearningProposalFileSet = {
   directory: string;

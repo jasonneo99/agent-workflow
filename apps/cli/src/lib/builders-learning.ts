@@ -7,8 +7,8 @@ import {buildStoredRoadmapSnapshot, countStrings, ensureProjectSubdir, execFileT
 import { loadAgentRecords, loadProjectConfig, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
 import { type AgentCard, agentCardSchema } from "../../../../packages/agent-registry/src/schemas.js";
 import { normalizeDaemonTrustSettings } from "../../../../packages/daemon-control/src/index.js";
-import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buildProposalPreview, selectFailedRuns, summarizeRouteFeedback } from "../../../../packages/learning-evidence/src/index.js";
-import { type LearningApprovalQueue, type LearningProposalPriority, type LearningRiskLevel } from "../../../../packages/learning-governance/src/index.js";
+import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buildProposalPreview, selectFailedRuns, summarizeRouteFeedback } from "../../../../packages/learning-loop/src/evidence.js";
+import { type LearningApprovalQueue, type LearningProposalPriority, type LearningRiskLevel } from "../../../../packages/learning-loop/src/governance.js";
 import { normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { type LocalRoutingFeedbackEvent, buildSavingsAwareLocalRoutingRecommendations } from "../../../../packages/model-providers/src/local-routing-recommendations.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
