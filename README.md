@@ -319,7 +319,7 @@ npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gate
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
-npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
+npm run agentflow -- evaluate -s evals/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
 npm run agentflow -- run-and-watch model-improvement -p . -t "Improve quality while reducing cost" # Diagnose prompt, context, eval, routing, retrieval, or fine-tune paths
 npm run agentflow -- feedback -r <id> --rating accepted  # Teach future runs from outcomes
 npm run agentflow -- preference-scorecard -p . # See agent/provider/tier performance

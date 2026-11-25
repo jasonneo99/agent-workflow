@@ -59,7 +59,7 @@ Validate and preview the matrix without calling a model:
 
 ```bash
 npm run agentflow -- evaluate \
-  --suite evaluations/synthetic-provider-comparison.yaml \
+  --suite evals/synthetic-provider-comparison.yaml \
   --project . \
   --dry-run
 ```
@@ -68,7 +68,7 @@ Run the matrix:
 
 ```bash
 npm run agentflow -- evaluate \
-  --suite evaluations/synthetic-provider-comparison.yaml \
+  --suite evals/synthetic-provider-comparison.yaml \
   --project .
 ```
 

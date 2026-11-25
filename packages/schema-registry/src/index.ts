@@ -70,7 +70,7 @@ export const agentWorkflowSchemas: AgentWorkflowSchema[] = [
     title: "Agent Workflow Context Holdout Cases",
     fileName: "context-holdout.schema.json",
     description: "Direct-versus-routed context quality, citation, token, and latency cases.",
-    fileGlobs: ["evaluations/context-*.json", ".agent-workflow/evals/context-*.json"]
+    fileGlobs: ["evals/context-holdout-*.json", ".agent-workflow/evals/context-*.json"]
   },
   {
     id: "context-corpus",

@@ -11,6 +11,7 @@ import { z } from "zod/v3";
 import { appendFreshRunFamilyArgs, freshRunFamilyToolSchema } from "./fresh-run-family-options.js";
 import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { registerContextGatewayTools, registerContextThresholdTool } from "./tools/context.js";
+import { registerDevSessionTools } from "./tools/dev-sessions.js";
 import { registerAcceptedOutcomeTool, registerProviderCreditTool } from "./tools/reporting.js";
 import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
 import { bindCodexToolOrigins, codexRequestEnvironment } from "./codex-origin.js";
@@ -74,6 +75,7 @@ const server = new McpServer(
       "Agent Workflow is the default orchestration layer for software-project work. " +
       "When this server is available and a request involves planning, implementation, debugging, testing, review, security, UX, documentation, release readiness, or project maintenance, use its tools before doing substantive work. " +
       "Prefer agentflow_orchestrate for ambiguous or multi-stage tasks and the narrowest matching tool for focused tasks. " +
+      "For an interactive editor session (Dev mode), use agentflow_dev_session_create and agentflow_dev_turn instead: a turn runs to completion and returns its full event list, file writes arrive as proposed diffs for agentflow_dev_diff_decide, and an approval pause is resumed by deciding the approval with agentflow_dev_approval_decide and sending its resume hint as a new turn. " +
       "When any tool result says Approval required, ask the user in the current chat whether to approve and execute now, approve only, reject, dismiss stale, or always approve the listed side effect, then call agentflow_approvals with the selected approval id. Prefer approveAndExecute for executable inline approvals. " +
       "Use project paths that are accessible on the configured workflow host. If the target project is not accessible there or this server cannot serve the task, continue with native Codex tools and state the fallback."
   }
@@ -84,6 +86,7 @@ const executeTool = async (args: string[], timeoutMs: number) => toolResult(awai
 registerContextThresholdTool(server, executeTool);
 registerAcceptedOutcomeTool(server, executeTool);
 registerProviderCreditTool(server, executeTool);
+registerDevSessionTools(server);
 
 server.registerTool(
   "agentflow_client_capabilities",

@@ -73,7 +73,7 @@ npm run agentflow -- run-and-watch production-readiness \
   --index-max-files 100 \
   --worker-limit 6
 npm run agentflow -- quality-report --run <run-id>
-npm run agentflow -- evaluate --suite evaluations/synthetic-provider-comparison.yaml --project . --dry-run
+npm run agentflow -- evaluate --suite evals/synthetic-provider-comparison.yaml --project . --dry-run
 npm run agentflow -- feedback --run <run-id> --rating accepted --note "Good production-readiness scope"
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project

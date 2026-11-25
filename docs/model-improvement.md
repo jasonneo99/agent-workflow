@@ -112,7 +112,7 @@ npm run agentflow -- feedback --run <run-id> --rating revised --note "Good conte
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project
 npm run agentflow -- model-improvement-plan --project /path/to/project
-npm run agentflow -- evaluate --suite evaluations/synthetic-provider-comparison.yaml --project /path/to/project --dry-run
+npm run agentflow -- evaluate --suite evals/synthetic-provider-comparison.yaml --project /path/to/project --dry-run
 ```
 
 After approving tuning proposals with `queue-tuning-approvals` and
