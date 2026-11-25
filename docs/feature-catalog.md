@@ -483,10 +483,8 @@ This index maps every committed runtime package to its primary feature area.
 | `bundle-trust` | Signing, verification, trust policy, compatibility, and upgrades. |
 | `cli-smoke` | Packaged CLI smoke validation. |
 | `client-capabilities` | Versioned client/runtime capability negotiation. |
-| `context-calibration` | Context threshold evidence, holdouts, and regression gates. |
 | `context-compiler` | Compiled briefs, section budgets, AIR headers, and tuning notes. |
-| `context-gateway` | Governed read routing, caching, evidence, and enforcement. |
-| `context-host-adapters` | Claude, Cursor, and Codex host hooks. |
+| `context-gateway` | Governed read routing, caching, evidence, and enforcement; threshold evidence, holdouts and regression gates (`calibration.ts`); Claude, Cursor and Codex host hooks (`host-adapters.ts`). |
 | `context-selector` | Risk-, relevance-, and token-aware source selection. |
 | `contract-tests` | Definition and provider contract validation. |
 | `conversation-contract` | Bounded assistant conversation parsing and redaction. |

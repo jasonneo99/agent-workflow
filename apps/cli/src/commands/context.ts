@@ -18,7 +18,7 @@ import { readContextCorrections, requestContextCorrection } from "../../../../pa
 import { getActionApproval } from "../../../../packages/storage/src/action-approvals.js";
 import { readContextDeletionImpact } from "../../../../packages/storage/src/context-deletion-impact.js";
 import { loadProjectConfig } from "../../../../packages/agent-registry/src/loaders.js";
-import { buildSegmentedThresholdQueue, proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence, writeSegmentedThresholdQueue } from "../../../../packages/context-calibration/src/index.js";
+import { buildSegmentedThresholdQueue, proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence, writeSegmentedThresholdQueue } from "../../../../packages/context-gateway/src/calibration.js";
 import { assertContextProjectPath, buildContextEfficiencyReport, contextRoutingPolicySchema, readShadowObservations, type ContextRoutingPolicy } from "../../../../packages/context-gateway/src/index.js";
 import { findAgentWorkflowRoot } from "../../../../packages/runtime-root/src/index.js";
 import { upsertProject } from "../../../../packages/storage/src/postgres.js";

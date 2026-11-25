@@ -1,9 +1,9 @@
 import type { CliContext } from "./context.js";
 import { loadContextRoutingPolicy } from "./builders-shared.js";
 import { loadProjectConfig } from "../../../../packages/agent-registry/src/loaders.js";
-import { readLatestCalibration } from "../../../../packages/context-calibration/src/index.js";
+import { readLatestCalibration } from "../../../../packages/context-gateway/src/calibration.js";
 import { buildContextEfficiencyReport, readContextCacheHealth, readShadowObservations } from "../../../../packages/context-gateway/src/index.js";
-import { type ContextHost, hostHookDefinition } from "../../../../packages/context-host-adapters/src/index.js";
+import { type ContextHost, hostHookDefinition } from "../../../../packages/context-gateway/src/host-adapters.js";
 import { listCodegenPlans } from "../../../../packages/governed-codegen/src/index.js";
 import fs from "node:fs/promises";
 import path from "node:path";

@@ -1,4 +1,4 @@
-import type { ContextRouteDecision } from "../../context-gateway/src/index.js";
+import type { ContextRouteDecision } from "./index.js";
 
 export type ContextHost = "claude" | "cursor" | "codex";
 

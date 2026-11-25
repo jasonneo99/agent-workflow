@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { applyApprovedSegmentedThresholds, buildSegmentedThresholdQueue, decideSegmentedThresholdProposal, proposeContextThresholds, resolveSegmentedThresholdPolicy, runRepositoryCalibration, writeSegmentedThresholdQueue } from "./index.js";
+import { applyApprovedSegmentedThresholds, buildSegmentedThresholdQueue, decideSegmentedThresholdProposal, proposeContextThresholds, resolveSegmentedThresholdPolicy, runRepositoryCalibration, writeSegmentedThresholdQueue } from "./calibration.js";
 
 test("threshold proposals stay review-required and preserve the direct boundary", () => {
   const proposal = proposeContextThresholds({ version: 1, corpus: "x", corpusHash: "x", cases: 6, qualityPassRate: 1, citationPassRate: 1, tokenSavingsPercent: 20, p95AddedLatencyMs: 10, routes: {}, risks: {}, regression: { baselineFound: false, qualityDelta: 0, citationDelta: 0, savingsDelta: 0, latencyDeltaMs: 0, passed: true }, enforcementReady: false }, { version: 1, mode: "shadow", direct_read_max_tokens: 1000, delegation_min_tokens: 2000, max_exact_slice_tokens: 500, summary_cache_ttl_seconds: 10, low_risk_intents: ["discovery"], frontier_required_intents: ["security"], deterministic_extractors: ["text_match"], telemetry: { store_file_bodies: false, hash_source_paths: true, record_project_id: true, record_content_hash: true } });

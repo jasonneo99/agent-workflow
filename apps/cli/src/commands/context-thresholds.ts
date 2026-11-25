@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import type { Command } from "commander";
 import YAML from "yaml";
 import { loadProjectConfig } from "../../../../packages/agent-registry/src/loaders.js";
-import { applyApprovedSegmentedThresholds, decideSegmentedThresholdProposal, readSegmentedThresholdQueue } from "../../../../packages/context-calibration/src/index.js";
+import { applyApprovedSegmentedThresholds, decideSegmentedThresholdProposal, readSegmentedThresholdQueue } from "../../../../packages/context-gateway/src/calibration.js";
 import { contextRoutingPolicySchema } from "../../../../packages/context-gateway/src/index.js";
 import { findAgentWorkflowRoot } from "../../../../packages/runtime-root/src/index.js";
 

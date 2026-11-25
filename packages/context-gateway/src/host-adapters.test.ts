@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatHostDecision, mergeHostHookConfig, normalizeHostRead } from "./index.js";
+import { formatHostDecision, mergeHostHookConfig, normalizeHostRead } from "./host-adapters.js";
 
 test("Claude adapter recognizes targeted reads and emits structured PreToolUse denial", () => {
   const read = normalizeHostRead("claude", { tool_name: "Read", tool_input: { file_path: "/repo/a.ts", offset: 10, limit: 20 } });

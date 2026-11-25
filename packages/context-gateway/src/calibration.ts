@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { assertContextProjectPath, decideContextRoute, estimateContextTokens, extractExactSlices, type ContextIntent, type ContextRoutingPolicy } from "../../context-gateway/src/index.js";
+import { assertContextProjectPath, decideContextRoute, estimateContextTokens, extractExactSlices, type ContextIntent, type ContextRoutingPolicy } from "./index.js";
 
 const intent = z.enum(["discovery", "summarization", "documentation", "test_inventory", "editing", "debugging", "concurrency", "security", "authorization", "migration", "public_api", "architecture", "safety_critical", "unknown"]);
 

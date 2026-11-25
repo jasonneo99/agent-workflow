@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { assertContextProjectPath, type ContextRoutingPolicy } from "../../context-gateway/src/index.js";
-import type { RepositoryCalibrationCase } from "./index.js";
+import { assertContextProjectPath, type ContextRoutingPolicy } from "./index.js";
+import type { RepositoryCalibrationCase } from "./calibration.js";
 
 export type ThresholdSegment = { language: string; fileType: string; stage: string; model: string };
 export type ThresholdChange = { key: "direct_read_max_tokens" | "delegation_min_tokens"; current: number; proposed: number; reason: string };
