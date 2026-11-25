@@ -4,7 +4,7 @@ This document describes implemented source behavior. Admission, recovery activit
 
 ## Discovery and manual changes
 
-[Partner reasoning reservations](../packages/storage/src/queue-partner-reasoning.ts) suppress another read-only discovery reservation for the same source run, task hash, policy hash, and discovery hash. Changed attempt fingerprints or provider failures alone do not bypass this check. Reservations also have a durable lifetime limit of five recovery turns per source run; restarting a watcher does not reset it.
+[Partner reasoning reservations](../../packages/storage/src/queue-partner-reasoning.ts) suppress another read-only discovery reservation for the same source run, task hash, policy hash, and discovery hash. Changed attempt fingerprints or provider failures alone do not bypass this check. Reservations also have a durable lifetime limit of five recovery turns per source run; restarting a watcher does not reset it.
 
 When discovery paths are supplied, reservation checks their read permissions and recomputes their source hash. Write reservations similarly recheck current write permissions and the hash of their exact write paths. Current policy, canonical project location, exact work intent, family activity, overlapping scopes, and capacity are checked before reservation.
 
@@ -12,13 +12,13 @@ A manual change to a file included in the discovery hash changes that binding an
 
 ## Live provider admission
 
-[Queue provider readiness](../apps/cli/src/lib/queue-provider-readiness.ts) selects a route for the recovery agent using the standard tier and current project configuration. A mock route is rejected for dispatch. A live route must pass `getProviderReadiness`; an unavailable provider produces a configuration/authentication repair message.
+[Queue provider readiness](../../apps/cli/src/lib/queue-provider-readiness.ts) selects a route for the recovery agent using the standard tier and current project configuration. A mock route is rejected for dispatch. A live route must pass `getProviderReadiness`; an unavailable provider produces a configuration/authentication repair message.
 
 Readiness is admission evidence. The executor still validates its own route, and readiness does not guarantee a later invocation will succeed or establish that the product works live.
 
 ## Snapshot freshness
 
-[Queue card snapshots](../apps/cli/src/lib/queue-card-snapshot.ts) coalesce concurrent loads per cache key and return `capturedAt`, `ageMs`, and `refreshing` with each value. Defaults are a 750 ms refresh threshold and a 30 second maximum stale interval.
+[Queue card snapshots](../../apps/cli/src/lib/queue-card-snapshot.ts) coalesce concurrent loads per cache key and return `capturedAt`, `ageMs`, and `refreshing` with each value. Defaults are a 750 ms refresh threshold and a 30 second maximum stale interval.
 
 Within the stale interval, an older snapshot may be returned while a replacement loads, with its age and refresh status exposed. An explicit refresh, missing snapshot, or snapshot older than the stale limit waits for the shared load and returns its result with age zero and `refreshing: false`. Capture time is assigned when loading completes; it is not a guarantee that underlying observations were simultaneous.
 
@@ -26,7 +26,7 @@ Background load failures are observed and later requests can retry. A caller req
 
 ## Selected models, cooldown, and fallback
 
-[Provider fallback execution](../packages/model-providers/src/fallback.ts) places the requested provider and `stageInput.modelOverride` first in its candidate list. Each invocation receives that candidate's model override. Fallback candidates can specify their own model; a candidate without one uses the adapter's default selection. Results record the requested and actual providers, actual model when available, whether fallback was used, and attempt outcomes.
+[Provider fallback execution](../../packages/model-providers/src/fallback.ts) places the requested provider and `stageInput.modelOverride` first in its candidate list. Each invocation receives that candidate's model override. Fallback candidates can specify their own model; a candidate without one uses the adapter's default selection. Results record the requested and actual providers, actual model when available, whether fallback was used, and attempt outcomes.
 
 Circuits are keyed by provider and model, including a distinct tier-default key. Account-quota failures open the circuit immediately and are not retried on that candidate. Outages and rate limits receive bounded retries and open a circuit at the configured failure threshold. The default cooldown is 60 seconds. Circuit state is persisted by default, so cooldown evidence can survive process restarts. During cooldown the candidate is skipped with its recorded failure kind. After cooldown, an adapter with a health check must pass that probe before execution resumes; successful execution clears the circuit.
 
@@ -34,7 +34,7 @@ After an account-quota failure, fallback requires `allowQuotaFallback`, a candid
 
 ## Optional credit evidence
 
-[Adaptive route evidence](../packages/model-providers/src/adaptive-evidence.ts) requires matching agent/task-class observations no older than 30 days and at least three samples. Candidates must meet quality ≥ 0.7, task success ≥ 0.8, and fallback rate ≤ 0.1 before ranking.
+[Adaptive route evidence](../../packages/model-providers/src/adaptive-evidence.ts) requires matching agent/task-class observations no older than 30 days and at least three samples. Candidates must meet quality ≥ 0.7, task success ≥ 0.8, and fallback rate ≤ 0.1 before ranking.
 
 Credit evidence is optional and has a separate five-minute freshness limit. A finite, fresh balance excludes a candidate when it is nonpositive or below its finite recorded `costUsd`. Missing, invalid, future-dated, or stale credit evidence leaves account headroom unknown; it does not establish a positive balance and does not alone exclude a candidate.
 
@@ -42,7 +42,7 @@ For example, a fresh balance of $0.20 with recorded cost of $0.30 excludes the c
 
 ## Verified recovery yield and queue load
 
-[Resolution metrics](../packages/storage/src/queue-partner-resolution-metrics.ts) summarize up to the latest 500 outcome-journal entries. Only `verified` outcomes count as acceptance gaps closed; `held`, `failed`, and `uncertain` outcomes count as nonresolving turns. The implementation relies on coordinator finalization independently enforcing original acceptance before a verified journal row is valid.
+[Resolution metrics](../../packages/storage/src/queue-partner-resolution-metrics.ts) summarize up to the latest 500 outcome-journal entries. Only `verified` outcomes count as acceptance gaps closed; `held`, `failed`, and `uncertain` outcomes count as nonresolving turns. The implementation relies on coordinator finalization independently enforcing original acceptance before a verified journal row is valid.
 
 Reports distinguish attempts from observed families and include verified attempt and family rates, first-attempt acceptance with family coverage, and time to verification with duration coverage. Missing denominators or usable durations produce null metrics. Strategy closure counts count verified outcomes, not distinct families; distinct-family measures are reported separately. An absent journal produces an empty summary.
 

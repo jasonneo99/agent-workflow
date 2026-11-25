@@ -201,7 +201,7 @@ The maintained credit collector and account-scoped storage now expose provider
 measurements and explicit unknown reasons through `provider-credits`. Collector
 and database regressions cover credential scrubbing, endpoint qualification,
 response limits, stale overwrite, currency separation and key-cap versus funds.
-See [provider credit measurement](provider-credit-measurement.md). Recurring
+See [provider credit measurement](../provider-credit-measurement.md). Recurring
 collection, packaged adoption and the five-case cohort
 remain separate qualification work.
 

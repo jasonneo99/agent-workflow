@@ -36,10 +36,12 @@ For a complete codebase-wide inventory, start with the [Feature Catalog](feature
 28. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
 29. [Autonomy Policy](autonomy.md): what each autonomy level allows.
 30. [Chat Mode](chat-mode.md): requester-aware runs, self-healing retries, the trusted-personal policy profile, and conversational approvals.
-31. [Architecture Drift Report — 2026-09-29](architecture-drift-report-2026-09-29.md): reconciliation of requester-aware Studio and recovery changes, with unresolved portability, identity, evidence, and release gaps.
+31. [Reconciliation Operations](reconciliation.md): operator-only reconciliation of historical writes, retired policy, and existing coordinator assignments.
 32. [Profiles](profiles.md): enterprise and simple initialization profiles.
 33. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
 34. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+35. [Queue Delivery](queue-delivery.md): queue history, delivery reliability, and the delivery improvement program.
+36. [Archive](archive/): superseded dated reports and plans, including the 2026-09-29 architecture drift report.
 
 ## Fast Path
 
