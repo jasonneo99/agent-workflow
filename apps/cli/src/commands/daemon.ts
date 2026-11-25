@@ -23,7 +23,7 @@ import { buildClientCapabilityContract } from "../../../../packages/client-capab
 import { type ContractTestReport, runDefinitionContractTests } from "../../../../packages/contract-tests/src/index.js";
 import { type DaemonTrustSettings, type FleetProjectScope, classifyFleetProject, daemonLanes, defaultDaemonTrustSettings, fleetProjectAvailable } from "../../../../packages/daemon-control/src/index.js";
 import { buildDaemonControlStatus } from "../../../../packages/daemon-control/src/status.js";
-import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../../packages/dashboard-report-cache/src/index.js";
+import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../../packages/dashboard/src/report-cache.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../../packages/dashboard/src/queue-watcher.js";
 import {resolveRunExecutionRoot} from '../../../../packages/storage/src/run-pipeline.js';
 import {withQueueCardActivity,type QueueCardActivity} from '../lib/queue-card-activity.js';

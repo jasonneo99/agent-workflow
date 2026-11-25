@@ -491,8 +491,7 @@ This index maps every committed runtime package to its primary feature area.
 | `contract-tests` | Definition and provider contract validation. |
 | `conversation-contract` | Bounded assistant conversation parsing and redaction. |
 | `daemon-control` | Daemon lanes, trust ceilings, and mutable control contract. |
-| `dashboard` | Shared dashboard-domain helpers and operational reporting. |
-| `dashboard-report-cache` | Durable bounded dashboard snapshots. |
+| `dashboard` | Shared dashboard-domain helpers, operational reporting, and durable bounded dashboard report snapshots. |
 | `definition-migrations` | Reusable definition upgrade and rollback catalog. |
 | `dynamic-workflow` | Archetype selection, construction, mutation, and validation. |
 | `evaluation` | Evaluation suites, scoring, gates, comparison, and ranking. |

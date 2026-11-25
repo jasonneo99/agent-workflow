@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { dashboardReportSnapshotPath, isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "./index.js";
+import { dashboardReportSnapshotPath, isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "./report-cache.js";
 
 test("dashboard report snapshots survive process-local cache loss", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-dashboard-cache-"));
