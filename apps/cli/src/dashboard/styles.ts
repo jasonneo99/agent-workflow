@@ -47,6 +47,7 @@ export function dashboardCss(): string {
     *, *::before, *::after { box-sizing: border-box; }
     .skip-link { position: absolute; left: 12px; top: -48px; z-index: 2000; padding: 10px 14px; border-radius: 8px; background: #1d4ed8; color: #fff; font-weight: 700; text-decoration: none; }
     .skip-link:focus { top: 12px; }
+    html:not([data-theme="dark"]) a.skip-link, html:not([data-theme="dark"]) a.skip-link:hover { color: #fff; }
     .approval-note-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; }
     html { min-width: 320px; background: #f7f8fb; }
     main { width: calc(100% - var(--nav-width)); margin-left: var(--nav-width); padding: 32px var(--page-gutter) 48px; }
