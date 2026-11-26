@@ -43,7 +43,7 @@ test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /requestUrl\.pathname === "\/api\/activity"/u);
   assert.match(source, /One chronological, redacted view/u);
   assert.match(source, /Prompt bodies, model response bodies, credentials, private file contents/u);
-  assert.match(source, /\["activity", "\/activity", "Activity", "list"\]/u);
+  assert.match(source, /\["activity", "\/activity", "Activity"\]/u);
 });
 
 test("queue watcher preserves exact project baseline and updates cards without replacing Partner",()=>{

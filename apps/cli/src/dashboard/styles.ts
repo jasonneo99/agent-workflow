@@ -120,6 +120,19 @@ export function dashboardCss(): string {
     .nav-disclosure .icon { width: 14px; transition: transform .15s ease; transform: rotate(90deg); }
     .nav-cluster.expanded .nav-disclosure .icon, .nav-cluster.active-group .nav-disclosure .icon { transform: rotate(-90deg); }
     .nav-children { display: none; margin: 2px 0 8px 37px; border-left: 1px solid #334155; padding-left: 8px; }
+    .nav-badge { margin-left: auto; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: #b45309; color: #fff; font-size: 12px; font-weight: 750; line-height: 18px; text-align: center; }
+    .nav-badge[hidden] { display: none; }
+    .side-nav .nav-studio-link { flex-wrap: wrap; row-gap: 0; margin-top: 6px; border-top-color: #334155; }
+    .side-nav .nav-studio-link small { flex-basis: 100%; padding-left: 27px; color: #94a3b8; font-size: 12px; font-weight: 500; }
+    .side-nav .nav-more-toggle { display: flex; align-items: center; gap: 9px; width: 100%; justify-content: flex-start; text-align: left; border: 1px solid transparent; border-radius: 6px; background: transparent; box-shadow: none; color: #cbd5e1; font-weight: 600; cursor: pointer; }
+    .side-nav .nav-more-toggle:hover { background: #1f2937; color: #fff; }
+    html:not([data-theme="dark"]) .side-nav .nav-more-toggle { color: #475569; }
+    html:not([data-theme="dark"]) .side-nav .nav-more-toggle:hover { background: #eef2f7; color: #172033; }
+    .nav-more-toggle .icon:last-child { width: 14px; margin-left: auto; transform: rotate(90deg); transition: transform .15s ease; }
+    .nav-more.expanded .nav-more-toggle .icon:last-child, .nav-more.active-group .nav-more-toggle .icon:last-child { transform: rotate(-90deg); }
+    .nav-more .primary-nav-row { grid-template-columns: minmax(0, 1fr); }
+    .nav-more-heading { display: block; margin: 10px 0 2px; padding: 0 9px; color: #94a3b8; font-size: 11px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+    .nav-more-heading:first-child { margin-top: 4px; }
     .nav-cluster.expanded .nav-children, .nav-cluster.active-group .nav-children { display: grid; }
     .side-nav .nav-children a { min-height: 32px; padding: 6px 9px; font-size: 13px; }
     .nav-menu-button { display: none; }
@@ -1069,6 +1082,8 @@ export function dashboardCss(): string {
     html:not([data-theme="dark"]) .side-nav a:hover, html:not([data-theme="dark"]) .side-nav a.active { color: #172033; background: #eef4ff; border-color: #c8d8f2; }
     html:not([data-theme="dark"]) .side-nav a:hover .icon, html:not([data-theme="dark"]) .side-nav a.active .icon { color: #2563eb; }
     html:not([data-theme="dark"]) .nav-children { border-left-color: #d7dee8; }
+    html:not([data-theme="dark"]) .side-nav .nav-studio-link:not(.active) { border-top-color: #d7dee8; }
+    html:not([data-theme="dark"]) .nav-studio-link small, html:not([data-theme="dark"]) .nav-more-heading { color: #566275; }
     html:not([data-theme="dark"]) .theme-toggle { border-color: #cbd5e1; color: #475569; background: #f8fafc; }
     html:not([data-theme="dark"]) .theme-toggle:hover { border-color: #94a3b8; color: #172033; background: #eef2f7; }
     html:not([data-theme="dark"]) .nav-disclosure, html:not([data-theme="dark"]) .nav-menu-button { color: #566275; background: transparent; border: 0; box-shadow: none; }

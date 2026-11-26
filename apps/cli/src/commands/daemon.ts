@@ -1273,77 +1273,29 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   const dashboardMaxConcurrentRequests = 6;
 
   function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "training-proposals" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
+    // Five everyday pages stay at the top; every other page stays reachable under "More".
+    const primary = [
+      ["dashboard", "/", "Home", "grid"],
+      ["queue", "/queue", "Queue", "list"],
+      ["approvals", "/approvals", "Approvals", "shield"],
+      ["runs", "/runs", "Runs", "activity"],
+      ["projects", "/projects", "Projects", "file"]
+    ] as const satisfies ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]>;
     const groups = [
-      {
-        label: "Work",
-        id: "work",
-        href: "/queue",
-        icon: "play",
-        items: [
-          ["studio", "/studio", "Studio", "activity"],
-          ["queue", "/queue", "Queue", "list"],
-          ["approvals", "/approvals", "Approvals", "shield"],
-          ["runs", "/runs", "Runs", "activity"],
-          ["activity", "/activity", "Activity", "list"]
-        ]
-      },
-      {
-        label: "Projects",
-        id: "projects",
-        href: "/projects",
-        icon: "file",
-        items: [
-          ["agents", "/agents", "Agents", "agent"],
-          ["discovery", "/discovery", "Discovery", "search"],
-          ["workflow-graph", "/workflow-graph", "Graph", "git"],
-          ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts", "archive"]
-        ]
-      },
-      {
-        label: "Learning",
-        id: "learning",
-        href: "/learning",
-        icon: "brain",
-        items: [
-          ["learning-diagnostics", "/learning?view=diagnostics", "Diagnostics", "gauge"],
-          ["daemon-control", "/learning?view=settings", "Daemon settings", "server"],
-          ["training-proposals", "/training-proposals", "Training proposals", "search"],
-          ["evaluations", "/evaluations", "Evaluations", "clipboard"],
-          ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
-          ["model-improvement", "/model-improvement", "Model improvements", "sparkles"],
-          ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"],
-          ["context-gateway", "/context-gateway", "Context efficiency", "route"],
-          ["roadmap", "/roadmap", "Roadmap", "clipboard"]
-        ]
-      },
-      {
-        label: "Settings",
-        id: "info",
-        href: "/settings",
-        icon: "settings",
-        items: [
-          ["governance", "/governance", "Governance", "shield"],
-          ["approval-rules", "/approval-rules", "Trusted commands", "key"],
-          ["roles", "/roles", "Roles", "users"],
-          ["backup-report", "/backup-report", "Backup", "database"],
-          ["server-readiness", "/server-readiness", "System readiness", "server"],
-          ["fleet-model-usage", "/fleet-model-usage", "Fleet model usage", "gauge"],
-          ["bundles", "/bundles", "Workflow bundles", "package"],
-          ["providers", "/providers", "Providers", "route"],
-          ["model-catalog", "/model-catalog", "Model catalog", "layers"]
-        ]
-      }
-    ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
-    const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
+      { label: "Work", items: [["activity", "/activity", "Activity"]] },
+      { label: "Projects", items: [["agents", "/agents", "Agents"], ["discovery", "/discovery", "Discovery"], ["workflow-graph", "/workflow-graph", "Graph"], ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"]] },
+      { label: "Learning", items: [["learning", "/learning", "Learning overview"], ["learning-diagnostics", "/learning?view=diagnostics", "Diagnostics"], ["daemon-control", "/learning?view=settings", "Daemon settings"], ["training-proposals", "/training-proposals", "Training proposals"], ["evaluations", "/evaluations", "Evaluations"], ["feedback-inbox", "/feedback-inbox", "Feedback"], ["model-improvement", "/model-improvement", "Model improvements"], ["candidate-comparisons", "/candidate-comparisons", "Comparisons"], ["context-gateway", "/context-gateway", "Context efficiency"], ["roadmap", "/roadmap", "Roadmap"]] },
+      { label: "Settings", items: [["info", "/settings", "Settings"], ["governance", "/governance", "Governance"], ["approval-rules", "/approval-rules", "Trusted commands"], ["roles", "/roles", "Roles"], ["backup-report", "/backup-report", "Backup"], ["server-readiness", "/server-readiness", "System readiness"], ["fleet-model-usage", "/fleet-model-usage", "Fleet model usage"], ["bundles", "/bundles", "Workflow bundles"], ["providers", "/providers", "Providers"], ["model-catalog", "/model-catalog", "Model catalog"]] }
+    ] as const satisfies ReadonlyArray<{ label: string; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string]> }>;
+    const moreActive = groups.some((group) => group.items.some(([id]) => id === active));
     return `<a class="skip-link" href="#main-content">Skip to content</a><script>(()=>{const icon=document.createElement('link');icon.rel='icon';icon.type='image/png';icon.href='/assets/agent-workflow-favicon.png';document.head.append(icon);const key='agentflow.dashboard.theme';${themeBootstrapScript}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
       <div class="nav-brand"><a class="nav-brand-link" href="/" aria-label="Agent Workflow home"><img src="/assets/agent-workflow-mark.png" alt="" width="34" height="34"><strong>Agent Workflow</strong></a><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
       <div id="dashboard-menu" class="dashboard-menu">
-        <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
-      ${groups.map((group) => {
-        const activeGroup = groupForActive?.id === group.id;
-        return `<div class="nav-cluster ${activeGroup ? "active-group" : ""}"><div class="primary-nav-row"><a class="primary-nav-link ${activeGroup ? "active" : ""}" ${activeGroup ? 'aria-current="page"' : ""} href="${group.href}">${iconLabel(group.icon, group.label)}</a><button type="button" class="nav-disclosure" aria-label="Show ${escapeHtml(group.label)} pages" aria-expanded="${activeGroup ? "true" : "false"}" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${dashboardIcon("chevrons")}</button></div><div class="nav-children">${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}</div></div>`;
-      }).join("")}
+        ${primary.map(([id, href, label, icon]) => `<a class="primary-nav-link ${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${iconLabel(icon, label)}${id === "approvals" ? '<span class="nav-badge" data-nav-badge="approvals" hidden></span>' : ""}</a>`).join("")}
+        <a class="primary-nav-link nav-studio-link ${active === "studio" ? "active" : ""}" ${active === "studio" ? 'aria-current="page"' : ""} href="/studio">${iconLabel("sparkles", "Studio")}<small>Task workspace</small></a>
+        <div class="nav-cluster nav-more ${moreActive ? "active-group" : ""}"><div class="primary-nav-row"><button type="button" class="primary-nav-link nav-more-toggle" aria-expanded="${moreActive ? "true" : "false"}" aria-controls="dashboard-more" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${iconLabel("layers", "More")}${dashboardIcon("chevrons")}</button></div><div id="dashboard-more" class="nav-children">${groups.map((group) => `<span class="nav-more-heading">${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}`).join("")}</div></div>
       </div>
+      <script>fetch('/api/nav-counts',{headers:{accept:'application/json'}}).then(r=>r.ok?r.json():null).then(counts=>{const n=counts&&Number(counts.pendingApprovals);const badge=document.querySelector('[data-nav-badge="approvals"]');if(!badge||!n)return;badge.textContent=n>99?'99+':String(n);badge.setAttribute('aria-label',n+' pending approval'+(n===1?'':'s'));badge.hidden=false}).catch(()=>{});</script>
     </nav>`;
   }
 
@@ -3733,6 +3685,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       } catch (error) {
         respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/training-proposals");
       }
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/nav-counts") {
+      const pendingApprovals = await loadCachedDashboardReport("nav-counts:pending-approvals", async () => (await listActionApprovals({ status: "pending", limit: 100 })).length, 5_000);
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ pendingApprovals }));
       return;
     }
 
