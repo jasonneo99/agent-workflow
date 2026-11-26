@@ -5,12 +5,14 @@ import type { Command } from "commander";
 import type { DashboardRoleGovernanceReport } from "../lib/cli-types.js";
 import { execFileText, loadAgentsForProject, objectValue } from "../lib/builders-shared.js";
 import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, updateEnvValue, writeRoleAuditSnapshot } from "../lib/builders-system.js";
-import { loadAgents, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
+import { loadAgents, loadProjectConfig, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { buildGovernanceReport, formatGovernanceReport } from "../../../../packages/governance/src/index.js";
 import { providerFromEnv, readEgressLog, summarizeEgress } from "../../../../packages/model-providers/src/index.js";
 import { verifyRunReceiptChain } from "../../../../packages/storage/src/postgres.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../../packages/schema-registry/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
+import { withClient } from "../../../../packages/storage/src/client.js";
+import { checkStorageRegistry, environmentLine, routeLines, runtimeEnvLine, type DoctorLine } from "../lib/doctor-checks.js";
 import { parsePositiveInteger } from "../numeric-options.js";
 import { normalizeProviderRef } from "../reference-resolution.js";
 import { spawn } from "node:child_process";
@@ -93,12 +95,21 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
 
   program
     .command("doctor")
-    .description("Check local enterprise services and workflow definitions")
+    .description("Check services, storage registration, model routing, runtime.env and project environments")
     .option("--simple", "skip enterprise service checks")
-    .action(async (options: { simple?: boolean }) => {
+    .option("-p, --project <dir>", "also check that project's environment profiles")
+    .action(async (options: { simple?: boolean; project?: string }) => {
       const agents = await loadAgents(ctx.rootDir);
       const workflows = await loadWorkflows(ctx.rootDir);
       console.log(`Definitions: ${agents.length} agents, ${workflows.length} workflows`);
+      const print = (lines: DoctorLine[]) => { for (const line of lines) console.log(`${line.status}: ${line.message}`); };
+      // Name only keys and providers; never print configured values.
+      print(routeLines(await loadAutoRoutePreviews(ctx)));
+      print([await runtimeEnvLine(ctx.rootDir)]);
+      if (options.project) {
+        const projectDir = path.resolve(process.cwd(), options.project);
+        print([environmentLine(projectDir, await loadProjectConfig(projectDir))]);
+      }
 
       if (options.simple) {
         console.log("Simple profile: enterprise service checks skipped.");
@@ -119,7 +130,11 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         console.log("\nStart local enterprise services with:");
         console.log("docker compose -f infra/docker-compose.yml up -d");
         process.exitCode = 1;
+        return;
       }
+      const registry = await withClient(client => checkStorageRegistry(client, agents.map(agent => agent.id), workflows.map(workflow => workflow.id)));
+      print(registry);
+      if (registry.some(line => line.status === "MISSING")) process.exitCode = 1;
     });
 
   program.command('provider-credits')
