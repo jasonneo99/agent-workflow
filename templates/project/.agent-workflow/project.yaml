@@ -7,7 +7,9 @@ project:
     - review-pr
     - debug-failure
     - maintain-context
-  autonomy: wide-open
+  # Guarded by default. Maximum autonomy is an explicit opt-in: set
+  # autonomy: wide-open here and policies.allow_wide_open: true below.
+  autonomy: 3
 context:
   include:
     - AGENTS.md
@@ -74,7 +76,7 @@ execution:
             limit: 3
             concurrency: 1
 policies:
-  allow_wide_open: true
+  allow_wide_open: false
   require_approval_for_external_actions: false
   require_receipts: true
 team:
@@ -115,6 +117,7 @@ actions:
     - rm *
     - git reset *
     - git clean *
+    - git push *
     - sudo *
   command_timeout_ms: 120000
   max_output_chars: 20000
