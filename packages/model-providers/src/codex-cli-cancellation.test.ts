@@ -8,6 +8,10 @@ import { getEventListeners } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+// Elapsed bounds prove completion or escalation happens before the fixture's
+// 5,000 ms CLI deadline. They allow full-suite scheduling delay rather than
+// asserting a fast machine: the property is "independent of the deadline".
+const deadlineMarginMs = 4500;
 const scenarios = ["abort-ignore", "timeout-ignore", "output-ignore", "term-exits-zero", "natural-exit", "held-pipe-after-exit", "output-exits-zero"];
 
 function alive(pid: number): boolean {
@@ -124,7 +128,7 @@ else {if(mode==='output-ignore')process.stdout.write('x'.repeat(1_200_000));setI
   const result = await Promise.race([
     observed,
     new Promise<never>((_, reject) => {
-      bound = setTimeout(() => reject(new Error("CLI completion exceeded its bounded termination window")), scenario === "timeout-ignore" ? 6500 : 3000);
+      bound = setTimeout(() => reject(new Error("CLI completion exceeded its bounded termination window")), scenario === "timeout-ignore" ? 6500 : 4800);
     })
   ]).finally(() => { if (bound) clearTimeout(bound); });
   const elapsedMs = Date.now() - startedAt;
@@ -132,7 +136,7 @@ else {if(mode==='output-ignore')process.stdout.write('x'.repeat(1_200_000));setI
   assert.equal(getEventListeners(controller.signal, "abort").length, 0, "Completion removes the abort listener");
   if (scenario === "natural-exit" || scenario === "held-pipe-after-exit") {
     assert.equal(result.error, undefined); assert.equal(result.value?.output, '{"summary":"synthetic complete"}');
-    assert.ok(elapsedMs < 2000, "Natural completion is independent of the five-second deadline");
+    assert.ok(elapsedMs < deadlineMarginMs, `Natural completion is independent of the five-second deadline (${elapsedMs} ms)`);
     controller.abort();
     if (scenario === "held-pipe-after-exit") {
       const holderPid = await waitForPid(holderPidFile);
@@ -149,7 +153,7 @@ else {if(mode==='output-ignore')process.stdout.write('x'.repeat(1_200_000));setI
     } else {
       assert.equal(result.error?.diagnostic?.exitCode, 0, "A forced stop cannot become success because its signal handler exits zero");
     }
-    assert.ok(elapsedMs < (scenario === "timeout-ignore" ? 6500 : 2000));
+    assert.ok(elapsedMs < (scenario === "timeout-ignore" ? 6500 : deadlineMarginMs), `${scenario} settled in ${elapsedMs} ms`);
   }
   console.log("CODEX_CANCELLATION_OBSERVATION " + JSON.stringify({ scenario, elapsedMs, ownPidAbsent: !alive(pid), code: result.error?.code }));
 });
