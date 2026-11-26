@@ -2,6 +2,7 @@ import type { CliContext } from "../lib/context.js";
 import { withClient } from "../../../../packages/storage/src/client.js";
 import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js";
 import { runStateCounts } from "../dashboard/run-state.js";
+import { matchesQuery, pageOf, pagerHtml } from "../dashboard/paging.js";
 import type { Command } from "commander";
 import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonMode, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessCheckStatus, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary} from "../lib/cli-types.js";
 import {countAgentImprovementPendingPromotions, renderAgentImprovementPendingBannerHtml} from "../lib/builders-learning.js";
@@ -8707,6 +8708,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
+  /** Filters the rows of the table named by each [data-filter-rows] search box, in the page. */
+  function dashboardRowFilterScript(): string {
+    return `<script>document.querySelectorAll("input[data-filter-rows]").forEach((input)=>{const table=document.getElementById(input.getAttribute("data-filter-rows"));if(!table)return;input.addEventListener("input",()=>{const needle=input.value.trim().toLowerCase();table.querySelectorAll("tbody tr").forEach((row)=>{row.hidden=Boolean(needle)&&!row.textContent.toLowerCase().includes(needle)})})});</script>`;
+  }
+
+  /** "On this page" links to every section heading of a long page, built in the browser. */
+  function dashboardSectionIndex(): string {
+    return `<nav class="panel section-index" aria-label="On this page" hidden><div class="section-index-head"><strong>On this page</strong><button type="button" class="secondary compact-button" data-section-toggle-all>Expand all</button></div><ul></ul></nav><script>(()=>{const nav=document.currentScript.previousElementSibling;document.addEventListener("DOMContentLoaded",()=>{const list=nav.querySelector("ul");const sections=[...document.querySelectorAll("main section.panel")].filter((section)=>section.querySelector("h2")&&!section.contains(nav)&&section.getClientRects().length>0);if(sections.length<6)return;nav.hidden=false;const setOpen=(section,open)=>{section.classList.toggle("is-collapsed",!open);const button=section.querySelector(":scope [data-section-toggle]");if(button){button.setAttribute("aria-expanded",String(open));button.textContent=open?"Hide":"Show"}};sections.forEach((section,index)=>{const heading=section.querySelector("h2");if(!section.id)section.id="section-"+(index+1);const item=document.createElement("li");const link=document.createElement("a");link.href="#"+section.id;link.textContent=heading.textContent.trim();link.addEventListener("click",()=>setOpen(section,true));item.append(link);list.append(item);const button=document.createElement("button");button.type="button";button.className="secondary compact-button section-toggle";button.setAttribute("data-section-toggle","");button.setAttribute("aria-label","Show or hide "+heading.textContent.trim());button.addEventListener("click",()=>setOpen(section,section.classList.contains("is-collapsed")));heading.after(button);setOpen(section,index<2)});nav.querySelector("[data-section-toggle-all]").addEventListener("click",(event)=>{const open=event.currentTarget.textContent==="Expand all";sections.forEach((section)=>setOpen(section,open));event.currentTarget.textContent=open?"Collapse all":"Expand all"})})})();</script>`;
+  }
+
   /** The one metric card: small uppercase label, large value, short detail. */
   function metricCard(label: string, value: string | number, detail: string, iconName: DashboardIconName = iconForMetric(label), className = ""): string {
     return `<div class="metric${className ? ` ${escapeHtml(className)}` : ""}"><strong>${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span></strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
@@ -11034,17 +11045,18 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}${selectedProject ? ` for ${escapeHtml(selectedProject)}` : ""}.</p>
       </section>
       <section class="panel">
-        <h2>Effective Roster</h2>
-        <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${effectiveRows || '<tr><td colspan="8">No agents found.</td></tr>'}</tbody></table></div>
+        <div class="section-heading"><h2>Effective Roster</h2><label class="list-filter">Filter agents<input type="search" data-filter-rows="effective-roster" placeholder="name, category or purpose"></label></div>
+        <div class="table-wrap"><table id="effective-roster"><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${effectiveRows || '<tr><td colspan="8">No agents found.</td></tr>'}</tbody></table></div>
       </section>
       <section class="panel">
         <h2>Project-Local Agents</h2>
         <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${projectRows || '<tr><td colspan="8">No project-local agents found for the selected project.</td></tr>'}</tbody></table></div>
       </section>
-      <section class="panel">
-        <h2>Shared Bundle Agents</h2>
+      <details class="panel collapsible-panel">
+        <summary><h2>Shared Bundle Agents (${formatNumber(report.sharedAgents.length)})</h2><span class="muted">The reusable cards behind the roster above; project-local cards replace shared ids.</span></summary>
         <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${sharedRows || '<tr><td colspan="8">No shared agents found.</td></tr>'}</tbody></table></div>
-      </section>
+      </details>
+      ${dashboardRowFilterScript()}
     </main>
   </body>
   </html>`;
@@ -12447,7 +12459,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       `<input type="hidden" name="maxCandidates" value="${escapeHtml(String(report.maxCandidates))}">`,
       `<input type="hidden" name="spotlight" value="${escapeHtml(report.spotlight.requested)}">`
     ].join("");
-    const rows = report.candidates.map((candidate) => `
+    const candidateQuery = params.get("q")?.trim() ?? "";
+    const matchingCandidates = report.candidates.filter((candidate) => matchesQuery(candidateQuery, candidate.name, candidate.rootUri, candidate.markers.join(" ")));
+    const candidatePage = pageOf(matchingCandidates, params, 25);
+    const candidateSearchFields = ["roots", "maxDepth", "maxCandidates", "spotlight"].map((key) => params.get(key) ? `<input type="hidden" name="${key}" value="${escapeHtml(params.get(key) ?? "")}">` : "").join("");
+    const rows = candidatePage.items.map((candidate) => `
       <tr>
         <td>${escapeHtml(candidate.name)}<br><span class="muted">${escapeHtml(candidate.rootUri)}</span></td>
         <td><span class="flag ${candidate.confidence === "high" ? "good" : candidate.confidence === "medium" ? "queued" : "warn"}">${escapeHtml(candidate.confidence)}</span></td>
@@ -12556,9 +12572,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </form>
       </section>
       ${warningItems ? `<section class="panel"><h2>Warnings</h2><ul>${warningItems}</ul></section>` : ""}
-      <section class="panel">
-        <h2>Candidate Projects</h2>
+      <section class="panel" id="candidate-projects">
+        <div class="section-heading"><h2>Candidate Projects</h2><form class="list-filter" method="get" action="/discovery#candidate-projects" role="search">${candidateSearchFields}<label>Filter candidates<input type="search" name="q" value="${escapeHtml(candidateQuery)}" placeholder="name, path or marker"></label><button class="secondary" type="submit">Filter</button></form></div>
+        ${candidateQuery ? `<p class="muted">${formatNumber(matchingCandidates.length)} of ${formatNumber(report.candidates.length)} candidates match “${escapeHtml(candidateQuery)}”.</p>` : ""}
+        ${pagerHtml("/discovery", params, candidatePage, "Candidate projects")}
         <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Markers</th><th>Next Commands</th><th>Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"8\">No candidate projects found.</td></tr>"}</tbody></table></div>
+        ${pagerHtml("/discovery", params, candidatePage, "Candidate projects")}
       </section>
       <section class="panel"><h2>Next Commands</h2><ul>${nextItems}</ul></section>
     </main>
@@ -14728,6 +14747,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       </div>
       ${renderDashboardFlash(params)}
       ${renderDashboardActionHistory()}
+      ${report ? dashboardSectionIndex() : ""}
       <section class="panel">
         <form method="get" class="workflow-form">
           <label class="wide">Project path
@@ -17774,7 +17794,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const projectOptions = projects.map((project) => option(project.rootUri, project.name, report.filters.project)).join("");
     const categoryOptions = ["workflow", "stage", "action", "approval", "learning", "daemon", "roadmap", "server"].map((value) => option(value, titleCase(value), report.filters.category)).join("");
     const severityOptions = ["info", "warning", "error"].map((value) => option(value, titleCase(value), report.filters.severity)).join("");
-    const rows = report.events.map((event) => `<tr>
+    const eventPage = pageOf(report.events, params, 50);
+    const rows = eventPage.items.map((event) => `<tr>
       <td>${renderDashboardDateTime(event.occurredAt)}<br><span class="muted">${escapeHtml(event.occurredAt)}</span></td>
       <td><span class="status ${event.severity === "error" ? "failed" : event.severity === "warning" ? "blocked" : "completed"}">${escapeHtml(event.severity)}</span><br><span class="muted">${escapeHtml(event.category)}</span></td>
       <td>${event.href ? `<a href="${escapeHtml(event.href)}"><strong>${escapeHtml(event.title)}</strong></a>` : `<strong>${escapeHtml(event.title)}</strong>`}<br><span class="muted">${escapeHtml(event.eventType)} · ${escapeHtml(event.source)}</span></td>
@@ -17801,7 +17822,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ${metricCard("Errors", report.counts.bySeverity.error ?? 0, "failed or rejected events")}
       ${metricCard("Sources", Object.keys(report.counts.byCategory).length, formatInlineCounts(report.counts.byCategory))}
     </section>
-    <section class="panel"><div class="section-heading"><div><h2>Unified Timeline</h2><span class="muted">Newest first · generated ${renderDashboardDateTime(report.generatedAt)}</span></div></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Level</th><th>Event</th><th>Project / Run</th><th>Status / Actor</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No activity matches these filters.</td></tr>'}</tbody></table></div></section>
+    <section class="panel"><div class="section-heading"><div><h2>Unified Timeline</h2><span class="muted">Newest first · generated ${renderDashboardDateTime(report.generatedAt)}</span></div></div>${pagerHtml("/activity", params, eventPage, "Timeline")}<div class="table-wrap"><table><thead><tr><th>When</th><th>Level</th><th>Event</th><th>Project / Run</th><th>Status / Actor</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No activity matches these filters.</td></tr>'}</tbody></table></div>${pagerHtml("/activity", params, eventPage, "Timeline")}</section>
     <section class="panel"><h2>Coverage and privacy</h2><ul>${report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></section>
     </main></body></html>`;
   }

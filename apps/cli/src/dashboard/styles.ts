@@ -70,6 +70,17 @@ export function dashboardCss(): string {
     .export-menu-list { position: absolute; right: 0; z-index: 20; display: grid; min-width: 210px; margin-top: 6px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(15, 23, 42, .14); }
     .export-menu-list a { padding: 8px 10px; border-radius: 6px; color: #1f2937; text-decoration: none; }
     .export-menu-list a:hover, .export-menu-list a:focus-visible { background: #eff6ff; color: #1d4ed8; }
+    .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+    .pager .muted { margin-right: auto; }
+    .list-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; font-size: 13px; }
+    .list-filter input { min-width: 220px; }
+    .collapsible-panel > summary { display: grid; gap: 4px; cursor: pointer; list-style-position: inside; }
+    .collapsible-panel > summary h2 { display: inline; }
+    .section-index ul { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; }
+    .section-index-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .section-toggle { justify-self: start; align-self: start; width: auto; margin: 4px 0 0; }
+    section.panel.is-collapsed > *:not(h2):not(.section-heading):not(.section-toggle) { display: none; }
+    section.panel.is-collapsed .section-heading ~ * { display: none; }
     .status-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
     .status-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px; border: 1px solid #cbd5e1; border-radius: 999px; color: #1f2937; background: #fff; font-size: 13px; font-weight: 650; text-decoration: none; }
     .status-chip span { color: #566275; font-weight: 600; }
