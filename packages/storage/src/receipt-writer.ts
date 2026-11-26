@@ -3,10 +3,17 @@ import { chainReceipt, RECEIPT_CHAIN_GENESIS } from "../../workflow-engine/src/r
 import { recordedLifecycleEvent } from "./recorded-lifecycle.js";
 import { enqueueRunNotification } from "./run-notifications.js";
 
+// A legacy receipt written from a fast client clock can sit ahead of the
+// database clock; ordering still holds through the +1 ms rule, without stalling.
+const MAX_CLOCK_WAIT_SECONDS = 0.05;
+
 /** Append inside the caller's transaction so the action and its receipt are atomic.
- * The parent row lock serializes every writer, including an empty chain. Keep
- * timestamps strictly increasing at JavaScript's millisecond precision so ties
- * and a backwards wall clock cannot reorder newly written receipts.
+ * The parent row lock serializes every writer, including an empty chain.
+ * Timestamps come from the database clock, the same clock artifacts and other
+ * rows use, so client clock skew cannot order a receipt after later evidence.
+ * They stay strictly increasing at millisecond precision (the hashed format):
+ * the receipt takes the next whole millisecond and the writer waits out that
+ * sub-millisecond gap, so any row written afterwards sorts after it.
  */
 export async function appendActionReceipt(client: pg.Client, input: {
   runId: string; agentId: string; actionType: string; target: string;
@@ -27,7 +34,14 @@ export async function appendActionReceipt(client: pg.Client, input: {
        select 1 from action_receipts child where child.run_id = r.run_id
        and child.prev_hash = r.receipt_hash
      ) order by r.created_at desc limit 1`, [input.runId]);
-  const createdAt = new Date(Math.max(Date.now(), latest ? latest.created_at.getTime() + 1 : 0)).toISOString();
+  const clock = await client.query<{ created_at: Date }>(
+    `with next as (
+       select greatest(date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond',
+         coalesce($1::timestamptz + interval '1 millisecond', '-infinity'::timestamptz)) as created_at
+     )
+     select created_at, pg_sleep(least(${MAX_CLOCK_WAIT_SECONDS}, greatest(0, extract(epoch from created_at - clock_timestamp()))::double precision))
+     from next`, [latest?.created_at ?? null]);
+  const createdAt = clock.rows[0]!.created_at.toISOString();
   const receipt = chainReceipt(tip.rows[0]?.receipt_hash ?? RECEIPT_CHAIN_GENESIS, {
     ...input, createdAt, metadataSerializationVersion: 2,
   });

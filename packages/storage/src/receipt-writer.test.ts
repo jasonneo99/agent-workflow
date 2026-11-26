@@ -85,6 +85,25 @@ test("concurrent PostgreSQL appends, rollback, tied clocks and complete coverage
     assert.deepEqual(await verifyRunReceiptChain(tiedId), { valid: true, checked: 3 }, "append selects hash tip despite timestamp ties");
     await admin.query("update action_receipts set prev_hash='GENESIS' where run_id=$1 and summary='second'", [tiedId]);
     assert.equal((await verifyRunReceiptChain(tiedId)).valid, false, "fork rejected");
+
+    // Client clock skew in either direction: evidence written by the database
+    // before the receipt stays older, and evidence written after sorts newer.
+    await admin.query("create table evidence (label text, created_at timestamptz default clock_timestamp())");
+    for (const [label, skewMs] of [["ahead", 86_400_000], ["behind", -86_400_000]] as const) {
+      const skewId = randomUUID();
+      await admin.query("insert into workflow_runs (id) values ($1)", [skewId]);
+      await admin.query("insert into evidence (label) values ($1)", [`${label}-before`]);
+      Date.now = () => originalNow() + skewMs;
+      await recordRunAction({ ...input, runId: skewId, artifactKind: `skew_${label}`, artifactContent: {} });
+      Date.now = originalNow;
+      await admin.query("insert into evidence (label) values ($1)", [`${label}-after`]);
+      const order = (await admin.query<{ before: boolean; after: boolean; near: boolean }>(
+        `select e1.created_at < r.created_at as before, e2.created_at > r.created_at as after,
+           abs(extract(epoch from r.created_at - clock_timestamp())) < 60 as near
+         from action_receipts r, evidence e1, evidence e2
+         where r.run_id = $1 and e1.label = $2 and e2.label = $3`, [skewId, `${label}-before`, `${label}-after`])).rows[0]!;
+      assert.deepEqual(order, { before: true, after: true, near: true }, `receipt uses the database clock with client ${label}`);
+    }
   } finally {
     Date.now = originalNow;
     if (originalUrl === undefined) delete process.env.DATABASE_URL;

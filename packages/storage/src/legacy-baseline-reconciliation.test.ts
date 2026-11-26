@@ -35,6 +35,7 @@ function fixture(){
   if(sql.includes('pg_advisory_xact_lock'))return {rows:[]};
   if(sql.startsWith('savepoint ')||sql.startsWith('release savepoint '))return {rows:[]};
   if(sql.startsWith('select id from workflow_runs'))return {rows:[{id:'source'}]};
+  if(sql.includes('pg_sleep('))return {rows:[{created_at:new Date()}]};
   if(sql.includes('from action_receipts'))return {rows:[]};
   if(sql.includes('insert into action_receipts'))return {rows:[{receipt_hash:'f'.repeat(64)}]};
   throw new Error(sql);

@@ -239,6 +239,7 @@ test("production supersession requires equivalent accepted completion before emi
         }
         if (sql.includes("select wr.id::text")) return { rows: [{ id: sourceId }] };
         if (sql.includes("select id from workflow_runs")) return { rows: [{ id: sourceId }] };
+        if (sql.includes("pg_sleep(")) return { rows: [{ created_at: new Date() }] };
         if (sql.includes("insert into action_receipts")) receipts.push(args);
         return { rows: [], rowCount: 0 };
       };

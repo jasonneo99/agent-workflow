@@ -19,6 +19,7 @@ test('approved and rejected human decisions use a registered runtime writer and 
    statements.push(sql);
    if(sql.includes('select r.id::text'))return {rows:[{id,project_id:project,run_set_id:set,task,canonical:true,evaluation_metadata:{}}]};
    if(sql.includes('select id from workflow_runs'))return {rows:[{id}]};
+   if(sql.includes('pg_sleep('))return {rows:[{created_at:new Date()}]};
    if(sql.includes('insert into action_receipts')){
     // Model the real registry FK: human role names are not executable agents.
     assert.equal(values[1],'workflow-orchestrator','receipt writer must exist in the runtime agent registry');
