@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import type { DashboardProjectAliasMergePlan, OnboardingResult, ProjectDiscoveryReport } from "../lib/cli-types.js";
 import { writeProjectBundleState } from "../lib/builders-bundle.js";
 import { discoverProjectRoadmap, publishRoadmapSnapshotIfChanged } from "../lib/builders-learning.js";
-import { adoptDiscoveredProjects, analyzeProjectForOnboarding, buildDashboardProjectAliasMergePlan, discoverLocalProjects, ensureConfiguredRoadmapPath, formatDiscoveryAdoptionResult, loadDashboardProjectIdentityGroups, parseSpotlightMode, splitCommaList, writeOnboardingFiles } from "../lib/builders-project.js";
+import { adoptDiscoveredProjects, analyzeProjectForOnboarding, buildDashboardProjectAliasMergePlan, discoverLocalProjects, ensureConfiguredRoadmapPath, ensureProjectNameFromFolder, formatDiscoveryAdoptionResult, loadDashboardProjectIdentityGroups, parseSpotlightMode, splitCommaList, writeOnboardingFiles } from "../lib/builders-project.js";
 import { buildReusePlanForTask, exists, loadAgentsForProject, loadSourceSummaries, pathExists, selectWorkflowAgents } from "../lib/builders-shared.js";
 import { loadAgents, loadProjectConfig, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { type IdeClient, buildIdeConfigSnippet, mergeIdeConfig } from "../../../../packages/ide-onboarding/src/index.js";
@@ -234,11 +234,13 @@ export function registerProjectCommands(program: Command, ctx: CliContext): void
         ? { relativePath: existingRoadmap.relativePath, created: false }
         : await ensureProjectRoadmap(projectDir);
       await ensureConfiguredRoadmapPath(projectDir, roadmap.relativePath);
+      const namedProject = await ensureProjectNameFromFolder(projectDir);
       const bundleState = await writeProjectBundleState(ctx, projectDir, Boolean(options.force) || !hadBundleState);
       console.log(`Initialized ${options.profile} agent workflow files in ${projectDir}`);
       console.log(`Wrote ${result.written}; skipped ${result.skipped}.`);
       console.log(`${bundleState.status === "written" ? "Wrote" : "Skipped"} ${bundleState.relativePath}.`);
       console.log(`${roadmap.created ? "Created" : "Using"} roadmap ${roadmap.relativePath}.`);
+      if (namedProject) console.log(`Named project ${namedProject} (edit project.name in .agent-workflow/project.yaml to change it).`);
       console.log("");
       console.log("Next steps:");
       console.log(`  npm run index-project -- --project ${projectDir}`);

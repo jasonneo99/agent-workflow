@@ -696,6 +696,19 @@ export async function ensureConfiguredRoadmapPath(projectDir: string, relativePa
   return true;
 }
 
+/** Replace the template placeholder project name with the project folder name. */
+export async function ensureProjectNameFromFolder(projectDir: string, placeholder = "Example Project"): Promise<string | undefined> {
+  const configPath = path.join(projectDir, ".agent-workflow", "project.yaml");
+  const raw = YAML.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+  const project = objectValue(raw.project);
+  const name = path.basename(path.resolve(projectDir)).trim();
+  if (project.name !== placeholder || !name) return undefined;
+  project.name = name;
+  raw.project = project;
+  await fs.writeFile(configPath, YAML.stringify(raw), "utf8");
+  return name;
+}
+
 export function formatDiscoveryAdoptionResult(result: ProjectDiscoveryAdoptionResult): string {
   const lines = [
     "Agent Workflow Discovery Adoption",
