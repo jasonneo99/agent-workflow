@@ -31,6 +31,8 @@ export function buildRunOutcomeContract(input: {
   openApprovalCount: number;
   tasks?: Array<{ agentId?: string | null }>;
   lineageRunIds?: string[];
+  /** False when no worker or supervisor heartbeat is live; omitted when unknown. */
+  workerAvailable?: boolean;
 }): RunOutcomeContract {
   const { run, artifacts, openApprovalCount } = input;
   const delivery = run.workflowId === "build-feature"
@@ -72,6 +74,16 @@ export function buildRunOutcomeContract(input: {
       state: "incomplete",
       title: "Stopped before delivery",
       detail: "This run was cancelled. Its completed evidence is preserved; retry or continue it when you are ready.",
+      acceptReady: false,
+      evidence,
+      lineageRunIds: input.lineageRunIds
+    };
+  }
+  if (run.status !== "completed" && input.workerAvailable === false) {
+    return {
+      state: "in_progress",
+      title: "Waiting — no worker is running",
+      detail: "This run is saved and queued, but nothing is running to pick it up. Start a worker from the Queue page (Process Worker Batch) or with `npm run worker`.",
       acceptReady: false,
       evidence,
       lineageRunIds: input.lineageRunIds

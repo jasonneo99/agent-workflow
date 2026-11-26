@@ -104,7 +104,7 @@ import { loadPartnerProject, partnerProjectAccess } from "../lib/queue-partner-p
 import type { PartnerMessage, PartnerItem } from "../lib/queue-partner-chat.js";
 import { buildQueueStatusReport, parseQueueStatusProject } from "../lib/queue-status.js";
 import { renderQueueStatusHtml } from "../dashboard/queue-status.js";
-import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
+import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta, withWorkerAvailability } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
 import { createDevSessionFromBody, decideDevSessionApprovalFromBody, decideDevSessionDiffFromBody, getDevSessionDetail, listDevSessionsForBody, parseDevSessionPath, streamDevSessionMessage } from "./dev-session-routes.js";
@@ -1937,7 +1937,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return Math.ceil(text.length / 4);
   }
 
-  function estimateQueueItemEta(item: DashboardQueueItem, historicalRuns: DashboardRunStatus[]): RunEta {
+  function estimateQueueItemEta(item: DashboardQueueItem, historicalRuns: DashboardRunStatus[], workAvailable = true): RunEta {
     if(item.approvalWait)return {state:"paused",totalTasks:item.totalTasks,completedTasks:item.completedTasks,
       reason:"ETA paused while an exact approval is required.",estimatedCompletionAt:null,remainingMs:null,
       projectedTotalMs:null,confidence:"none",source:"none",sampleCount:0};
@@ -1948,11 +1948,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ...Array.from({ length: item.failedTasks }, () => ({ status: "failed" }))
     ];
     while (tasks.length < item.totalTasks) tasks.push({ status: item.runStatus === "blocked" ? "blocked" : "queued" });
-    return estimateRunEta({
-      run: { id: item.runId, workflowId: item.workflowId, projectRootUri: item.projectRootUri, status: item.runStatus, startedAt: item.startedAt, finishedAt: null },
-      tasks,
-      historicalRuns
-    });
+    const run = { id: item.runId, workflowId: item.workflowId, projectRootUri: item.projectRootUri, status: item.runStatus, startedAt: item.startedAt, finishedAt: null };
+    return withWorkerAvailability(estimateRunEta({ run, tasks, historicalRuns }), dashboardRunCanProgress(workAvailable, run, tasks));
   }
 
   function explainDashboardTierSelection(input: {
@@ -4701,14 +4698,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         response.end("Missing id");
         return;
       }
-      const [details, artifacts, handoffs, historicalRuns, approvals] = await Promise.all([
+      const [details, artifacts, handoffs, historicalRuns, approvals, workAvailable] = await Promise.all([
         getWorkflowRunDetails(runId),
         listArtifacts({ runId }),
         listWorkflowHandoffs({ runId }),
         listWorkflowRuns(250),
-        listActionApprovals({ runId, limit: 100 })
+        listActionApprovals({ runId, limit: 100 }),
+        loadDashboardWorkAvailable()
       ]);
-      const eta = details.run ? estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }) : null;
+      const canProgress = details.run ? dashboardRunCanProgress(workAvailable, details.run, details.tasks) : true;
+      const eta = details.run ? withWorkerAvailability(estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }), canProgress) : null;
       const lineageRunIds: string[] = [];
       let lineageCursor = details.run ? stringValue(details.run.evaluationMetadata?.sourceRunId) : undefined;
       while (lineageCursor && lineageRunIds.length < 12 && !lineageRunIds.includes(lineageCursor)) {
@@ -4722,7 +4721,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         artifacts: [...artifacts, ...lineageArtifacts],
         tasks: details.tasks,
         lineageRunIds,
-        openApprovalCount: approvals.filter(isOpenApproval).length
+        openApprovalCount: approvals.filter(isOpenApproval).length,
+        workerAvailable: canProgress
       }) : null;
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ...details, eta, outcome, artifacts, handoffs, approvals }, null, 2));
@@ -4736,12 +4736,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         response.end(JSON.stringify({ error: "Missing id" }));
         return;
       }
-      const [details, events, approvals, artifacts, historicalRuns] = await Promise.all([
+      const [details, events, approvals, artifacts, historicalRuns, workAvailable] = await Promise.all([
         getWorkflowRunDetails(runId),
         listActivityEvents({ runId, limit: 250 }),
         listActionApprovals({ runId, limit: 100 }),
         listArtifacts({ runId }),
-        listWorkflowRuns(250)
+        listWorkflowRuns(250),
+        loadDashboardWorkAvailable()
       ]);
       if (!details.run) {
         response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -4752,7 +4753,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       response.end(JSON.stringify({
         generatedAt: new Date().toISOString(),
         run: { status: details.run.status, finishedAt: details.run.finishedAt },
-        eta: estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }),
+        eta: withWorkerAvailability(estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }), dashboardRunCanProgress(workAvailable, details.run, details.tasks)),
         tasks: details.tasks.map((task) => ({
           stageId: task.stageId,
           agentId: task.agentId,
@@ -5304,7 +5305,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       });
       const tuningProposals = preferenceScorecard ? buildTuningProposals(preferenceScorecard) : null;
       const approvalCeiling = await loadRunApprovalCeiling(details.run).catch(() => details.run!.autonomy);
-      const eta = estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns });
+      const eta = withWorkerAvailability(estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }), dashboardRunCanProgress(await loadDashboardWorkAvailable(), details.run, details.tasks));
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderRunDetailHtml({
         run: details.run,
@@ -5358,7 +5359,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         error: requestUrl.searchParams.get("error")?.slice(0, 240) || undefined,
         actionRun: /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(requestedActionRun) ? requestedActionRun : undefined
       };
-      response.end(renderQueueHtml(snapshot.value.queue, projectRootUri, flash, snapshot.value.historicalRuns, snapshot.value.partnerProjects, snapshot.value.partnerHistory));
+      response.end(renderQueueHtml(snapshot.value.queue, projectRootUri, flash, snapshot.value.historicalRuns, snapshot.value.partnerProjects, snapshot.value.partnerHistory, await loadDashboardWorkAvailable()));
       return;
     }
 
@@ -5682,12 +5683,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
     if (requestUrl.pathname === "/runs") {
-      const runs = await listWorkflowRuns(requestUrl.searchParams.has("relatedTo") ? 500 : 100, {
+      const [runs, workAvailable] = await Promise.all([listWorkflowRuns(requestUrl.searchParams.has("relatedTo") ? 500 : 100, {
         runSetId: requestUrl.searchParams.get("runSet")?.trim() || undefined,
         relatedRunId: requestUrl.searchParams.get("relatedTo")?.trim() || undefined
-      });
+      }), loadDashboardWorkAvailable()]);
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderRunsHtml(runs, requestUrl.searchParams));
+      response.end(renderRunsHtml(runs, requestUrl.searchParams, workAvailable));
       return;
     }
     if (requestUrl.pathname === "/activity") {
@@ -7414,6 +7415,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       duplicateAppliedEvents,
       error: overlayResult.error
     };
+  }
+
+  /** True when a worker or supervisor heartbeat is live, so queued work will be picked up. */
+  async function loadDashboardWorkAvailable(): Promise<boolean> {
+    return loadCachedDashboardReport("dashboard:work-available", async () => {
+      const [worker, supervisor] = await Promise.all([loadDashboardWorkerStatus().catch(() => null), loadDashboardSupervisorStatus().catch(() => null)]);
+      return worker?.status === "running" || supervisor?.status === "running";
+    }, 2_000);
+  }
+
+  /** A run that holds a lease is executing (possibly inline, without a heartbeat). */
+  function dashboardRunCanProgress(workAvailable: boolean, run: { status: string }, tasks: Array<{ status: string }> = []): boolean {
+    return workAvailable || run.status === "leased" || run.status === "running" || tasks.some((task) => task.status === "leased" || task.status === "running");
   }
 
   async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
@@ -12277,7 +12291,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>
         <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Execution duration</h2><span>Completed and failed run latency</span></div></div>${renderOpsDurationChart(terminalRuns)}</section>
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Queue pressure</h2><span>Stage work and oldest active item</span></div><a href="/queue">Open queue</a></div>${renderOpsQueuePressure(health.queue)}</section>
-        <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue, runs)}</section>
+        <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue, runs, health.worker.status === "running" || health.supervisor.status === "running")}</section>
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Project activity</h2><span>Runs across registered projects</span></div><a href="/projects">Projects</a></div>${renderOpsProjectActivity(health.projects)}</section>
         <section class="ops-panel ops-span-2 ops-daemon-panel"><div class="ops-panel-heading"><div><h2>Daemon monitor</h2><span>Learning cycles, autonomous actions, and heartbeat health</span></div><a href="/learning">Open learning</a></div>${renderDaemonMonitor(health.supervisor, health.learningDaemon, health.learningReceipts)}</section>
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Daemon lanes</h2><span>Managed runtime responsibilities</span></div><a href="/settings">Settings</a></div>${renderDaemonLanes(health.supervisor, health.learningDaemon)}</section>
@@ -15037,10 +15051,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </section>`;
   }
 
-  function renderOpsAgentFlow(queue: DashboardQueueItem[], historicalRuns: DashboardRunStatus[]): string {
+  function renderOpsAgentFlow(queue: DashboardQueueItem[], historicalRuns: DashboardRunStatus[], workAvailable = true): string {
     const flows = queue.filter((item) => item.runningAgentId || item.nextAgentId).slice(0, 5);
     if (!flows.length) return '<div class="ops-empty"><strong>No active handoffs</strong><span>Agent transitions appear here while workflows execute.</span></div>';
-    return `<div class="ops-flow-list">${flows.map((item) => { const eta = estimateQueueItemEta(item, historicalRuns); return `<a href="/run?id=${encodeURIComponent(item.runId)}"><span class="ops-agent-node current">${escapeHtml(item.runningAgentId ?? "queued")}</span><span class="ops-flow-trace"><i></i>${dashboardIcon("chevrons")}</span><span class="ops-agent-node next">${escapeHtml(item.nextAgentId ?? "complete")}</span><small>${escapeHtml(compactDashboardText(item.task, 46))} · ETA ${escapeHtml(formatRunEta(eta))}</small></a>`; }).join("")}</div>`;
+    return `<div class="ops-flow-list">${flows.map((item) => { const eta = estimateQueueItemEta(item, historicalRuns, workAvailable); return `<a href="/run?id=${encodeURIComponent(item.runId)}"><span class="ops-agent-node current">${escapeHtml(item.runningAgentId ?? "queued")}</span><span class="ops-flow-trace"><i></i>${dashboardIcon("chevrons")}</span><span class="ops-agent-node next">${escapeHtml(item.nextAgentId ?? "complete")}</span><small>${escapeHtml(compactDashboardText(item.task, 46))} · ETA ${escapeHtml(formatRunEta(eta))}</small></a>`; }).join("")}</div>`;
   }
 
   function renderOpsDurationChart(runs: DashboardRunStatus[]): string {
@@ -15701,7 +15715,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderQueueHtml(queue: DashboardQueueItem[], projectFilter: string | undefined, flash: {notice?:string;error?:string;actionRun?:string}, historicalRuns: DashboardRunStatus[], partnerProjects: Array<{id:string;name:string;rootUri:string}>, partnerHistory:Record<string,QueuePartnerHistorySummary>={}): string {
+  function renderQueueHtml(queue: DashboardQueueItem[], projectFilter: string | undefined, flash: {notice?:string;error?:string;actionRun?:string}, historicalRuns: DashboardRunStatus[], partnerProjects: Array<{id:string;name:string;rootUri:string}>, partnerHistory:Record<string,QueuePartnerHistorySummary>={}, workAvailable = true): string {
     const resolvedProjectFilter = projectFilter ?? "";
     const active = queue.filter((item) => queueLifecyclePresentation(item).active
       || item.familyAttempts?.some(attempt => ["queued","leased","running"].includes(attempt.status)));
@@ -15731,7 +15745,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         : "";
       const deliverableTitle = buildQueueCardTitle(item);
       const versionSetId = item.versionSetId ?? item.runSetId;
-      const eta = estimateQueueItemEta(item, historicalRuns);
+      const eta = estimateQueueItemEta(item, historicalRuns, workAvailable);
       const latency = queueLatencyBudget(item);
       const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
       const currentStage = item.runningStageId
@@ -15841,7 +15855,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           </div>
           <div class="queue-card-facts">
             <div><strong>Current work</strong><span>${escapeHtml(currentStage)}</span></div>
-            <div><strong>ETA</strong><span title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</span></div>
+            <div><strong>ETA</strong><span title="${escapeHtml(eta.reason)}">${eta.state === "waiting" ? `<a href="/queue">${escapeHtml(formatRunEta(eta))}</a>` : escapeHtml(formatRunEta(eta))}</span></div>
             <div><strong>Time budget</strong><span>${escapeHtml(latency.phase)} · ${formatDuration(latency.elapsedMs)} / ${formatDuration(latency.budgetMs)} · ${escapeHtml(latency.status)}</span></div>
             <div><strong>Queue</strong><span>${formatNumber(item.runningTasks)} running · ${formatNumber(item.queuedTasks)} waiting</span></div>
             <div><strong>Worker</strong><span>${escapeHtml(item.runningWorkerId ?? "Not leased")}</span></div>
@@ -16986,6 +17000,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
               ? 'Complete'
               : payload.eta.state === 'paused'
                 ? 'Paused'
+                : payload.eta.state === 'waiting'
+                ? 'Waiting — no worker is running'
                 : payload.eta.state === 'estimated' && Number.isFinite(payload.eta.remainingMs)
                   ? '~' + formatDuration(payload.eta.remainingMs) + ' remaining · ' + new Date(payload.eta.estimatedCompletionAt).toLocaleString([], { hour: 'numeric', minute: '2-digit' }) + ' · ' + payload.eta.confidence + ' confidence'
                   : 'Estimating…';
@@ -17064,11 +17080,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `;
   }
 
-  function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
+  function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams(), workAvailable = true): string {
     const selectedRunSet = params.get("runSet")?.trim(), visibleRuns = selectedRunSet ? runs.filter((run) => run.runSetId === selectedRunSet) : runs;
     const rows = visibleRuns.map((run) => {
       const presentation = dashboardRunPresentation(run);
-      const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
+      const eta = withWorkerAvailability(estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs }), dashboardRunCanProgress(workAvailable, run));
       return `
       <tr>
         <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span><div class="row-tools">${renderRunInfoDialog({
@@ -17091,7 +17107,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
         <td class="run-task-cell"><strong>${escapeHtml(presentation.title)}</strong><br><span>${escapeHtml(presentation.description)}</span><details class="run-task-details"><summary>Original request</summary><div>${escapeHtml(run.task)}</div></details></td>
         <td>${renderDashboardDateTime(run.startedAt)}</td>
-        <td title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</td>
+        <td title="${escapeHtml(eta.reason)}">${eta.state === "waiting" ? `<a href="/queue">${escapeHtml(formatRunEta(eta))}</a>` : escapeHtml(formatRunEta(eta))}</td>
       </tr>
     `;
     }).join("");

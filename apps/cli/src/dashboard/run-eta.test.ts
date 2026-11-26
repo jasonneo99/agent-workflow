@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aggregateRunEtas, estimateRunEta } from "./run-eta.js";
+import { NO_WORKER_REASON, aggregateRunEtas, estimateRunEta, withWorkerAvailability } from "./run-eta.js";
 
 const now = Date.parse("2026-09-25T12:10:00.000Z");
 const run = { id: "active", workflowId: "build-feature", projectRootUri: "/project", status: "running", startedAt: "2026-09-25T12:00:00.000Z", finishedAt: null };
@@ -46,4 +46,20 @@ test("aggregate ETA follows the slowest parallel run and pauses truthfully", () 
   assert.equal(aggregate.runs.length, 2);
   const paused = aggregateRunEtas([{ runId: "blocked", eta: estimateRunEta({ run: { ...run, status: "blocked" }, tasks: [], historicalRuns: [], now }) }], now);
   assert.equal(paused.state, "paused");
+});
+
+test("no ETA is promised while no worker is running", () => {
+  const queued = { ...run, status: "queued" };
+  const history = [{ ...run, id: "done", status: "completed", startedAt: "2026-09-24T10:00:00.000Z", finishedAt: "2026-09-24T10:00:01.000Z" }];
+  const estimated = estimateRunEta({ run: queued, tasks: [{ status: "queued" }], historicalRuns: history, now });
+  assert.equal(estimated.state, "estimated");
+  const waiting = withWorkerAvailability(estimated, false);
+  assert.equal(waiting.state, "waiting");
+  assert.equal(waiting.remainingMs, null);
+  assert.equal(waiting.estimatedCompletionAt, null);
+  assert.equal(waiting.reason, NO_WORKER_REASON);
+  assert.equal(withWorkerAvailability(estimated, true), estimated);
+  const complete = estimateRunEta({ run: { ...run, status: "completed" }, tasks: [{ status: "completed" }], historicalRuns: [], now });
+  assert.equal(withWorkerAvailability(complete, false).state, "complete");
+  assert.equal(aggregateRunEtas([{ runId: "a", eta: waiting }, { runId: "b", eta: estimated }], now).state, "waiting");
 });

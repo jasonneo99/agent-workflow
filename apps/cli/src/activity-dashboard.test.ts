@@ -107,13 +107,13 @@ test("run detail exposes an in-place live progress log", () => {
 
 test("workflow runs expose evidence-based live ETA estimates", () => {
   assert.match(source, /eta: estimateRunEta\(\{ run, tasks: \[\{ status: run\.status \}\], historicalRuns: runs \}\)/u);
-  assert.match(source, /eta: estimateRunEta\(\{ run: details\.run, tasks: details\.tasks, historicalRuns \}\)/u);
+  assert.match(source, /eta: withWorkerAvailability\(estimateRunEta\(\{ run: details\.run, tasks: details\.tasks, historicalRuns \}\), dashboardRunCanProgress\(/u);
   assert.match(source, /id="run-live-eta"/u);
   assert.match(source, /payload\.eta\.confidence/u);
   assert.match(source, /<th>ETA<\/th>/u);
-  assert.match(source, /estimateQueueItemEta\(item, historicalRuns\)/u);
+  assert.match(source, /estimateQueueItemEta\(item, historicalRuns, workAvailable\)/u);
   assert.match(source, /<strong>ETA<\/strong>/u);
-  assert.match(source, /renderOpsAgentFlow\(health\.queue, runs\)/u);
+  assert.match(source, /renderOpsAgentFlow\(health\.queue, runs, /u);
 });
 
 test("run detail acts as a live governed command center", () => {

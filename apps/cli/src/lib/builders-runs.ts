@@ -186,6 +186,7 @@ export function formatIndexResult(result: {
 export function formatRunEta(eta: RunEta): string {
   if (eta.state === "complete") return "Complete";
   if (eta.state === "paused") return "Paused";
+  if (eta.state === "waiting") return "Waiting — no worker is running";
   if (eta.state === "learning" || eta.remainingMs === null || !eta.estimatedCompletionAt) return "Estimating…";
   return `~${formatDashboardDuration(eta.remainingMs)} remaining · ${formatDashboardDateTimeText(eta.estimatedCompletionAt)} · ${eta.confidence} confidence`;
 }

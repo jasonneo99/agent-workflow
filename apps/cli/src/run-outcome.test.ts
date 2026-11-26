@@ -57,3 +57,13 @@ test("cancelled work is not presented as still running", () => {
   assert.equal(outcome.title, "Stopped before delivery");
   assert.equal(outcome.acceptReady, false);
 });
+
+test("a queued run with no worker says it is waiting instead of promising progress", () => {
+  const waiting = buildRunOutcomeContract({ run: { status: "queued" }, artifacts: [], openApprovalCount: 0, workerAvailable: false });
+  assert.equal(waiting.state, "in_progress");
+  assert.equal(waiting.title, "Waiting — no worker is running");
+  assert.doesNotMatch(waiting.detail, /continue automatically/u);
+  const moving = buildRunOutcomeContract({ run: { status: "queued" }, artifacts: [], openApprovalCount: 0, workerAvailable: true });
+  assert.equal(moving.title, "Work is in progress");
+  assert.equal(buildRunOutcomeContract({ run: { status: "queued" }, artifacts: [], openApprovalCount: 0 }).title, "Work is in progress");
+});

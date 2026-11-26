@@ -1,5 +1,5 @@
 export type RunEta = {
-  state: "estimated" | "learning" | "paused" | "complete";
+  state: "estimated" | "learning" | "paused" | "complete" | "waiting";
   estimatedCompletionAt: string | null;
   remainingMs: number | null;
   projectedTotalMs: number | null;
@@ -102,6 +102,14 @@ export function estimateRunEta(input: {
   return baseEta({ state: "learning", totalTasks, completedTasks, reason: "ETA will appear after one stage completes or comparable workflow history is available." });
 }
 
+export const NO_WORKER_REASON = "Waiting — no worker is running. Start one from the Queue page (Process Worker Batch) or with `npm run worker`.";
+
+/** An active run has no meaningful ETA while nothing can pick it up. */
+export function withWorkerAvailability(eta: RunEta, workerAvailable: boolean): RunEta {
+  if (workerAvailable || (eta.state !== "estimated" && eta.state !== "learning")) return eta;
+  return baseEta({ state: "waiting", totalTasks: eta.totalTasks, completedTasks: eta.completedTasks, reason: NO_WORKER_REASON });
+}
+
 export function aggregateRunEtas(items: Array<{ runId: string; eta: RunEta }>, now = Date.now()): AggregateRunEta {
   const runs = items.map((item) => ({ runId: item.runId, eta: item.eta }));
   if (!items.length) return { ...baseEta({ state: "learning", totalTasks: 0, completedTasks: 0, reason: "No workflow runs are available to estimate." }), runs };
@@ -109,6 +117,10 @@ export function aggregateRunEtas(items: Array<{ runId: string; eta: RunEta }>, n
   const completedTasks = items.reduce((sum, item) => sum + item.eta.completedTasks, 0);
   if (items.every((item) => item.eta.state === "complete")) {
     return { ...baseEta({ state: "complete", totalTasks, completedTasks, reason: "All workflow runs are complete." }), runs };
+  }
+  const waiting = items.find((item) => item.eta.state === "waiting");
+  if (waiting) {
+    return { ...baseEta({ state: "waiting", totalTasks, completedTasks, reason: waiting.eta.reason }), runs };
   }
   const paused = items.find((item) => item.eta.state === "paused");
   if (paused) {
