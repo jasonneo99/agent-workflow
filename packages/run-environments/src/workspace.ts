@@ -15,7 +15,7 @@ export interface RunWorkspace {
 }
 export async function pipelineEnvironmentPlans(cwd:string,project:ProjectConfig,runId:string,workflowId:string,stageId:string):Promise<EnvironmentPlan[]> {
   const environments=project.execution.environments;
-  if(!environments)throw Error('Prepared source execution needs declared environment profiles; no host fallback is permitted.');
+  if(!environments)throw Error('Prepared source execution needs declared environment profiles; no host fallback is permitted. Add an execution.environments section to .agent-workflow/project.yaml (see docs/run-environments.md), then check it with `npm run agentflow -- environments --project <dir>`.');
   const profiles=new Map<string,EnvironmentPlan>();
   for(const command of project.actions.allowed_commands.filter(command=>!command.includes('*'))){
     try{

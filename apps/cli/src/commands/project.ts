@@ -241,6 +241,11 @@ export function registerProjectCommands(program: Command, ctx: CliContext): void
       console.log(`${bundleState.status === "written" ? "Wrote" : "Skipped"} ${bundleState.relativePath}.`);
       console.log(`${roadmap.created ? "Created" : "Using"} roadmap ${roadmap.relativePath}.`);
       if (namedProject) console.log(`Named project ${namedProject} (edit project.name in .agent-workflow/project.yaml to change it).`);
+      const initializedConfig = await loadProjectConfig(projectDir).catch(() => undefined);
+      if (options.profile === "enterprise" && !initializedConfig?.execution?.environments) {
+        console.log("Source-changing workflows such as build-feature need a declared execution environment profile.");
+        console.log("Add execution.environments to .agent-workflow/project.yaml (see docs/run-environments.md); read-only workflows run without one.");
+      }
       console.log("");
       console.log("Next steps:");
       console.log(`  npm run index-project -- --project ${projectDir}`);

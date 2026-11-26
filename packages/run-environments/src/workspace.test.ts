@@ -103,3 +103,8 @@ test('canonical dependency drift and aliased workspace parents fail closed befor
   await assert.rejects(planSourceIntegration(workspace,candidate,independent),/dependency changed/);
  }finally{await f.cleanup();}
 });
+
+test('a project without environment profiles gets an actionable source-execution blocker', async () => {
+  const project = projectConfigSchema.parse({ project: { name: 'No environments' } });
+  await assert.rejects(pipelineEnvironmentPlans(os.tmpdir(), project, 'run-1', 'build-feature', 'implement'), /docs\/run-environments\.md.*environments --project/su);
+});
