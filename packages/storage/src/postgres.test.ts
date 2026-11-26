@@ -576,3 +576,13 @@ test("migration creates memory_nodes and memory_edges tables", () => {
   assert.match(source, /CREATE INDEX IF NOT EXISTS memory_edges_project_from_idx/u);
   assert.match(source, /CREATE INDEX IF NOT EXISTS memory_edges_project_to_idx/u);
 });
+
+test("missing workflow and agent registry rows produce bootstrap guidance", async () => {
+  const {unregisteredDefinitionError} = await import('./postgres.js');
+  const workflow = Object.assign(new Error('insert or update on table "workflow_runs" violates foreign key constraint'), {code: '23503', constraint: 'workflow_runs_workflow_id_fkey'});
+  assert.match(unregisteredDefinitionError(workflow)?.message ?? '', /npm run bootstrap-storage/u);
+  const agent = Object.assign(new Error('fk'), {code: '23503', constraint: 'workflow_tasks_agent_id_fkey'});
+  assert.match(unregisteredDefinitionError(agent)?.message ?? '', /agent used by this workflow/u);
+  assert.equal(unregisteredDefinitionError(Object.assign(new Error('other'), {code: '23505'})), undefined);
+  assert.equal(unregisteredDefinitionError(Object.assign(new Error('other fk'), {code: '23503', constraint: 'workflow_runs_project_id_fkey'})), undefined);
+});
