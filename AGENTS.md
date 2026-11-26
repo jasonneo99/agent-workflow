@@ -49,6 +49,7 @@ Core agents:
   projects.
 - `task-triager`: classifies work and selects the right workflow.
 - `context-curator`: keeps project context compact and current.
+- `project-answerer`: answers read-only project questions from current context and evidence.
 
 Development agents:
 
@@ -74,6 +75,7 @@ Operations agents:
 - `docs-maintainer`: updates docs, changelogs, and decision logs.
 - `pr-preparer`: prepares PR summaries, review notes, and test evidence.
 - `release-manager`: coordinates release readiness and go/no-go checks.
+- `queue-partner`: resolves queue outcomes through owning-project handoffs and monitored acceptance.
 
 Automatic agents:
 
@@ -83,6 +85,7 @@ Automatic agents:
 - `auto-ci-triage`: watches CI and prepares targeted diagnosis.
 - `auto-release-check`: checks release readiness.
 - `auto-wide-open-executor`: runs trusted maximum-autonomy automation when explicitly enabled.
+- `workflow-guide`: gives fast, advisory-only process guidance on bounded stages without execution authority.
 
 The local learning daemon also owns recurring repository hygiene and security
 maintenance. It may apply policy-allowed low/medium-risk source fixes when each
@@ -112,6 +115,13 @@ that authority.
 - `maintain-context`: refresh project context and reusable memory.
 - `model-improvement`: diagnose and plan local quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.
 - `wide-open-automation`: run trusted automation with explicit maximum autonomy.
+- `answer-question`: answer a read-only project question from current evidence with no side effects.
+- `investigate-issue`: read-only investigation of suspected problems before a repair is justified.
+- `code-review`: deep single-file review for optimizations, risks, and smells; findings are never auto-applied.
+- `production-readiness`: single-pass readiness assessment across frontend, security, and site quality.
+- `repair-blocked-item`: produce, commit, and verify a tested source candidate for a blocked item.
+- `provider-smoke`: verify that the selected provider can run one safe stage with valid structured output.
+- `training-evaluation`: turn an approved training proposal into a bounded local holdout with reviewable evidence.
 
 ## Autonomy
 

@@ -19,8 +19,8 @@ Project-specific context lives in `.agent-workflow/`. Reusable agents, workflows
 ## Recommended Commands
 
 ```bash
-npm run agentflow -- run build-feature --project . --task "<task>"
-npm run agentflow -- run review-pr --project . --task "<review task>"
-npm run agentflow -- run debug-failure --project . --task "<failure>"
-npm run agentflow -- run maintain-context --project . --task "<context maintenance>"
+npm run agentflow -- run-and-watch build-feature --project . --task "<task>"
+npm run agentflow -- run-and-watch review-pr --project . --task "<review task>"
+npm run agentflow -- run-and-watch debug-failure --project . --task "<failure>"
+npm run agentflow -- run-and-watch maintain-context --project . --task "<context maintenance>"
 ```

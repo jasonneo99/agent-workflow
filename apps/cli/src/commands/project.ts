@@ -248,8 +248,10 @@ export function registerProjectCommands(program: Command, ctx: CliContext): void
       }
       console.log("");
       console.log("Next steps:");
+      if (options.profile !== "simple") console.log("  npm run bootstrap-storage   # once per storage plane: seeds agent and workflow definitions");
       console.log(`  npm run index-project -- --project ${projectDir}`);
-      console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
+      console.log(`  npm run agentflow -- run-and-watch answer-question --project ${projectDir} --task "<question>"`);
+      console.log(`  npm run agentflow -- run-and-watch build-feature --project ${projectDir} --task "<task>"`);
       if (options.profile === "simple") {
         console.log(`  npm run compile -- --workflow build-feature --project ${projectDir} --task "<task>"`);
       } else {
