@@ -11364,7 +11364,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ${filterLink("dismissed", "Dismissed")}
           ${filterLink("rejected", "Rejected")}
           ${filterLink("all", "All")}
-          ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
           <a class="button secondary" href="/approval-rules">Trusted Commands</a>
         </div>
       </section>
@@ -11382,6 +11381,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             <tbody>${rows || `<tr><td colspan="8">${status === "open" ? "No human decision is waiting. Eligible low/medium local actions may execute automatically and appear in run receipts or Activity." : "No approvals found."}</td></tr>`}</tbody>
           </table>
         </div>
+        ${pendingCount ? `<div class="bulk-action-footer"><span class="muted">Bulk action: review the list above first. The next page shows every affected approval before anything is approved.</span><a class="button secondary" href="${escapeHtml(bulkHref)}">Review and approve all ${pendingCount} pending...</a></div>` : ""}
       </section>
       ${renderApprovalStatusContextPanel(status, backlog)}
       ${backlog ? renderApprovalBacklogPanel(backlog) : ""}
@@ -15868,11 +15868,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </form>
       </section>
       <div data-queue-live-region="attention">
-      ${failed.length ? `<section class="panel warn-panel">
-        <h2>Clear Failed Queue Items</h2>
+      ${failed.length ? `<details class="panel warn-panel bulk-actions">
+        <summary><h2>Clear failed queue items (${failed.length})</h2></summary>
         <p class="muted">Remove reviewed failed cards while preserving their failed statuses and evidence. Active work, approvals, or unresolved effects must be reconciled first.</p>
         ${queueDismissAllForm(queue)}
-      </section>` : ""}
+      </details>` : ""}
       ${recovering.length ? `<section class="panel">
         <div class="section-heading"><div><h2>Recovery in Progress</h2><span class="muted">Source failures remain immutable history. Current work is counted once through the active recovery run.</span></div></div>
         <div class="table-wrap"><table>

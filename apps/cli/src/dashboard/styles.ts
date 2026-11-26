@@ -449,6 +449,10 @@ export function dashboardCss(): string {
     .approval-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
     .approval-form input { min-width: 120px; max-width: 180px; }
     .bulk-approval-form { display: grid; gap: 14px; }
+    .bulk-action-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e7f0; }
+    details.bulk-actions > summary { cursor: pointer; list-style-position: inside; }
+    details.bulk-actions > summary h2 { display: inline; margin: 0; font-size: 15px; }
+    details.bulk-actions[open] > summary { margin-bottom: 10px; }
     .bulk-approval-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .bulk-approval-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
     .bulk-approval-form .checkbox-row { display: flex; gap: 8px; align-items: center; text-transform: none; font-size: 13px; color: #172033; }
