@@ -39,7 +39,11 @@ import { projectRegistrationRoot } from "./project-registration-root.js";
 import {prepareFreshRunFamilyLink,recordFreshRunFamilyLink,type FreshRunFamilyInput} from './fresh-run-family-link.js';
 import { stableJson, workflowDefinitionHash } from "./registry.js";
 import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
-import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
+import { inheritedRunSetSql, queueRunSetRepresentativeSql, runSetSchemaInstalled, workflowRunSetMigrationSql } from "./run-sets.js";
+import { unregisteredDefinitionError } from "./registry-errors.js";
+export { unregisteredDefinitionError } from "./registry-errors.js";
+import { assertWorkflowHandoffTransition } from "./handoff-transitions.js";
+export { assertWorkflowHandoffTransition } from "./handoff-transitions.js";
 import { queuePresentationSql, relatedQueueCountsSql, relatedRunIdsSql } from "./queue-lineage.js";
 import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 import {classifyFailureOwnership} from './failure-ownership.js';
@@ -83,13 +87,7 @@ export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(projectIdentitySchemaSql);
     await client.query(runtimeEventFunctionSql);
-    // Installed run-set schema is maintained by normal run creation. Replaying
-    // the historical backfill takes an exclusive table lock and can oscillate
-    // across malformed old lineage, blocking every queue reader and worker.
-    const runSetsInstalled=(await client.query(`select exists(select 1 from pg_attribute
-      where attrelid=to_regclass('workflow_runs') and attname='run_set_id' and attnotnull and not attisdropped)
-      and to_regclass('workflow_runs_run_set_idx') is not null as ready`)).rows[0]?.ready;
-    if(!runSetsInstalled)await client.query(workflowRunSetMigrationSql);
+    if(!(await runSetSchemaInstalled(client)))await client.query(workflowRunSetMigrationSql);
     await client.query(`
       ALTER TABLE workflow_runs
       ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
@@ -1366,19 +1364,6 @@ export interface CreateRunInput extends FreshRunFamilyInput {
    * exposure and fenced coordinator attachment commit or roll back together. */
   queuePartnerEnrollment?: import('./queue-coordinator.js').QueuePartnerChildEnrollment;
 }
-/** Map a missing registry row to an actionable setup message instead of a raw FK error. */
-export function unregisteredDefinitionError(error: unknown): Error | undefined {
-  const candidate = error as { code?: string; constraint?: string } | null;
-  if (candidate?.code !== "23503") return undefined;
-  if (candidate.constraint === "workflow_runs_workflow_id_fkey") {
-    return new Error("This workflow is not registered in storage yet. Run `npm run bootstrap-storage` once to seed agent and workflow definitions, then retry.", { cause: error });
-  }
-  if (candidate.constraint?.endsWith("_agent_id_fkey")) {
-    return new Error("An agent used by this workflow is not registered in storage yet. Run `npm run bootstrap-storage` to seed agent and workflow definitions, then retry.", { cause: error });
-  }
-  return undefined;
-}
-
 export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number; deduplicated?: boolean }> {
   const wrapperReason = automaticRecoveryWrapperReason(input);
   if (wrapperReason) throw new Error(wrapperReason);
@@ -2816,21 +2801,6 @@ export interface WorkflowHandoffRecord {
   updatedAt: string;
   receiptIds: string[];
   events: WorkflowHandoffEventStatus[];
-}
-
-const handoffTransitions: Record<WorkflowHandoffStatus, readonly WorkflowHandoffStatus[]> = {
-  proposed: ["accepted", "rejected"],
-  accepted: ["retrying", "completed", "failed"],
-  rejected: ["retrying"],
-  retrying: ["accepted", "rejected", "completed", "failed"],
-  completed: [],
-  failed: ["retrying"]
-};
-
-export function assertWorkflowHandoffTransition(from: WorkflowHandoffStatus, to: WorkflowHandoffStatus): void {
-  if (!handoffTransitions[from]?.includes(to)) {
-    throw new Error(`Invalid workflow handoff transition: ${from} -> ${to}`);
-  }
 }
 
 export async function proposeWorkflowHandoff(input: {

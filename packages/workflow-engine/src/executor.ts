@@ -1,5 +1,6 @@
 import { createStageFileReader, executeStageFileWrites } from "./stage-file-actions.js";
 import {createProviderCallGuard} from './provider-call-guard.js';
+import { missingAuthorTestCommands } from './missing-author-tests.js';
 export { isInternalWorkflowReceiptWrite } from "./stage-file-actions.js";
 import { boundedProjectFileSearchResult } from "./project-file-search.js";
 export { boundedProjectFileSearch, boundedProjectFileSearchResult } from "./project-file-search.js";
@@ -704,24 +705,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const declaredPipelineCommands=scopedCommands.length?scopedCommands:preparation?.commands.length?preparation.commands:candidateCommands;
         pipelineVerificationCommands=declaredPipelineCommands;
         const observedCommands=new Set([...(output.requestedCommands??[]),...currentVerificationCommands(actionResults)]);
-        // Authoring may declare a new behavioral test before creating its file.
-        // Automatic checks wait for those inputs; explicit baseline requests and
-        // independent verifiers still execute normally and retain missing-file failures.
-        const missingAuthorTests = new Set<string>();
-        if (preparation && repairCommitSelected && stagePattern.type !== 'verifier') {
-          for (const command of declaredPipelineCommands) {
-            const words = Array.from(command.matchAll(/"([^" ]+)"|'([^' ]+)'|[^\s]+/gu), match => match[1] ?? match[2] ?? match[0]);
-            for (const word of words) {
-              if (!/(?:^|\/)(?:test_[^/]+|[^/]+\.(?:test|spec))\.[cm]?[jt]sx?$/u.test(word)) continue;
-              const absolute = path.resolve(localProjectRootUri, word);
-              if (!absolute.startsWith(path.resolve(localProjectRootUri) + path.sep)) continue;
-              try { await fs.stat(absolute); } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === 'ENOENT') missingAuthorTests.add(command);
-                else throw error;
-              }
-            }
-          }
-        }
+        const missingAuthorTests = preparation && repairCommitSelected && stagePattern.type !== 'verifier' ? await missingAuthorTestCommands(declaredPipelineCommands, localProjectRootUri) : new Set<string>();
         const scheduledVerifierCommands = preparation&&((repairCommitSelected)||stagePattern.type==='verifier')
           ? declaredPipelineCommands.filter(command=>!missingAuthorTests.has(command)&&!observedCommands.has(command)&&(()=>{try{assertCommandAllowed(command,project);return true;}catch{return false;}})())
           : missingRepairVerifierCommands(project, stagePattern.type === "verifier",candidateFiles, output.requestedCommands ?? [], actionResults);

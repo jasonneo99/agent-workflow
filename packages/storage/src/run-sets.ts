@@ -52,3 +52,12 @@ export const queueRunSetRepresentativeSql = `wr.id = (
             member.started_at desc
    limit 1
 )`;
+
+/** Installed run-set schema is maintained by normal run creation. Replaying
+ * the historical backfill takes an exclusive table lock and can oscillate
+ * across malformed old lineage, blocking every queue reader and worker. */
+export async function runSetSchemaInstalled(client: { query: (sql: string) => Promise<{ rows: Array<{ ready?: boolean }> }> }): Promise<boolean> {
+  return Boolean((await client.query(`select exists(select 1 from pg_attribute
+      where attrelid=to_regclass('workflow_runs') and attname='run_set_id' and attnotnull and not attisdropped)
+      and to_regclass('workflow_runs_run_set_idx') is not null as ready`)).rows[0]?.ready);
+}
