@@ -9,6 +9,8 @@ test("missing workflow identities render without inventing a workflow", () => {
   assert.equal(workflowDisplayName("build-feature"), "Build Feature");
   assert.equal(workflowDisplayName("debug-failure"), "Diagnose & Fix");
   assert.equal(workflowDisplayName("investigate-issue"), "Investigate Issue");
+  assert.equal(workflowDisplayName("review-pr"), "Review PR");
+  assert.equal(workflowDisplayName("ci-triage"), "CI Triage");
 });
 
 test("request errors before and after headers do not kill the server", async () => {

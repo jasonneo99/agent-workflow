@@ -200,8 +200,8 @@ test("queue presents active recovery chains without counting source failures twi
 test("run history presents a concise summary while preserving the original request", () => {
   assert.match(source, /class="run-task-cell"/u);
   assert.match(source, /dashboardRunPresentation\(run\)/u);
-  assert.match(source, /<strong>\$\{escapeHtml\(presentation\.title\)\}<\/strong>/u);
-  assert.match(source, /<details class="run-task-details"><summary>Original request<\/summary>/u);
+  assert.match(source, /<strong>\$\{escapeHtml\(withoutWorkflowPrefix\(presentation\.title, run\.workflowId\)\)\}<\/strong>/u);
+  assert.match(source, /<td class="run-task-cell" title="\$\{escapeHtml\(run\.task\)\}">/u);
   assert.match(stylesSource, /\.run-task-cell \{[^}]+max-width: 420px/u);
 });
 

@@ -1,10 +1,12 @@
 import type { ServerResponse } from "node:http";
 
+const DISPLAY_ACRONYMS = new Set(["pr", "ci", "api", "ui", "ux", "mcp", "llm", "sql", "id"]);
+
 export function workflowDisplayName(workflowId: string | null | undefined): string {
   if (!workflowId?.trim()) return "Unspecified workflow";
   if (workflowId === "debug-failure") return "Diagnose & Fix";
   if (workflowId === "investigate-issue") return "Investigate Issue";
-  return workflowId.split("-").map((word) => word ? `${word[0].toUpperCase()}${word.slice(1)}` : word).join(" ");
+  return workflowId.split("-").map((word) => DISPLAY_ACRONYMS.has(word) ? word.toUpperCase() : word ? `${word[0].toUpperCase()}${word.slice(1)}` : word).join(" ");
 }
 
 /** Never append an error page to an already-started response. With `html`, the

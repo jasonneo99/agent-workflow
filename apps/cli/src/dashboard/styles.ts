@@ -60,6 +60,20 @@ export function dashboardCss(): string {
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
     th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
     .run-task-cell { width: min(34vw, 420px); max-width: 420px; }
+    .status-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+    .status-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px; border: 1px solid #cbd5e1; border-radius: 999px; color: #1f2937; background: #fff; font-size: 13px; font-weight: 650; text-decoration: none; }
+    .status-chip span { color: #566275; font-weight: 600; }
+    .status-chip:hover { border-color: #1d4ed8; }
+    .status-chip.active { border-color: #1d4ed8; background: #1d4ed8; color: #fff; }
+    .status-chip.active span { color: #fff; }
+    .runs-table td { vertical-align: middle; }
+    .runs-table td:not(.run-task-cell):not(:last-child) { white-space: nowrap; }
+    .runs-table .run-task-cell { width: auto; min-width: 240px; max-width: 520px; }
+    .runs-table td:last-child { min-width: 160px; }
+    .runs-table .run-task-cell strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 600; }
+    .run-id-cell { white-space: nowrap; }
+    .run-id-cell .row-tools { display: inline-flex; margin: 0 0 0 6px; vertical-align: middle; }
+    .copy-run-id { margin-left: 6px; min-height: 26px; padding: 2px 8px; font-size: 12px; }
     .run-task-details summary { cursor: pointer; color: #334155; line-height: 1.4; }
     .run-task-details[open] summary { margin-bottom: 8px; color: #1d4ed8; }
     .run-task-details div { color: #475569; line-height: 1.45; overflow-wrap: anywhere; }

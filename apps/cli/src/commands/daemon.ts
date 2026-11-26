@@ -17088,14 +17088,52 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `;
   }
 
+  const RUNS_PAGE_STATUS_FILTERS: ReadonlyArray<[string, string]> = [["all", "All"], ["failed", "Failed"], ["blocked", "Blocked"], ["queued", "Queued"], ["running", "Running"], ["completed", "Completed"]];
+
+  function parseRunsPageStatusFilter(value: string | null): string {
+    const normalized = (value ?? "all").trim().toLowerCase();
+    if (normalized === "active") return "active";
+    return RUNS_PAGE_STATUS_FILTERS.some(([status]) => status === normalized) ? normalized : "all";
+  }
+
+  /** The Workflow column already names the workflow, so drop a matching "Workflow name: " prefix from the task. */
+  function withoutWorkflowPrefix(title: string, workflowId: string): string {
+    const index = title.indexOf(": ");
+    if (index <= 0) return title;
+    const prefix = title.slice(0, index).toLowerCase();
+    const names = [workflowDisplayName(workflowId), workflowId.replace(/-/gu, " ")].map((name) => name.toLowerCase());
+    return names.includes(prefix) ? title.slice(index + 2) : title;
+  }
+
+  /** "Running" covers leased runs too: both hold a worker lease. */
+  function runsPageStatusMatches(status: string, filter: string): boolean {
+    if (filter === "all") return true;
+    if (filter === "running") return status === "running" || status === "leased";
+    if (filter === "active") return status === "queued" || status === "running" || status === "leased";
+    return status === filter;
+  }
+
   function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams(), workAvailable = true): string {
-    const selectedRunSet = params.get("runSet")?.trim(), visibleRuns = selectedRunSet ? runs.filter((run) => run.runSetId === selectedRunSet) : runs;
+    const selectedRunSet = params.get("runSet")?.trim(), setRuns = selectedRunSet ? runs.filter((run) => run.runSetId === selectedRunSet) : runs;
+    const statusFilter = parseRunsPageStatusFilter(params.get("status"));
+    const visibleRuns = setRuns.filter((run) => runsPageStatusMatches(run.status, statusFilter));
+    const chipHref = (status: string) => {
+      const next = new URLSearchParams();
+      for (const key of ["runSet", "relatedTo"]) { const value = params.get(key); if (value) next.set(key, value); }
+      if (status !== "all") next.set("status", status);
+      const query = next.toString();
+      return `/runs${query ? `?${query}` : ""}`;
+    };
+    const chips = RUNS_PAGE_STATUS_FILTERS.map(([status, label]) => {
+      const count = setRuns.filter((run) => runsPageStatusMatches(run.status, status)).length;
+      return `<a class="status-chip${status === statusFilter ? " active" : ""}" href="${escapeHtml(chipHref(status))}"${status === statusFilter ? ' aria-current="page"' : ""}>${escapeHtml(label)} <span>${formatNumber(count)}</span></a>`;
+    }).join("");
     const rows = visibleRuns.map((run) => {
       const presentation = dashboardRunPresentation(run);
       const eta = withWorkerAvailability(estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs }), dashboardRunCanProgress(workAvailable, run));
       return `
       <tr>
-        <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span><div class="row-tools">${renderRunInfoDialog({
+        <td class="run-id-cell"><a href="/run?id=${encodeURIComponent(run.id)}" title="${escapeHtml(run.id)}"><code>${escapeHtml(run.id.slice(0, 8))}</code></a><button type="button" class="secondary copy-run-id" data-copy="${escapeHtml(run.id)}" aria-label="Copy run id ${escapeHtml(run.id)}" title="Copy full run id">Copy</button><div class="row-tools">${renderRunInfoDialog({
           runId: run.id,
           workflowId: run.workflowId,
           status: run.status,
@@ -17111,9 +17149,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ]
         })}</div></td>
         <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
-        <td><strong>${escapeHtml(workflowDisplayName(run.workflowId))}</strong><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
-        <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
-        <td class="run-task-cell"><strong>${escapeHtml(presentation.title)}</strong><br><span>${escapeHtml(presentation.description)}</span><details class="run-task-details"><summary>Original request</summary><div>${escapeHtml(run.task)}</div></details></td>
+        <td title="${escapeHtml(run.workflowId)}">${escapeHtml(workflowDisplayName(run.workflowId))}</td>
+        <td title="${escapeHtml(run.projectRootUri)}">${escapeHtml(run.projectName)}</td>
+        <td class="run-task-cell" title="${escapeHtml(run.task)}"><strong>${escapeHtml(withoutWorkflowPrefix(presentation.title, run.workflowId))}</strong></td>
         <td>${renderDashboardDateTime(run.startedAt)}</td>
         <td title="${escapeHtml(eta.reason)}">${eta.state === "waiting" ? `<a href="/queue">${escapeHtml(formatRunEta(eta))}</a>` : escapeHtml(formatRunEta(eta))}</td>
       </tr>
@@ -17141,12 +17179,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ${selectedRunSet ? `<section class="panel"><strong>Related run history</strong><p class="muted">Run set ${escapeHtml(selectedRunSet)} · ${formatNumber(visibleRuns.length)} run${visibleRuns.length === 1 ? "" : "s"}</p><a href="/runs">Show all runs</a></section>` : ""}
       ${renderDashboardActionHistory()}
       <section class="panel">
-        <h2>Recent Runs</h2>
-        <table>
+        <div class="section-heading"><h2>Recent Runs</h2></div>
+        <nav class="status-chips" aria-label="Filter runs by status">${chips}</nav>
+        <div class="table-wrap"><table class="runs-table">
           <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th><th>ETA</th></tr></thead>
-          <tbody>${rows || "<tr><td colspan=\"7\">No runs found.</td></tr>"}</tbody>
-        </table>
+          <tbody>${rows || `<tr><td colspan="7">${statusFilter === "all" ? "No runs found." : `No ${escapeHtml(statusFilter)} runs. <a href="${escapeHtml(chipHref("all"))}">Show all runs</a>`}</td></tr>`}</tbody>
+        </table></div>
       </section>
+      <script>document.addEventListener("click",(event)=>{const button=event.target instanceof Element?event.target.closest("button[data-copy]"):null;if(!button)return;const done=()=>{button.textContent="Copied";setTimeout(()=>{button.textContent="Copy"},1500)};navigator.clipboard?.writeText(button.getAttribute("data-copy")||"").then(done,()=>{button.textContent="Copy failed"})});</script>
     </main>
   </body>
   </html>`;
