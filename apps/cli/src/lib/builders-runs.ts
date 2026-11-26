@@ -190,6 +190,15 @@ export function formatRunEta(eta: RunEta): string {
   return `~${formatDashboardDuration(eta.remainingMs)} remaining · ${formatDashboardDateTimeText(eta.estimatedCompletionAt)} · ${eta.confidence} confidence`;
 }
 
+/** Recorded failures, or the failed and blocked stages when none were recorded, so a stuck run never reports "None". */
+export function runSummaryFailureLines(summary: Pick<RunSummary, "failures" | "stageResults">): string[] {
+  if (summary.failures.length) return summary.failures.map((failure) => `- ${failure}`);
+  const stuck = summary.stageResults.filter((stage) => stage.status === "failed" || stage.status === "blocked");
+  return stuck.length
+    ? stuck.map((stage) => `- ${stage.stageId} (${stage.agentId}) ${stage.status}; see Recommended next action`)
+    : ["- None"];
+}
+
 export function formatRunSummary(summary: RunSummary): string {
   return [
     `Run: ${summary.runId}`,
@@ -206,7 +215,7 @@ export function formatRunSummary(summary: RunSummary): string {
     ...(summary.keyFindings.length ? summary.keyFindings.map((finding, index) => `${index + 1}. ${finding}`) : ["- No findings captured."]),
     "",
     "Failures:",
-    ...(summary.failures.length ? summary.failures.map((failure) => `- ${failure}`) : ["- None"]),
+    ...runSummaryFailureLines(summary),
     "",
     "Approvals:",
     ...(summary.pendingApprovals.length
