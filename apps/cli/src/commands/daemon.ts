@@ -8707,8 +8707,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  function metricCard(label: string, value: string | number, detail: string, iconName: DashboardIconName = iconForMetric(label)): string {
-    return `<div class="metric"><strong>${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span></strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
+  /** The one metric card: small uppercase label, large value, short detail. */
+  function metricCard(label: string, value: string | number, detail: string, iconName: DashboardIconName = iconForMetric(label), className = ""): string {
+    return `<div class="metric${className ? ` ${escapeHtml(className)}` : ""}"><strong>${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span></strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
   }
 
   function modelEnvForProvider(provider: string): string | undefined {
@@ -15875,14 +15876,15 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ${renderDashboardFlashValues(flash)}
       ${renderDashboardActionHistory()}
       <section class="panel">
-        <div class="meta-grid" data-queue-live-region="counts">
-          <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
-          <div><strong>Recovering</strong>${formatNumber(recovering.length)}</div>
-          <div><strong>Failed Runs</strong>${formatNumber(failed.length)}</div>
-          <div><strong>Blocked Runs</strong>${formatNumber(blocked.length)}</div>
-          <div><strong>Queued Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0))}</div>
-          <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
+        <div class="metric-grid" data-queue-live-region="counts">
+          ${metricCard("Active Runs", formatNumber(active.length), "queued or running")}
+          ${metricCard("Recovering", formatNumber(recovering.length), "follow-up in progress")}
+          ${metricCard("Failed Runs", formatNumber(failed.length), "need a decision")}
+          ${metricCard("Blocked Runs", formatNumber(blocked.length), "waiting for a person")}
+          ${metricCard("Queued Tasks", formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0)), "stages waiting")}
+          ${metricCard("Running Tasks", formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0)), "stages with a lease")}
         </div>
+        <h2 class="queue-controls-heading">Process queued work</h2>
         <div class="actions" data-queue-live-region="controls">
           ${queueProcessForm(resolvedProjectFilter)}
           ${expiredLeaseRows.length ? queueRecoverExpiredLeasesForm() : ""}
@@ -16460,11 +16462,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <div><p class="eyebrow">Command Center</p><h2>${escapeHtml(headline)}</h2><span class="muted">${guidance}</span></div>
         <span class="status ${attention ? "blocked" : escapeHtml(run.status)}">${attention ? "attention" : escapeHtml(run.status)}</span>
       </div>
-      <div class="run-command-metrics">
-        <div><strong>${formatNumber(completed)}/${formatNumber(tasks.length)}</strong><span>stages complete${skipped ? ` · ${formatNumber(skipped)} skipped` : ""}</span></div>
-        <div><strong>${formatNumber(active)}</strong><span>active or queued</span></div>
-        <div><strong>${formatNumber(failed)}</strong><span>blocked or failed</span></div>
-        <div class="${openApprovals.length ? "needs-attention" : ""}"><strong>${formatNumber(openApprovals.length)}</strong><span>open approvals</span></div>
+      <div class="metric-grid run-command-metrics">
+        ${metricCard("Stages complete", `${formatNumber(completed)}/${formatNumber(tasks.length)}`, skipped ? `${formatNumber(skipped)} skipped` : "of this run", "check")}
+        ${metricCard("Active or queued", formatNumber(active), "stages", "activity")}
+        ${metricCard("Blocked or failed", formatNumber(failed), "stages", "warning")}
+        ${metricCard("Open approvals", formatNumber(openApprovals.length), openApprovals.length ? "decision needed" : "none waiting", "shield", openApprovals.length ? "needs-attention" : "")}
       </div>
       <div class="actions run-command-actions">${primaryActions}<a class="button secondary" href="/approvals?status=open&run=${encodeURIComponent(run.id)}">All Run Approvals</a></div>
       ${blocked && !superseded ? renderRunBlockerGuide(run, tasks) : ""}

@@ -17,7 +17,7 @@ test("run health and throughput show Blocked as its own state", () => {
 });
 
 test("the queue counts blocked runs next to failed runs", () => {
-  assert.match(source, /<strong>Failed Runs<\/strong>[^\n]*\n\s*<div><strong>Blocked Runs<\/strong>\$\{formatNumber\(blocked\.length\)\}/u);
+  assert.match(source, /metricCard\("Failed Runs",[^\n]*\n\s*\$\{metricCard\("Blocked Runs", formatNumber\(blocked\.length\)/u);
 });
 
 test("the human intervention counter links to the list it counts", () => {

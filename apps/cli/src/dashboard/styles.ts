@@ -364,11 +364,7 @@ export function dashboardCss(): string {
     .run-command-center { border-color: #cbd5e1; }
     .run-command-heading h2 { margin-bottom: 4px; }
     .run-command-heading .eyebrow { margin: 0 0 4px; color: #566275; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-    .run-command-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
-    .run-command-metrics > div { display: grid; gap: 3px; padding: 12px; border: 1px solid #e2e7f0; border-radius: 8px; background: #f8fafc; }
-    .run-command-metrics > div.needs-attention { border-color: #f59e0b; background: #fffbeb; }
-    .run-command-metrics strong { font-size: 20px; }
-    .run-command-metrics span { color: #566275; font-size: 12px; }
+    .run-command-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 16px 0; }
     .run-command-actions { margin-bottom: 4px; }
     .run-blocker-guide { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 18px; margin-top: 18px; padding: 18px; border: 1px solid #f59e0b; border-radius: 9px; background: #fffbeb; }
     .run-blocker-guide h3 { margin: 2px 0 8px; }
@@ -609,7 +605,10 @@ export function dashboardCss(): string {
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
     .metric strong { display: inline-flex; align-items: center; gap: 7px; color: #4b5870; font-size: 12px; text-transform: uppercase; }
     .metric strong .icon { width: 15px; height: 15px; color: #2563eb; }
-    .metric span { font-size: 22px; font-weight: 700; }
+    .metric > span { font-size: 24px; font-weight: 700; line-height: 1.2; }
+    .metric strong span { font: inherit; }
+    .metric.needs-attention { border-color: #f59e0b; background: #fffbeb; }
+    .queue-controls-heading { margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid #e2e7f0; font-size: 15px; }
     .metric small, .muted { color: #566275; }
     .candidate-summary-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
     .candidate-summary-grid .metric { min-width: 0; min-height: 104px; padding: 9px 10px; gap: 2px; align-content: start; }
@@ -619,7 +618,7 @@ export function dashboardCss(): string {
     .candidate-summary-grid .metric > span { font-size: 18px; line-height: 1.15; }
     .candidate-summary-grid .metric small { display: -webkit-box; overflow: hidden; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .snapshot-metrics { grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); }
-    .snapshot-metrics .metric span { font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
+    .snapshot-metrics .metric > span { font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
     .approval-triage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 12px; }
     .approval-triage-grid div { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 4px; }
     .approval-triage-grid strong { color: #172033; font-size: 13px; }
@@ -917,7 +916,7 @@ export function dashboardCss(): string {
     .ops-metric-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .ops-metric { position: relative; min-width: 0; min-height: 116px; padding: 18px 18px 13px; border-right: 1px solid var(--ops-line); overflow: hidden; }
     .ops-metric:last-child { border-right: 0; }
-    .ops-metric > span { display: block; color: #86a2b6; font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .ops-metric > span { display: block; color: #86a2b6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
     .ops-metric > strong { display: block; margin-top: 9px; font-size: clamp(20px, 1.7vw, 28px); letter-spacing: -.035em; }
     .ops-metric > small { display: block; margin-top: 2px; color: var(--ops-muted); font-size: 10px; }
     .ops-spark { position: absolute; right: 10px; bottom: 9px; width: 72px; height: 26px; opacity: .9; }

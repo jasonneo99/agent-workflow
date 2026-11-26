@@ -187,7 +187,7 @@ test("queue presents active recovery chains without counting source failures twi
   assert.match(source, /escapeHtml\(redactApprovalCardText\(attempt.blocker,2000\)\)/u);
   assert.match(source, /approval record\(s\) need review/u);
   assert.match(source, /const recovering = queue\.filter/u);
-  assert.match(source, /<strong>Recovering<\/strong>/u);
+  assert.match(source, /metricCard\("Recovering",/u);
   assert.match(source, /Recovery in Progress/u);
   assert.match(source, /recovery running/u);
   assert.match(source, /!recoveringRunIds\.has\(item\.runId\)/u);
