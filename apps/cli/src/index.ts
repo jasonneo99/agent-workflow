@@ -27,6 +27,7 @@ import { registerQueueCoordinatorCommands } from "./commands/queue-coordinator.j
 import { registerContainerCommands } from "./commands/containers.js";
 import { registerEnvironmentCommands } from "./commands/environments.js";
 import { registerRepairCheckpointCommand } from "./commands/repair-checkpoint.js";
+import { applyHelpGroups } from "./lib/help-groups.js";
 
 const program = new Command();
 const ctx = createCliContext(import.meta.url);
@@ -67,6 +68,7 @@ registerQueueCoordinatorCommands(program, ctx);
 registerContainerCommands(program);
 registerEnvironmentCommands(program);
 registerRepairCheckpointCommand(program);
+applyHelpGroups(program);
 
 // Import guard: unit tests import pure helpers from this module, which must
 // not launch the CLI as a side effect. Only parse argv when this file is the

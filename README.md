@@ -230,6 +230,7 @@ One-shot scripts such as `npm run status` start from the compiled `dist/` build 
 
 ```bash
 npm run setup                  # Interactive onboarding
+npm run agentflow -- commands  # List every command; --help shows only the everyday groups
 npm run check                  # Contributor checks before opening a PR
 npm run validate-boundary      # Reject personal, machine-specific, secret-shaped, or unscrubbed tracked content
 npm run release:check -- --allow-current-version # Verify release readiness without changing files
