@@ -10785,9 +10785,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">${iconLabel("refresh", "Recover Expired Leases")}</button></form>`;
   }
 
-  function queueRunActionForm(runId: string, action: string, label: string): string {
+  function queueRunActionForm(runId: string, action: string, label: string, variant: "primary" | "secondary" = "primary"): string {
     const iconName: DashboardIconName = action === "cancel" ? "x" : action.includes("requeue") || action.includes("recover") || action.includes("retry") ? "refresh" : "play";
-    return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
+    return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel(iconName, label)}</button></form>`;
   }
 
   function rateDelta(after: number | null, before: number | null): number | null {
@@ -16484,14 +16484,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const primaryActions = superseded
       ? `<a class="button" href="/run?id=${encodeURIComponent(run.replacementRunId ?? run.id)}">Open current continuation →</a>`
       : openApprovals.length && !blocked && !failedRun
-      ? `<a class="button" href="#run-command-center">Review approval below</a>${queueRunActionForm(run.id, "cancel", "Cancel Run")}`
+      ? `<a class="button" href="#run-command-center">Review approval below</a>${queueRunActionForm(run.id, "cancel", "Cancel Run", "secondary")}`
       : blocked
-      ? `${queueRunActionForm(run.id, "resolve-blocker", "Retry After Fix")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run")}${queueRunActionForm(run.id, "resume-checkpoint", "Resume Checkpoint")}${queueRunActionForm(run.id, "replay-run", "Replay Run")}`
+      ? `${queueRunActionForm(run.id, "resolve-blocker", "Retry After Fix")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run", "secondary")}${queueRunActionForm(run.id, "resume-checkpoint", "Resume Checkpoint", "secondary")}${queueRunActionForm(run.id, "replay-run", "Replay Run", "secondary")}`
       : failedRun
-        ? `${queueRunActionForm(run.id, "retry-failed", "Retry Failed Stages")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run")}${queueRunActionForm(run.id, "replay-run", "Replay Run")}`
+        ? `${queueRunActionForm(run.id, "retry-failed", "Retry Failed Stages")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run", "secondary")}${queueRunActionForm(run.id, "replay-run", "Replay Run", "secondary")}`
         : run.status === "completed"
-          ? `${queueRunActionForm(run.id, "replay-run", "Replay Run")}${runActionForm(run.id, "summarize", "Summarize Run")}`
-          : `${workerActionForm(run.id, "batch", "Process Next Batch")}${workerActionForm(run.id, "watch", "Run Until Complete")}${queueRunActionForm(run.id, "cancel", "Cancel Run")}`;
+          ? `${runActionForm(run.id, "summarize", "Summarize Run")}${queueRunActionForm(run.id, "replay-run", "Replay Run", "secondary")}`
+          : `${workerActionForm(run.id, "batch", "Process Next Batch")}${workerActionForm(run.id, "watch", "Run Until Complete", "secondary")}${queueRunActionForm(run.id, "cancel", "Cancel Run", "secondary")}`;
     const approvalCards = openApprovals.map((approval) => renderMobileApprovalCard(approval)).join("");
     const approvalHistory = approvals.filter((approval) => !isOpenApproval(approval)).slice(0, 5).map((approval) => `
       <tr><td>${escapeHtml(approval.actionType)}</td><td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td><td>${escapeHtml(truncateMiddle(approval.target, 92))}</td><td>${renderDashboardDateTime(approval.updatedAt)}</td></tr>
@@ -16625,13 +16625,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `).join("");
     const decisionExplanations = buildRunDecisionExplanations(input.run, input.qualityReport, input.summary);
     const governedReusePlan = readGovernedReusePlan(input.artifacts);
+    const runTitle = withoutWorkflowPrefix(dashboardRunPresentation(input.run).title, input.run.workflowId);
 
     return `<!doctype html>
   <html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Run ${escapeHtml(input.run.id.slice(0, 8))}</title>
+    <title>${escapeHtml(compactDashboardText(runTitle, 70))} · Run ${escapeHtml(input.run.id.slice(0, 8))}</title>
     <style>${dashboardCss()}</style>
   </head>
   <body>
@@ -16640,14 +16641,20 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     <main id="main-content">
       <div class="topbar">
         <div>
-          <a href="/">Dashboard</a>
-          <h1>Run ${escapeHtml(input.run.id)}</h1>
+          <a href="/runs">Runs</a>
+          <h1 class="run-title">${escapeHtml(runTitle)}</h1>
+          <p class="run-subtitle muted"><span class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span> ${escapeHtml(workflowDisplayName(input.run.workflowId))} · ${escapeHtml(input.run.projectName)} · <code title="Run id">${escapeHtml(input.run.id)}</code></p>
         </div>
-        <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
-        <a class="button secondary" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
-        <a class="button secondary" href="/api/observability?id=${encodeURIComponent(input.run.id)}">OTEL JSON</a>
-        <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
-        <a class="button secondary" href="/api/tuning?project=${encodeURIComponent(input.run.projectRootUri)}">Tuning JSON</a>
+        <details class="export-menu">
+          <summary class="button secondary">Export</summary>
+          <div class="export-menu-list" role="list">
+            <a role="listitem" href="/api/run?id=${encodeURIComponent(input.run.id)}">Run JSON</a>
+            <a role="listitem" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
+            <a role="listitem" href="/api/observability?id=${encodeURIComponent(input.run.id)}">OpenTelemetry JSON</a>
+            <a role="listitem" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
+            <a role="listitem" href="/api/tuning?project=${encodeURIComponent(input.run.projectRootUri)}">Tuning JSON</a>
+          </div>
+        </details>
       </div>
       ${renderDashboardFlash(input.params)}
       ${renderDashboardActionHistory()}
@@ -18708,8 +18715,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </form>`;
   }
 
-  function runActionForm(runId: string, action: string, label: string): string {
-    return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${iconLabel("play", label)}</button></form>`;
+  function runActionForm(runId: string, action: string, label: string, variant: "primary" | "secondary" = "primary"): string {
+    return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel("play", label)}</button></form>`;
   }
 
   function runApprovalLevelLabel(level: string): string {
@@ -19815,8 +19822,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
   }
 
-  function workerActionForm(runId: string, mode: "batch" | "watch", label: string): string {
-    return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${iconLabel(mode === "watch" ? "activity" : "play", label)}</button></form>`;
+  function workerActionForm(runId: string, mode: "batch" | "watch", label: string, variant: "primary" | "secondary" = "primary"): string {
+    return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel(mode === "watch" ? "activity" : "play", label)}</button></form>`;
   }
 
   function workerStatusDetail(worker: DashboardWorkerStatus): string {
