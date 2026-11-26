@@ -667,7 +667,7 @@ function studioScript(): string {
 
 function studioCss(): string {
   return `
-    :root { color-scheme: dark; --bg: #0b0e10; --rail: #101417; --surface: #12171a; --surface-2: #171d21; --line: #293136; --line-soft: #20272b; --text: #f1f3ef; --muted: #89939a; --faint: #626c73; --lime: #84f06c; --amber: #f2b84b; --red: #f06b6b; --top: 52px; --rail-width: 234px; }
+    :root { color-scheme: dark; --bg: #0b0e10; --rail: #101417; --surface: #12171a; --surface-2: #171d21; --line: #293136; --line-soft: #20272b; --text: #f1f3ef; --muted: #89939a; --faint: #808a91; --lime: #84f06c; --amber: #f2b84b; --red: #f06b6b; --top: 52px; --rail-width: 234px; }
     * { box-sizing: border-box; }
     html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     button, input, select, textarea { font: inherit; }

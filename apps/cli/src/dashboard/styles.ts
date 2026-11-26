@@ -1,5 +1,17 @@
+import { deriveDarkOverrides } from "./dark-theme.js";
+
+let roadmapCssCache: string | undefined;
+let dashboardCssCache: string | undefined;
+
+/** Insert dark overrides derived from the light rules, just before the ops theme. */
+function withDarkOverrides(css: string): string {
+  const opsTheme = css.indexOf(":root { color-scheme: dark;");
+  if (opsTheme < 0) return `${css}\n${deriveDarkOverrides(css)}\n`;
+  return `${css.slice(0, opsTheme)}${deriveDarkOverrides(css.slice(0, opsTheme))}\n    ${css.slice(opsTheme)}`;
+}
+
 export function roadmapDashboardCss(): string {
-  return `
+  return roadmapCssCache ??= withDarkOverrides(`
     .roadmap-bug td:first-child { border-left: 4px solid #ef4444; }
     .roadmap-task td:first-child { border-left: 4px solid #2563eb; }
     .roadmap-gantt { display: grid; gap: 0.75rem; }
@@ -26,11 +38,11 @@ export function roadmapDashboardCss(): string {
       .roadmap-bars { grid-template-columns: 1fr; }
       .roadmap-bar { grid-column: 1 / -1 !important; }
     }
-  `;
+  `);
 }
 
 export function dashboardCss(): string {
-  return `
+  return dashboardCssCache ??= withDarkOverrides(`
     :root { color-scheme: light; --nav-width: 204px; --page-gutter: clamp(16px, 2vw, 32px); --radius: 10px; --surface: #fff; --border: #dfe3eb; --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 8px 24px rgba(15, 23, 42, .04); }
     *, *::before, *::after { box-sizing: border-box; }
     html { min-width: 320px; background: #f7f8fb; }
@@ -325,7 +337,7 @@ export function dashboardCss(): string {
     .run-skip-blocker-form { display: grid; align-content: start; gap: 11px; padding: 14px; border: 1px solid #fcd34d; border-radius: 8px; background: #fff; }
     .run-skip-blocker-form label { display: grid; gap: 6px; color: #78350f; font-size: 13px; font-weight: 700; }
     .run-skip-blocker-form .check-row { display: flex; align-items: flex-start; font-weight: 600; }
-    .run-skip-blocker-form button.warning { border-color: #b45309; background: #b45309; }
+    .run-skip-blocker-form button.warning { border-color: #b45309; background: #b45309; color: #fff; }
     .run-skip-blocker-form button.warning:hover { border-color: #92400e; background: #92400e; }
     .status.skipped { background: #fef3c7; color: #92400e; }
     .run-approval-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid #e2e7f0; }
@@ -723,7 +735,7 @@ export function dashboardCss(): string {
     .governance-details li { display: grid; gap: 4px; border-top: 1px solid #e2e7f0; padding-top: 8px; }
     .governance-details li:first-child { border-top: 0; padding-top: 0; }
     .governance-details span:not(.flag), .governance-details small { color: #566275; line-height: 1.35; }
-    .governance-details button span { color: inherit; }
+    .governance-details button span:not(.flag) { color: inherit; }
     .governance-details code { white-space: normal; word-break: break-word; background: #eef2ff; color: #3730a3; padding: 5px 6px; }
     .focused-stage-panel { border-color: #93c5fd; box-shadow: inset 3px 0 0 #2563eb; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -1200,5 +1212,5 @@ export function dashboardCss(): string {
       .network-packet { display: none; }
       .ops-neural-line path, .ops-live i, .ops-system-state > i { animation: none; }
     }
-  `;
+  `);
 }

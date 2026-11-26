@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dashboardCss } from "./styles.js";
+import { darkColor, deriveDarkOverrides, themeBootstrapScript } from "./dark-theme.js";
 
 function luminance(hex: string): number {
   const raw = hex.replace("#", "");
@@ -32,4 +33,31 @@ test("light theme muted and amber text meet WCAG AA on page and panel background
 
 test("light theme keeps light text inside the dark run log", () => {
   assert.match(css, /html:not\(\[data-theme="dark"\]\) \.run-live-entry strong \{ color: #f8fafc; \}/u);
+});
+
+test("dark theme tokens meet WCAG AA on dark page and panel backgrounds", () => {
+  const darkBlock = css.slice(css.indexOf(":root { color-scheme: dark;"));
+  for (const name of ["ops-muted", "ops-text"]) {
+    for (const background of ["ops-bg", "ops-panel", "ops-panel-2"]) {
+      const ratio = contrastRatio(token(darkBlock, name), token(darkBlock, background));
+      assert.ok(ratio >= 4.5, `${name} on ${background} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test("dark overrides remap light surfaces and dark text from the base rules", () => {
+  const overrides = deriveDarkOverrides(".card { background: #f8fafc; color: #334155; border: 1px solid #e2e8f0; } .solid { background: #2563eb; color: #fff; } @media (max-width: 600px) { .tint { background: #fef2f2; } } @keyframes k { to { color: #000; } }");
+  assert.match(overrides, /^:where\(html\[data-theme="dark"\]\) \.card \{ background: #[0-9a-f]{6}; color: #[0-9a-f]{6}; border: 1px solid #[0-9a-f]{6}; \}/mu);
+  assert.doesNotMatch(overrides, /\.solid/u, "saturated fills and white text already suit dark mode");
+  assert.match(overrides, /@media \(max-width: 600px\) \{ :where\(html\[data-theme="dark"\]\) \.tint/u);
+  assert.doesNotMatch(overrides, /@keyframes/u);
+  const card = overrides.match(/\.card \{ background: (#[0-9a-f]{6}); color: (#[0-9a-f]{6})/u)!;
+  assert.ok(contrastRatio(card[2]!, card[1]!) >= 4.5, "remapped text stays readable on the remapped surface");
+  assert.ok(css.indexOf(':where(html[data-theme="dark"])') < css.indexOf(":root { color-scheme: dark;"), "ops dark theme rules still win");
+});
+
+test("theme follows the system setting until the user chooses", () => {
+  assert.match(themeBootstrapScript, /prefers-color-scheme: dark/u);
+  assert.match(themeBootstrapScript, /stored==='dark'\|\|stored==='light'\?stored/u);
+  assert.equal(darkColor("#2563eb", "background"), null);
 });
