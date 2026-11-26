@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 import { findAgentWorkflowRoot } from "../../../../packages/runtime-root/src/index.js";
-import { agentWorkflowEnvPath } from "../../../../packages/runtime-root/src/index.js";
+import { agentWorkflowEnvPath, runtimeEnvCredentialKeys } from "../../../../packages/runtime-root/src/index.js";
 import { reliabilityProtocolVersions } from "../../../../packages/reliability-control/src/index.js";
 
 export type RuntimeVersionMetadata = {
@@ -62,7 +62,12 @@ export function createCliContext(importMetaUrl: string): CliContext {
   // must survive the durable runtime.env override.
   const shellProvider = process.env.DEFAULT_MODEL_PROVIDER;
   dotenv.config({ path: configuredEnvPath, quiet: true });
-  dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
+  const runtimeEnvPath = path.join(rootDir, ".agent-workflow", "runtime.env");
+  const runtimeEnv = dotenv.config({ path: runtimeEnvPath, quiet: true, override: true });
+  const misplacedCredentials = runtimeEnvCredentialKeys(runtimeEnv.parsed ?? {});
+  if (misplacedCredentials.length) {
+    console.error(`Warning: ${runtimeEnvPath} is for non-secret settings but sets ${misplacedCredentials.join(", ")}; move ${misplacedCredentials.length === 1 ? "it" : "them"} to ${configuredEnvPath}.`);
+  }
   if (shellProvider !== undefined) process.env.DEFAULT_MODEL_PROVIDER = shellProvider;
   return {
     rootDir,

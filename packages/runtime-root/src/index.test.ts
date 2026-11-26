@@ -48,3 +48,9 @@ test("resolves explicit project root aliases before basename fallback", async ()
   assert.equal(resolution.localRootUri, "/Users/example/Projects/project-a");
   assert.equal(resolution.source, "env");
 });
+
+test("runtime.env credential guard names non-empty credentials and allows blank provider switches", async () => {
+  const { runtimeEnvCredentialKeys } = await import("./index.js");
+  assert.deepEqual(runtimeEnvCredentialKeys({ OPENAI_API_KEY: "", MUSE_API_KEY: "  ", AGENTFLOW_WORKER_LIMIT: "6" }), []);
+  assert.deepEqual(runtimeEnvCredentialKeys({ GROQ_API_KEY: "value", GITHUB_TOKEN: "value", LOCAL_MODEL_NAME: "qwen" }), ["GITHUB_TOKEN", "GROQ_API_KEY"]);
+});

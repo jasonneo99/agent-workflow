@@ -185,3 +185,17 @@ async function isAgentWorkflowProjectDir(
   if (!(await exists(target))) return false;
   return await exists(path.join(target, ".agent-workflow"));
 }
+
+const credentialKeyPattern = /(?:_API_KEY|_TOKEN|_SECRET|_PASSWORD|_ACCESS_KEY|_SECRET_KEY)$/u;
+
+/**
+ * runtime.env is a non-secret settings file loaded with override. Blank
+ * credential entries are a deliberate way to switch a provider off; a non-empty
+ * credential there belongs in .env. Returns the offending key names only.
+ */
+export function runtimeEnvCredentialKeys(parsed: Record<string, string>): string[] {
+  return Object.entries(parsed)
+    .filter(([key, value]) => credentialKeyPattern.test(key) && value.trim() !== "")
+    .map(([key]) => key)
+    .sort();
+}
