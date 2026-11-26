@@ -850,7 +850,20 @@ export function dashboardCss(): string {
     .ops-live i, .ops-system-state > i { width: 8px; height: 8px; border-radius: 50%; background: var(--ops-teal); box-shadow: 0 0 12px var(--ops-teal); animation: ops-live-pulse 2.2s ease-in-out infinite; }
     .ops-pulse-panel, .ops-panel { border: 1px solid #19415c; background: linear-gradient(145deg, rgba(7, 23, 38, .98), rgba(4, 15, 27, .98)); box-shadow: inset 0 1px rgba(77, 153, 190, .045), 0 14px 36px rgba(0, 0, 0, .2); }
     .ops-pulse-panel { margin-bottom: 12px; }
-    .ops-pulse-heading { min-height: 80px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .42fr); align-items: stretch; border-bottom: 1px solid var(--ops-line); }
+    .ops-pulse-heading { min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; border-bottom: 1px solid var(--ops-line); }
+    .ops-now-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .ops-now-panel h2 { display: flex; align-items: center; gap: 8px; }
+    .ops-now-panel .ops-panel-heading { min-height: 0; margin-bottom: 4px; align-items: center; }
+    .ops-now-count { min-width: 22px; padding: 1px 7px; border: 1px solid var(--ops-line); border-radius: 999px; color: var(--ops-text); font-size: 12px; text-align: center; }
+    .ops-now-list { display: grid; align-content: start; }
+    .ops-now-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 48px; padding: 7px 2px; border-bottom: 1px solid var(--ops-line); color: var(--ops-text); text-decoration: none; }
+    .ops-now-row:last-child { border-bottom: 0; }
+    .ops-now-row strong, .ops-now-row small { display: block; overflow-wrap: anywhere; }
+    .ops-now-row strong { font-size: 13px; line-height: 1.3; }
+    .ops-now-row small { margin-top: 2px; color: var(--ops-muted); font-size: 12px; line-height: 1.35; }
+    .ops-now-row > span:last-child { color: var(--ops-cyan); font-size: 12px; white-space: nowrap; }
+    .ops-now-row:hover strong { text-decoration: underline; }
+    .ops-now-empty { margin: 6px 0; color: var(--ops-muted); font-size: 13px; }
     .ops-neural-line { min-width: 0; padding: 10px 24px; display: flex; align-items: center; }
     .ops-neural-line svg { width: 100%; height: 48px; overflow: visible; }
     .ops-neural-line path { fill: none; vector-effect: non-scaling-stroke; }
@@ -1144,7 +1157,7 @@ export function dashboardCss(): string {
       .ops-topbar { align-items: flex-start; }
       .ops-pulse-heading { grid-template-columns: 1fr; }
       .ops-system-state { border-left: 0; border-top: 1px solid var(--ops-line); }
-      .ops-chart-grid { grid-template-columns: 1fr; }
+      .ops-chart-grid, .ops-now-grid { grid-template-columns: 1fr; }
       .chart-grid { grid-template-columns: 1fr; }
       .model-history-controls { grid-template-columns: 1fr 1fr; }
       .chart-card { padding: 14px; overflow-x: auto; }

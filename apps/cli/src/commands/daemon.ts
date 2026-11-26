@@ -12240,6 +12240,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <span><strong>${escapeHtml(compactDashboardText(item.title, 52))}</strong><small>${escapeHtml(compactDashboardText(item.detail, 72))}</small></span>
         <span>${escapeHtml(item.action)}</span>
       </a>`).join("");
+    const workAvailable = health.worker.status === "running" || health.supervisor.status === "running";
+    const nowRow = (href: string, tone: string, title: string, detail: string, action: string) => `<a class="ops-now-row" href="${escapeHtml(href)}"><span class="ops-status-dot ${tone}"></span><span><strong>${escapeHtml(compactDashboardText(title, 80))}</strong><small>${escapeHtml(compactDashboardText(detail, 96))}</small></span><span>${escapeHtml(action)}</span></a>`;
+    const runningNow = activeRuns.slice(0, 6).map((run) => nowRow(`/run?id=${run.id}`, workAvailable || run.status !== "queued" ? "good" : "warn", run.task, `${run.projectName} · ${workflowDisplayName(run.workflowId)} · ${run.status === "queued" && !workAvailable ? "waiting — no worker is running" : run.status}`, "Open")).join("");
+    const troubledRuns = runs.filter((run) => run.status === "failed" || run.status === "blocked");
+    const troubledNow = troubledRuns.slice(0, 6).map((run) => nowRow(`/run?id=${run.id}`, run.status === "failed" ? "bad" : "warn", run.task, `${run.projectName} · ${workflowDisplayName(run.workflowId)} · ${run.status}`, run.status === "failed" ? "Diagnose" : "Unblock")).join("");
+    const needsYouNow = humanInterventions.slice(0, 6).map((item) => nowRow(item.href, item.severity, item.title, item.detail, item.action)).join("");
+    const nowPanel = (id: string, title: string, count: number, rows: string, more: string, empty: string) => `<section class="ops-panel ops-now-panel" aria-labelledby="${id}"><div class="ops-panel-heading"><div><h2 id="${id}">${title} <span class="ops-now-count">${count}</span></h2></div>${more}</div><div class="ops-now-list">${rows || `<p class="ops-now-empty">${empty}</p>`}</div></section>`;
     const recentRows = recentRuns.map((run) => `
       <tr>
         <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
@@ -12272,9 +12279,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <div><h1>System Pulse</h1><p>Live operational view of agent execution, reliability, and flow.</p></div>
         <div class="ops-topbar-actions"><span class="ops-live"><i></i> Live</span><a class="button" href="#start-work">${dashboardIcon("play")} Start workflow</a></div>
       </div>
+      <div class="ops-now-grid">
+        ${nowPanel("now-needs-you", "Needs you", humanInterventions.length, needsYouNow, humanInterventions.length > 6 ? `<a href="#human-intervention">All ${humanInterventions.length}</a>` : `<a href="/approvals">Approvals</a>`, "Nothing needs you right now.")}
+        ${nowPanel("now-running", "Running now", activeRuns.length, runningNow, `<a href="/queue">Queue</a>`, "Nothing is running.")}
+        ${nowPanel("now-troubled", "Failed or blocked", troubledRuns.length, troubledNow, `<a href="/runs">All runs</a>`, "No recent failed or blocked runs.")}
+      </div>
       <section class="ops-pulse-panel">
         <div class="ops-pulse-heading">
-          <div class="ops-neural-line" aria-hidden="true">${renderOpsPulseLine()}</div>
           <a class="ops-system-state ${systemHealthy ? "good" : "warn"}" href="/settings"><i></i><span><strong>${systemHealthy ? "All systems operational" : "System attention required"}</strong><small>${servicesReady}/${health.services.length} services · worker ${escapeHtml(health.worker.status)} · supervisor ${escapeHtml(health.supervisor.status)}</small></span>${dashboardIcon("chevrons")}</a>
         </div>
         <div class="ops-metric-row">
@@ -15079,9 +15090,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<div class="ops-project-bars">${top.map((project) => `<a href="/projects?project=${encodeURIComponent(project.rootUri)}"><span>${escapeHtml(compactDashboardText(project.name, 22))}</span><i><b style="width:${(project.runCount / max) * 100}%"></b></i><strong>${formatNumber(project.runCount)}</strong></a>`).join("") || '<div class="ops-empty">No project activity</div>'}</div>`;
   }
 
-  function renderOpsPulseLine(): string {
-    return `<svg viewBox="0 0 640 52" preserveAspectRatio="none"><path class="pulse-grid" d="M0 26H640"></path><path class="pulse-one" d="M0 26 C45 26 48 12 78 26 S118 44 148 22 S202 9 236 27 S282 42 314 20 S366 7 405 27 S464 39 500 22 S552 15 580 26 S614 26 640 26"></path><path class="pulse-two" d="M0 26 C70 26 78 35 104 24 S148 14 176 28 S224 38 252 24 S300 18 334 28 S382 35 412 23 S466 18 496 27 S548 33 574 25 S614 26 640 26"></path></svg>`;
-  }
 
   function renderOpsQueuePressure(queue: DashboardQueueItem[]): string {
     const queued = queue.reduce((sum, item) => sum + item.queuedTasks, 0);
