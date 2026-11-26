@@ -70,6 +70,9 @@ export function dashboardCss(): string {
     .export-menu-list { position: absolute; right: 0; z-index: 20; display: grid; min-width: 210px; margin-top: 6px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(15, 23, 42, .14); }
     .export-menu-list a { padding: 8px 10px; border-radius: 6px; color: #1f2937; text-decoration: none; }
     .export-menu-list a:hover, .export-menu-list a:focus-visible { background: #eff6ff; color: #1d4ed8; }
+    .loading-line { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-weight: 650; }
+    .loading-dot { width: 10px; height: 10px; border-radius: 50%; background: #2563eb; animation: run-live-pulse 1.4s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .loading-dot { animation: none; } }
     .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
     .pager .muted { margin-right: auto; }
     .list-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; font-size: 13px; }

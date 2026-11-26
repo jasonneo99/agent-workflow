@@ -1307,6 +1307,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   const dashboardReportCache = new Map<string, { expiresAt: number; value: unknown }>();
   const dashboardReportCacheTtlMs = 30_000;
+  const DASHBOARD_LOADING_WAIT_MS = 400;
   const queueCardSnapshots = new QueueCardSnapshotCache<DashboardQueueSnapshot>(750,30_000);
 
   const dashboardReportLoads = new Map<string, Promise<unknown>>();
@@ -2711,6 +2712,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     configureDashboardResponse(request, response);
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+    if (request.method === "POST" && requestUrl.pathname.startsWith("/api/bundle")) {
+      for (const key of [...dashboardReportCache.keys()]) if (key.startsWith("bundles:")) dashboardReportCache.delete(key);
+    }
     const brandingAsset = {
       "/assets/agent-workflow-logo.png": "agent-workflow-logo-v1.png",
       "/assets/agent-workflow-mark.png": "agent-workflow-mark-v1.png",
@@ -5374,7 +5378,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
 
     if (requestUrl.pathname === "/evaluations") {
-      const [suites, providerStatuses] = await Promise.all([loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations()), loadCachedDashboardReport("evaluation-provider-statuses", () => loadAutoProviderStatuses())]);
+      const loaded = await loadReportOrLoadingPage(response, { title: "Evaluations", nav: "evaluations" }, "evaluations-page", () => Promise.all([loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations()), loadCachedDashboardReport("evaluation-provider-statuses", () => loadAutoProviderStatuses())]), 5_000);
+      if (!loaded) return;
+      const [suites, providerStatuses] = loaded;
       const requestedSuite = requestUrl.searchParams.get("suite"), selected = requestedSuite ? suites.find((suite) => suite.id === requestedSuite) ?? null : suites[0] ?? null;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderEvaluationsHtml(suites, selected, providerStatuses));
@@ -5637,7 +5643,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
 
     if (requestUrl.pathname === "/bundles") {
-      const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
+      const readiness = await loadReportOrLoadingPage(response, { title: "Workflow bundles", nav: "bundles" }, `bundles:${requestUrl.searchParams.toString()}`, () => loadDashboardBundleReadiness(requestUrl.searchParams));
+      if (!readiness) return;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderBundleTrustHtml(readiness, requestUrl.searchParams));
       return;
@@ -5695,12 +5702,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
 
     if (requestUrl.pathname === "/discovery") {
-      const report = await loadCachedDashboardReport(`discovery:${requestUrl.searchParams.toString()}`, () => discoverLocalProjects(ctx, {
+      const discoveryParams = new URLSearchParams(requestUrl.searchParams);
+      discoveryParams.delete("page");
+      discoveryParams.delete("q");
+      const report = await loadReportOrLoadingPage(response, { title: "Discovery", nav: "discovery" }, `discovery:${discoveryParams.toString()}`, () => discoverLocalProjects(ctx, {
         roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
         maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
         maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
         spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
       }));
+      if (!report) return;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderDiscoveryHtml(report, requestUrl.searchParams));
       return;
@@ -5726,22 +5737,24 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
     if (requestUrl.pathname === "/providers") {
       const dashboardUrl = dashboardUrlFromRequest(request);
-      const info = await loadCachedDashboardReport(`providers-info:${dashboardUrl}`, () => withTimeout(
+      const info = await loadReportOrLoadingPage(response, { title: "Providers", nav: "providers" }, `providers-info:${dashboardUrl}`, () => withTimeout(
         loadDashboardProvidersInfo(dashboardUrl),
         8000,
         () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
       ));
+      if (!info) return;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderProvidersHtml(info, requestUrl.searchParams));
       return;
     }
 
     if (requestUrl.pathname === "/model-catalog") {
-      const report = await loadCachedDashboardReport("model-catalog", () => withTimeout(
+      const report = await loadReportOrLoadingPage(response, { title: "Model catalog", nav: "model-catalog" }, "model-catalog", () => withTimeout(
         loadDashboardModelCatalogReport(),
         5000,
         () => fallbackDashboardModelCatalogReport()
       ));
+      if (!report) return;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderModelCatalogHtml(report));
       return;
@@ -5763,11 +5776,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
     if (requestUrl.pathname === "/info" || requestUrl.pathname === "/settings") {
       const dashboardUrl = dashboardUrlFromRequest(request);
-      const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
+      const info = await loadReportOrLoadingPage(response, { title: "Settings", nav: "info" }, `dashboard-info:${dashboardUrl}`, () => withTimeout(
         loadDashboardInfo(dashboardUrlFromRequest(request)),
         1200,
         () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
       ),2_000);
+      if (!info) return;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
       return;
@@ -6425,6 +6439,37 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return cached.value as T;
     }
     return loadPromise;
+  }
+
+  /** Wait briefly for a slow report. If it is not ready, send a loading page in the
+   * normal layout that reloads itself, and let the report finish into the cache. */
+  async function loadReportOrLoadingPage<T>(response: http.ServerResponse, page: { title: string; nav: Parameters<typeof dashboardNav>[0] }, key: string, load: () => Promise<T>, ttlMs?: number): Promise<T | undefined> {
+    const notReady = Symbol("not-ready");
+    const pending = loadCachedDashboardReport(key, load, ttlMs);
+    let timer: NodeJS.Timeout | undefined;
+    const result = await Promise.race([pending, new Promise<typeof notReady>((resolve) => { timer = setTimeout(() => resolve(notReady), DASHBOARD_LOADING_WAIT_MS); })]);
+    if (timer) clearTimeout(timer);
+    if (result !== notReady) return result as T;
+    pending.catch(() => undefined);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    response.end(renderDashboardLoadingPage(page.title, page.nav));
+    return undefined;
+  }
+
+  function renderDashboardLoadingPage(title: string, nav: Parameters<typeof dashboardNav>[0]): string {
+    return `<!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${escapeHtml(title)} · loading</title>
+    <noscript><meta http-equiv="refresh" content="2"></noscript>
+    <style>${dashboardCss()}</style>
+  </head>
+  <body>${dashboardNav(nav)}<main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>${escapeHtml(title)}</h1></div></div><section class="panel loading-page" data-dashboard-loading><p class="loading-line" role="status" aria-live="polite"><span class="loading-dot" aria-hidden="true"></span><span data-loading-text>Running live checks for this page. It opens by itself when they finish.</span></p><p class="muted">The first visit after the dashboard starts checks providers and local services; later visits use the saved result and refresh it in the background.</p></section></main>
+  <script>(()=>{const key="agentflow.loading:"+location.pathname+location.search;let tries=0;try{tries=Number(sessionStorage.getItem(key)||"0")+1;sessionStorage.setItem(key,String(tries))}catch{}if(tries>40){try{sessionStorage.removeItem(key)}catch{}document.querySelector("[data-loading-text]").textContent="This page is still loading. Refresh to check again.";return}setTimeout(()=>location.reload(),750)})();</script>
+  </body>
+  </html>`;
   }
 
   async function loadQueueCardSnapshot(projectRootUri: string | undefined, requestRefresh = false): Promise<QueueCardSnapshot<DashboardQueueSnapshot>> {
