@@ -34,3 +34,15 @@ test("request errors before and after headers do not kill the server", async () 
     assert.equal(await (await fetch(base)).text(), "healthy");
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+test("an error page is sent as HTML with status 500 when one is given", async () => {
+  const server = createServer((_req, res) => finishDashboardError(res, "failed", "<main>Something went wrong</main>")).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address() as { port: number };
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/`);
+    assert.equal(response.status, 500);
+    assert.match(response.headers.get("content-type") ?? "", /text\/html/u);
+    assert.equal(await response.text(), "<main>Something went wrong</main>");
+  } finally { server.closeAllConnections(); server.close(); }
+});

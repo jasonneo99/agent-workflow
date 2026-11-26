@@ -5264,10 +5264,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         response.end("Missing id");
         return;
       }
-      const details = await getWorkflowRunDetails(runId);
+      const details = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(runId)
+        ? await getWorkflowRunDetails(runId)
+        : { run: null, tasks: [], receipts: [] };
       if (!details.run) {
-        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        response.end("Run not found");
+        response.writeHead(404, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        response.end(renderDashboardStatusPage(404, "Run not found", `No run has the id ${runId}. It may have been mistyped or removed. The Runs page lists every run.`));
         return;
       }
       const [artifacts, approvals, historicalRuns,partnerHistory] = await Promise.all([
@@ -5806,6 +5808,17 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ),2_000);
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/")) {
+      response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "Unknown API path" }));
+      return;
+    }
+    if (requestUrl.pathname !== "/" && requestUrl.pathname !== "/index.html") {
+      response.writeHead(404, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      response.end(renderDashboardStatusPage(404, "Page not found", `There is no dashboard page at ${requestUrl.pathname}. Check the address, or use the links below.`));
       return;
     }
 
@@ -12086,6 +12099,31 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>${dashboardNav("dashboard")}<main id="main-content"><p><a href="/">Dashboard</a></p>${body}</main></body>
   </html>`;
+  }
+
+  /** A not-found or error page inside the normal dashboard layout. */
+  function renderDashboardStatusPage(status: 404 | 500, title: string, message: string): string {
+    return `<!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${escapeHtml(title)} · Agent Workflow</title>
+    <style>${dashboardCss()}</style>
+  </head>
+  <body>${dashboardNav("dashboard")}<main id="main-content"><section class="panel status-page" data-http-status="${status}"><p class="muted">Error ${status}</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><div class="actions"><a class="button" href="/">Home</a><a class="button secondary" href="/runs">Runs</a><a class="button secondary" href="/queue">Queue</a></div></section></main></body>
+  </html>`;
+  }
+
+  /** Errors on API and asset paths stay plain text; page requests get the layout. */
+  function finishDashboardPageError(request: http.IncomingMessage, response: http.ServerResponse): void {
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    const wantsPage = request.method === "GET" && !pathname.startsWith("/api/") && !pathname.startsWith("/assets/") && !pathname.endsWith(".json");
+    let html: string | undefined;
+    if (wantsPage) {
+      try { html = renderDashboardStatusPage(500, "Something went wrong", "The dashboard could not load this page. The error was logged; try again, or go back to a page that works."); } catch { html = undefined; }
+    }
+    finishDashboardError(response, publicHttpError("Dashboard request failed."), html);
   }
 
   function renderDashboardDateTime(value: string | null | undefined, fallback = "n/a"): string {
@@ -20139,7 +20177,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           await handleDashboardRequest(request, response);
         } catch (error) {
           console.error("Dashboard request failed:", redactApprovalCardText(error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : "Unknown error", 1500));
-          finishDashboardError(response, publicHttpError("Dashboard request failed."));
+          finishDashboardPageError(request, response);
         } finally {
           releaseRequestSlot();
         }

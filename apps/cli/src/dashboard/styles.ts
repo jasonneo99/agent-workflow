@@ -450,6 +450,7 @@ export function dashboardCss(): string {
     .approval-form input { min-width: 120px; max-width: 180px; }
     .bulk-approval-form { display: grid; gap: 14px; }
     .bulk-action-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e7f0; }
+    .status-page { max-width: 720px; } .status-page h1 { margin: 4px 0 10px; }
     details.bulk-actions > summary { cursor: pointer; list-style-position: inside; }
     details.bulk-actions > summary h2 { display: inline; margin: 0; font-size: 15px; }
     details.bulk-actions[open] > summary { margin-bottom: 10px; }
