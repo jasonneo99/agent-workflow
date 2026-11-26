@@ -4,6 +4,7 @@ export type WorkflowThroughputBucket = {
   key: string;
   completed: number;
   failed: number;
+  blocked: number;
   active: number;
 };
 
@@ -11,6 +12,7 @@ type WorkflowThroughputRow = {
   key: string;
   completed: string | number;
   failed: string | number;
+  blocked?: string | number;
   active: string | number;
 };
 
@@ -19,6 +21,7 @@ export function normalizeWorkflowThroughputRows(rows: WorkflowThroughputRow[]): 
     key: row.key,
     completed: Number(row.completed),
     failed: Number(row.failed),
+    blocked: Number(row.blocked ?? 0),
     active: Number(row.active)
   }));
 }
@@ -38,7 +41,8 @@ export async function listWorkflowRunThroughput(days = 7, timezone = "America/Lo
         to_char(days.day, 'YYYY-MM-DD') as key,
         count(runs.id) filter (where runs.status = 'completed') as completed,
         count(runs.id) filter (where runs.status = 'failed') as failed,
-        count(runs.id) filter (where runs.status not in ('completed', 'failed')) as active
+        count(runs.id) filter (where runs.status = 'blocked') as blocked,
+        count(runs.id) filter (where runs.status not in ('completed', 'failed', 'blocked')) as active
       from days
       left join workflow_runs runs
         on (runs.started_at at time zone $1)::date = days.day

@@ -1,6 +1,7 @@
 import type { CliContext } from "../lib/context.js";
 import { withClient } from "../../../../packages/storage/src/client.js";
 import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js";
+import { runStateCounts } from "../dashboard/run-state.js";
 import type { Command } from "commander";
 import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonMode, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessCheckStatus, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary} from "../lib/cli-types.js";
 import {countAgentImprovementPendingPromotions, renderAgentImprovementPendingBannerHtml} from "../lib/builders-learning.js";
@@ -8822,7 +8823,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function parseDashboardRunStatusFilter(value: string): string {
-    return ["all", "active", "failed", "completed", "queued", "leased", "running", "cancelled"].includes(value) ? value : "all";
+    return ["all", "active", "failed", "blocked", "completed", "queued", "leased", "running", "cancelled"].includes(value) ? value : "all";
   }
 
   function parseLaunchctlNumber(output: string, key: string): number | null {
@@ -12267,7 +12268,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ${renderOpsMetric("Success rate", `${successRate}%`, `${completedRuns}/${terminalRuns.length || 0} terminal`, terminalRuns.map((run) => run.status === "completed" ? 1 : 0), "teal")}
           ${renderOpsMetric("Median duration", formatDashboardDuration(medianDuration), `${durations.length} measured`, durations.slice(-10), "violet")}
           ${renderOpsMetric("Active stage tasks", formatNumber(activeStageTasks), `${health.queue.length} queue records`, health.queue.slice(0, 10).map((item) => item.queuedTasks + item.runningTasks), "cyan")}
-          ${renderOpsMetric("Human intervention", formatNumber(humanInterventions.length), humanInterventions.length ? "action required" : "clear", [0, humanInterventions.filter((item) => item.severity === "warn").length, humanInterventions.filter((item) => item.severity === "bad").length], "amber")}
+          ${renderOpsMetric("Human intervention", formatNumber(humanInterventions.length), humanInterventions.length ? "action required" : "clear", [0, humanInterventions.filter((item) => item.severity === "warn").length, humanInterventions.filter((item) => item.severity === "bad").length], "amber", "#human-intervention")}
           ${renderOpsMetric("Active projects", formatNumber(activeProjects), `${health.projects.length} registered`, health.projects.slice(0, 10).map((project) => project.runCount), "violet")}
         </div>
       </section>
@@ -12283,7 +12284,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       </div>
       <div class="ops-lower-grid">
         <section class="ops-panel ops-runs-panel"><div class="ops-panel-heading"><div><h2>Recent runs</h2><span>Latest terminal workflow outcomes</span></div><a href="/runs">View all runs</a></div><div class="table-wrap"><table class="ops-table"><colgroup><col class="ops-col-run"><col class="ops-col-task"><col class="ops-col-workflow"><col class="ops-col-status"><col class="ops-col-duration"><col class="ops-col-started"></colgroup><thead><tr><th>Run</th><th>Task</th><th>Workflow</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead><tbody>${recentRows || '<tr><td colspan="6">No terminal runs in the current window.</td></tr>'}</tbody></table></div></section>
-        <section class="ops-panel ops-approvals-panel"><div class="ops-panel-heading"><div><h2>Human intervention</h2><span>Every decision, recovery, and runtime item requiring a person</span></div><a href="/approvals">Open approvals</a></div><div class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0">${interventionRows || '<div class="ops-empty"><strong>No human intervention needed</strong><span>The system can continue autonomously.</span></div>'}</div></section>
+        <section class="ops-panel ops-approvals-panel" id="human-intervention"><div class="ops-panel-heading"><div><h2>Human intervention</h2><span>Every decision, recovery, and runtime item requiring a person</span></div><a href="/approvals">Open approvals</a></div><div class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0">${interventionRows || '<div class="ops-empty"><strong>No human intervention needed</strong><span>The system can continue autonomously.</span></div>'}</div></section>
       </div>
       <section class="ops-panel start-work" id="start-work">
         <div class="human-section-heading"><div><h2>Start work</h2><p>Describe the outcome. Agent Workflow will handle the execution details.</p></div></div>
@@ -15053,8 +15054,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<div class="ops-line-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Recent workflow run duration trend"><g class="ops-grid-lines"><path d="M30 20H${width - 20}"></path><path d="M30 ${height / 2}H${width - 20}"></path><path d="M30 ${height - 24}H${width - 20}"></path></g><polygon points="${area}"></polygon><polyline points="${points}"></polyline></svg><div class="ops-axis-labels"><span>${escapeHtml(formatDashboardDuration(max))}</span><span>${escapeHtml(formatDashboardDuration(Math.round(max / 2)))}</span><span>0s</span></div></div>`;
   }
 
-  function renderOpsMetric(label: string, value: string, detail: string, samples: number[], tone: "cyan" | "teal" | "violet" | "amber"): string {
-    return `<div class="ops-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small>${renderOpsSparkline(samples, tone)}</div>`;
+  function renderOpsMetric(label: string, value: string, detail: string, samples: number[], tone: "cyan" | "teal" | "violet" | "amber", href?: string): string {
+    const inner = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small>${renderOpsSparkline(samples, tone)}`;
+    return href ? `<a class="ops-metric" href="${escapeHtml(href)}">${inner}</a>` : `<div class="ops-metric">${inner}</div>`;
   }
 
   function renderOpsProjectActivity(projects: DashboardProjectSummary[]): string {
@@ -15085,23 +15087,25 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function renderOpsStatusChart(runs: DashboardRunStatus[]): string {
-    const completed = runs.filter((run) => run.status === "completed").length;
-    const failed = runs.filter((run) => run.status === "failed").length;
-    const active = Math.max(0, runs.length - completed - failed);
+    const counts = runStateCounts(runs);
+    const { completed, failed, blocked } = counts;
+    const active = counts.active + counts.other;
     const total = Math.max(runs.length, 1);
     const completedStop = Math.round((completed / total) * 100);
     const failedStop = completedStop + Math.round((failed / total) * 100);
-    return `<div class="ops-donut-layout"><div class="ops-donut" style="--completed:${completedStop}%;--failed:${failedStop}%"><span><strong>${runs.length}</strong><small>runs</small></span></div><div class="ops-donut-key"><div><i class="completed"></i><span>Completed</span><strong>${completed}</strong></div><div><i class="failed"></i><span>Failed</span><strong>${failed}</strong></div><div><i class="active"></i><span>Active</span><strong>${active}</strong></div></div></div>`;
+    const blockedStop = failedStop + Math.round((blocked / total) * 100);
+    const key = (state: string, label: string, count: number, href: string) => `<a href="${href}"><i class="${state}"></i><span>${label}</span><strong>${count}</strong></a>`;
+    return `<div class="ops-donut-layout"><div class="ops-donut" style="--completed:${completedStop}%;--failed:${failedStop}%;--blocked:${blockedStop}%"><span><strong>${runs.length}</strong><small>runs</small></span></div><div class="ops-donut-key">${key("completed", "Completed", completed, "/runs?status=completed")}${key("failed", "Failed", failed, "/runs?status=failed")}${key("blocked", "Blocked", blocked, "/runs?status=blocked")}${key("active", "Active", active, "/runs?status=active")}</div></div>`;
   }
 
   function renderOpsThroughputChart(buckets: WorkflowThroughputBucket[]): string {
-    const max = Math.max(...buckets.map((bucket) => bucket.completed + bucket.failed + bucket.active), 1);
+    const max = Math.max(...buckets.map((bucket) => bucket.completed + bucket.failed + bucket.blocked + bucket.active), 1);
     const bars = buckets.map((bucket) => {
-      const total = bucket.completed + bucket.failed + bucket.active;
+      const total = bucket.completed + bucket.failed + bucket.blocked + bucket.active;
       const label = new Date(`${bucket.key}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      return `<div class="ops-throughput-column" title="${escapeHtml(label)}: ${total} run(s)"><div class="ops-stacked-bar" style="--bar-height:${Math.max(8, Math.round((total / max) * 100))}%"><i class="completed" style="--share:${total ? bucket.completed / total : 0}"></i><i class="failed" style="--share:${total ? bucket.failed / total : 0}"></i><i class="active" style="--share:${total ? bucket.active / total : 0}"></i></div><span>${escapeHtml(label)}</span></div>`;
+      return `<div class="ops-throughput-column" title="${escapeHtml(label)}: ${total} run(s)"><div class="ops-stacked-bar" style="--bar-height:${Math.max(8, Math.round((total / max) * 100))}%"><i class="completed" style="--share:${total ? bucket.completed / total : 0}"></i><i class="failed" style="--share:${total ? bucket.failed / total : 0}"></i><i class="blocked" style="--share:${total ? bucket.blocked / total : 0}"></i><i class="active" style="--share:${total ? bucket.active / total : 0}"></i></div><span>${escapeHtml(label)}</span></div>`;
     }).join("");
-    return `<div class="ops-chart-frame"><div class="ops-y-labels"><span>${max}</span><span>${Math.ceil(max / 2)}</span><span>0</span></div><div class="ops-throughput-bars">${bars || '<div class="ops-empty">No run data</div>'}</div></div><div class="ops-legend"><span><i class="completed"></i>Completed</span><span><i class="failed"></i>Failed</span><span><i class="active"></i>Active</span></div>`;
+    return `<div class="ops-chart-frame"><div class="ops-y-labels"><span>${max}</span><span>${Math.ceil(max / 2)}</span><span>0</span></div><div class="ops-throughput-bars">${bars || '<div class="ops-empty">No run data</div>'}</div></div><div class="ops-legend"><span><i class="completed"></i>Completed</span><span><i class="failed"></i>Failed</span><span><i class="blocked"></i>Blocked</span><span><i class="active"></i>Active</span></div>`;
   }
 
   function renderPostMergeEvidencePanel(evidence: StorageMergeEvidenceListing): string {
@@ -15711,6 +15715,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const recoveringRunIds = new Set(recovering.map((item) => item.runId));
     const failed = queue.filter((item) => (item.runStatus === "failed" || item.familyAttempts?.some(attempt => attempt.status === "failed"))
       && !recoveringRunIds.has(item.runId));
+    const blocked = queue.filter((item) => item.runStatus === "blocked" && !recoveringRunIds.has(item.runId));
     const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
     const cards = queue.filter((item) => !recoveringRunIds.has(item.runId)).map((item) => {
       const lifecycle = queueLifecyclePresentation(item);
@@ -15893,6 +15898,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
           <div><strong>Recovering</strong>${formatNumber(recovering.length)}</div>
           <div><strong>Failed Runs</strong>${formatNumber(failed.length)}</div>
+          <div><strong>Blocked Runs</strong>${formatNumber(blocked.length)}</div>
           <div><strong>Queued Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0))}</div>
           <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
         </div>

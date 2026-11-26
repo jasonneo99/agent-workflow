@@ -4,10 +4,10 @@ import { normalizeWorkflowThroughputRows } from "./workflow-throughput.js";
 
 test("workflow throughput rows normalize database counts", () => {
   assert.deepEqual(normalizeWorkflowThroughputRows([
-    { key: "2026-09-23", completed: "9", failed: "8", active: "12" },
+    { key: "2026-09-23", completed: "9", failed: "8", blocked: "2", active: "12" },
     { key: "2026-09-24", completed: "0", failed: "0", active: "0" }
   ]), [
-    { key: "2026-09-23", completed: 9, failed: 8, active: 12 },
-    { key: "2026-09-24", completed: 0, failed: 0, active: 0 }
+    { key: "2026-09-23", completed: 9, failed: 8, blocked: 2, active: 12 },
+    { key: "2026-09-24", completed: 0, failed: 0, blocked: 0, active: 0 }
   ]);
 });

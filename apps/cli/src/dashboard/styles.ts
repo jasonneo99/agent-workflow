@@ -891,19 +891,23 @@ export function dashboardCss(): string {
     .ops-stacked-bar i { display: block; flex: var(--share) 0 0; min-height: calc(var(--share) * 5px); }
     .ops-stacked-bar .completed, .ops-legend i.completed, .ops-donut-key i.completed { background: var(--ops-teal); }
     .ops-stacked-bar .failed, .ops-legend i.failed, .ops-donut-key i.failed { background: var(--ops-red); }
+    .ops-stacked-bar .blocked, .ops-legend i.blocked, .ops-donut-key i.blocked { background: var(--ops-amber); }
     .ops-stacked-bar .active, .ops-legend i.active, .ops-donut-key i.active { background: var(--ops-violet); }
     .ops-legend { display: flex; align-items: center; gap: 18px; margin-top: 11px; color: #8299ab; font-size: 9px; }
     .ops-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .ops-legend i { width: 8px; height: 8px; }
     .ops-donut-layout { min-height: 205px; display: grid; grid-template-columns: minmax(120px, .9fr) minmax(110px, 1.1fr); align-items: center; gap: 18px; }
-    .ops-donut { width: min(150px, 100%); aspect-ratio: 1; margin: auto; border-radius: 50%; background: conic-gradient(var(--ops-teal) 0 var(--completed), var(--ops-red) var(--completed) var(--failed), var(--ops-violet) var(--failed) 100%); display: grid; place-items: center; box-shadow: 0 0 30px rgba(21, 223, 243, .08); }
+    .ops-donut { width: min(150px, 100%); aspect-ratio: 1; margin: auto; border-radius: 50%; background: conic-gradient(var(--ops-teal) 0 var(--completed), var(--ops-red) var(--completed) var(--failed), var(--ops-amber) var(--failed) var(--blocked, var(--failed)), var(--ops-violet) var(--blocked, var(--failed)) 100%); display: grid; place-items: center; box-shadow: 0 0 30px rgba(21, 223, 243, .08); }
     .ops-donut::before { content: ""; grid-area: 1 / 1; width: 68%; height: 68%; border-radius: 50%; background: #061322; border: 1px solid var(--ops-line); }
     .ops-donut > span { grid-area: 1 / 1; z-index: 1; text-align: center; }
     .ops-donut strong, .ops-donut small { display: block; }
     .ops-donut strong { font-size: 25px; }
     .ops-donut small { color: var(--ops-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
     .ops-donut-key { display: grid; gap: 12px; }
-    .ops-donut-key > div { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 8px; align-items: center; color: var(--ops-muted); font-size: 10px; }
+    .ops-donut-key > :is(div, a) { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 8px; align-items: center; color: var(--ops-muted); font-size: 10px; text-decoration: none; }
+    .ops-donut-key > a:hover span { color: var(--ops-text); text-decoration: underline; }
+    a.ops-metric { display: block; color: inherit; text-decoration: none; }
+    a.ops-metric:hover > span { text-decoration: underline; }
     .ops-donut-key i { width: 7px; height: 7px; border-radius: 50%; }
     .ops-donut-key strong { font-size: 12px; }
     .ops-line-chart { position: relative; height: 210px; padding-left: 34px; }
@@ -1095,7 +1099,7 @@ export function dashboardCss(): string {
       .ops-donut-layout { grid-template-columns: minmax(86px, .85fr) minmax(76px, 1.15fr); gap: 8px; }
       .ops-donut { width: min(118px, 100%); }
       .ops-donut-key { gap: 9px; }
-      .ops-donut-key > div { gap: 5px; }
+      .ops-donut-key > :is(div, a) { gap: 5px; }
       .ops-daemon-layout { grid-template-columns: 1fr; }
       .ops-daemon-facts { grid-template-columns: repeat(4, 1fr); }
     }
