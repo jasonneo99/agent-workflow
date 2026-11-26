@@ -5,7 +5,7 @@ import type { Command } from "commander";
 import type { DashboardFollowUpResult } from "../lib/cli-types.js";
 import { summarizeWorkflowRun } from "../lib/builders-learning.js";
 import { exportWorkflowRun, watchWorkflowRun } from "../lib/builders-local-llm.js";
-import { assessRunStaleInputs, createAgentTaskWorkflow, formatIndexResult, formatRunEta, formatRunSummary, formatStaleInputWarnings, loadObservabilityReport, runDashboardAgentTask, runDashboardWorkflow, runWorkflowPreset, workflowPresets } from "../lib/builders-runs.js";
+import { assessRunStaleInputs, createAgentTaskWorkflow, formatIndexResult, formatRunEta, formatRunSummary, oneLineTask, formatStaleInputWarnings, loadObservabilityReport, runDashboardAgentTask, runDashboardWorkflow, runWorkflowPreset, workflowPresets } from "../lib/builders-runs.js";
 import { indexProjectForRun, loadAgentsForProject, loadCostQualityReport, loadPreferenceNotes, loadSourceSummaries, queueWorkflow, requiredAgent } from "../lib/builders-shared.js";
 import { byId, loadAgents, loadProjectConfig, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { compileContext } from "../../../../packages/context-compiler/src/index.js";
@@ -845,8 +845,9 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .option("-r, --run <id>", "workflow run id")
     .option("-l, --limit <number>", "number of recent runs", "10")
     .option("--artifacts", "include artifact URIs when inspecting a run")
+    .option("--full", "print each run's full task text in the run list")
     .option("--json", "print JSON")
-    .action(async (options: { run?: string; limit: string; artifacts?: boolean; json?: boolean; requirementsOnly?: boolean }) => {
+    .action(async (options: { run?: string; limit: string; artifacts?: boolean; full?: boolean; json?: boolean; requirementsOnly?: boolean }) => {
       if (options.requirementsOnly && !options.run) throw new Error("--requirements-only requires --run");
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
@@ -949,7 +950,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       }
       for (const run of runs) {
         const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
-        console.log(`${run.id} ${run.status} ${run.workflowId} ETA=${formatRunEta(eta)} - ${run.task}`);
+        console.log(`${run.id} ${run.status} ${run.workflowId} ETA=${formatRunEta(eta)} - ${options.full ? run.task : oneLineTask(run.task)}`);
       }
     });
 

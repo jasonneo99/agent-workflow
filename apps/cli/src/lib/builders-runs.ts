@@ -183,6 +183,13 @@ export function formatIndexResult(result: {
   ].filter(Boolean).join("\n");
 }
 
+/** A run's task as one short line for run listings: whitespace collapsed,
+ * cut at `max` characters with an ellipsis. Tasks can embed whole files. */
+export function oneLineTask(task: string, max = 100): string {
+  const line = task.replace(/\s+/gu, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+}
+
 export function formatRunEta(eta: RunEta): string {
   if (eta.state === "complete") return "Complete";
   if (eta.state === "paused") return "Paused";

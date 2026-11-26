@@ -34,3 +34,12 @@ test("direct specialist tasks honor role-specific file editing capabilities", ()
 test("direct specialist tasks remain read-only without a file editing capability", () => {
   assert.equal(createAgentTaskWorkflow(agent("reviewer", ["inspect_logs"])).execution?.kind, "read-only");
 });
+
+test("run listings show each task as one short line", async () => {
+  const { oneLineTask } = await import("./builders-runs.js");
+  assert.equal(oneLineTask("Review the file a.py.\n---\n#!/usr/bin/env python3\nimport os\n"), "Review the file a.py. --- #!/usr/bin/env python3 import os");
+  const long = oneLineTask(`Review ${"x".repeat(300)}`);
+  assert.equal(long.length, 100);
+  assert.ok(long.endsWith("…"));
+  assert.equal(oneLineTask("short task"), "short task");
+});
