@@ -1150,7 +1150,14 @@ export function dashboardCss(): string {
       .panel { padding: 14px; border-radius: 8px; }
       .model-history-controls { grid-template-columns: 1fr; }
       .candidate-summary-grid { grid-template-columns: 1fr; }
-      .health-grid, .metric-grid, .meta-grid, .split-grid, .provider-setup-grid, .stage-delta, .segmented-actions, .command-summary, .command-facts, .worker-summary { grid-template-columns: 1fr; }
+      .health-grid, .metric-grid, .meta-grid, .split-grid, .provider-setup-grid, .stage-delta, .segmented-actions, .command-summary, .command-facts, .worker-summary { grid-template-columns: minmax(0, 1fr); }
+      .section-heading { grid-template-columns: minmax(0, 1fr); }
+      .health-grid > *, .metric-grid > *, .meta-grid > *, .split-grid > *, .section-heading > * { min-width: 0; overflow-wrap: anywhere; }
+      main code, main .flag { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+      main :where(p, li, summary, dd, small, strong, a, h1, h2, h3) { overflow-wrap: anywhere; }
+      /* Keep the floating Partner button from covering the last controls. */
+      main { padding-bottom: 88px; }
+      body .queue-partner-toggle { right: 12px; bottom: 12px; min-height: 40px; padding: 8px 14px; }
       .command-item { align-items: stretch; flex-direction: column; }
       .actions, .inline-form, .dismiss-form, .approval-form { display: grid; grid-template-columns: 1fr; }
       .actions > *, .inline-form > *, .dismiss-form > *, .approval-form > * { width: 100%; max-width: none; }
