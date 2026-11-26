@@ -333,27 +333,15 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
     const approvalId = approval.id;
     const executable = isExecutableApprovalAction(approval.actionType);
+    // One note serves every decision; the pressed button supplies the decision.
     return `<div class="actions">
       <form class="approval-form" method="post" action="/api/approval-action">
         <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
-        <input type="hidden" name="decision" value="${executable ? "approve_execute" : "approved"}">
         <input type="hidden" name="actorRole" value="approver">
-        <input name="note" aria-label="Approval note" placeholder="Optional note">
-        <button type="submit">${executable ? "Approve and continue" : "Approve"}</button>
-      </form>
-      ${executable ? `<form class="approval-form" method="post" action="/api/approval-action">
-        <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
-        <input type="hidden" name="decision" value="approved">
-        <input type="hidden" name="actorRole" value="approver">
-        <input name="note" aria-label="Approval note" placeholder="Optional note">
-        <button class="secondary" type="submit">Approve Only</button>
-      </form>` : ""}
-      <form class="approval-form" method="post" action="/api/approval-action">
-        <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
-        <input type="hidden" name="decision" value="rejected">
-        <input type="hidden" name="actorRole" value="approver">
-        <input name="note" aria-label="Rejection note" placeholder="Optional note">
-        <button class="danger" type="submit">Reject</button>
+        <label class="approval-note-label">Note <input name="note" aria-label="Decision note" placeholder="Optional, saved with your decision"></label>
+        <button type="submit" name="decision" value="${executable ? "approve_execute" : "approved"}">${executable ? "Approve and continue" : "Approve"}</button>
+        ${executable ? `<button class="secondary" type="submit" name="decision" value="approved">Approve Only</button>` : ""}
+        <button class="danger" type="submit" name="decision" value="rejected">Reject</button>
       </form>
       ${approvalRuleForms(approval)}
     </div>`;
@@ -1346,7 +1334,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       }
     ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
     const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
-    return `<script>(()=>{const icon=document.createElement('link');icon.rel='icon';icon.type='image/png';icon.href='/assets/agent-workflow-favicon.png';document.head.append(icon);const key='agentflow.dashboard.theme';${themeBootstrapScript}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
+    return `<a class="skip-link" href="#main-content">Skip to content</a><script>(()=>{const icon=document.createElement('link');icon.rel='icon';icon.type='image/png';icon.href='/assets/agent-workflow-favicon.png';document.head.append(icon);const key='agentflow.dashboard.theme';${themeBootstrapScript}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
       <div class="nav-brand"><a class="nav-brand-link" href="/" aria-label="Agent Workflow home"><img src="/assets/agent-workflow-mark.png" alt="" width="34" height="34"><strong>Agent Workflow</strong></a><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
       <div id="dashboard-menu" class="dashboard-menu">
         <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
@@ -2165,7 +2153,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {
     const iconName: DashboardIconName = rating === "accepted" ? "check" : rating === "rejected" ? "x" : "message";
-    return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" placeholder="Optional note"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
+    return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" aria-label="${escapeHtml(label)} note" placeholder="Optional note"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
   }
 
   function feedbackRatingForBucket(bucket: DashboardFeedbackBucket): FeedbackRating {
@@ -11025,7 +11013,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("agents")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -11203,7 +11191,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("approval-rules")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/approvals">Approvals</a>
@@ -11355,7 +11343,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("approvals")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -11504,7 +11492,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </form>`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Artifact Lifecycle</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("artifact-lifecycle")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
@@ -11537,7 +11525,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     jsonParams.set("limit", String(report.limit));
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Backup Readiness</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("backup-report")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Backup Readiness</h1><p class="muted">Read-only local enterprise storage inventory and restore-drill posture. This page does not create backups, restore data, or mutate storage.</p></div><a class="button secondary" href="/api/backup-report?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Backup Readiness</h1><p class="muted">Read-only local enterprise storage inventory and restore-drill posture. This page does not create backups, restore data, or mutate storage.</p></div><a class="button secondary" href="/api/backup-report?${escapeHtml(jsonParams.toString())}">JSON</a></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
@@ -11581,7 +11569,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("approvals")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/approvals">Approvals</a>
@@ -11647,7 +11635,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       : "";
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Bundle Trust</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("bundles")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Readiness</h1><p class="muted">Read-only trust, compatibility, migration, and contract-test visibility. A signature never expands project execution permissions.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Readiness</h1><p class="muted">Read-only trust, compatibility, migration, and contract-test visibility. A signature never expands project execution permissions.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <section class="panel"><form method="get" class="workflow-form"><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}" placeholder="/path/to/project"></label><label>Trust policy<select name="policy">${["allow", "warn", "require"].map((policy) => `<option value="${policy}"${verification.policy === policy ? " selected" : ""}>${policy}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Inspect</button></div></form><p class="muted">Leave project path blank to inspect shared bundle readiness without project adoption state.</p></section>
@@ -11907,7 +11895,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("candidate-comparisons")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -11938,7 +11926,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const plans = report.codegen.plans.map((plan) => `<tr><td>${escapeHtml(plan.id)}</td><td>${escapeHtml(plan.target)}</td><td>${escapeHtml(plan.status)}</td><td><code>${escapeHtml(plan.receipt)}</code></td></tr>`).join("") || `<tr><td colspan="4">No governed generation plans.</td></tr>`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Context Gateway</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("context-gateway")}
-    <main><header><div><p class="eyebrow">Optimize</p><h1>Context Gateway</h1><p>Body-free operating evidence, readiness gates, and review queues.</p></div></header>
+    <main id="main-content"><header><div><p class="eyebrow">Optimize</p><h1>Context Gateway</h1><p>Body-free operating evidence, readiness gates, and review queues.</p></div></header>
     <section class="panel"><form method="get" action="/context-gateway"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
     <section class="metrics">
       ${metricCard("Projected Savings", `${report.efficiency.projectedSavingsPercent}%`, `${report.efficiency.projectedFrontierTokensAvoided} frontier tokens avoided`)}
@@ -12096,7 +12084,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     <title>Dashboard Action</title>
     <style>${dashboardCss()}</style>
   </head>
-  <body>${dashboardNav("dashboard")}<main><p><a href="/">Dashboard</a></p>${body}</main></body>
+  <body>${dashboardNav("dashboard")}<main id="main-content"><p><a href="/">Dashboard</a></p>${body}</main></body>
   </html>`;
   }
 
@@ -12176,7 +12164,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </div>${renderGraphExportLifecycleHtml(result.projectDir, result.summary ? 1 : 0)}</section>
         <section class="panel"><h2>Handoff Markdown</h2><pre class="markdown-view">${escapeHtml(result.markdown)}</pre></section>`
       : `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Graph</a><h1>Graph Handoff</h1><p class="muted">Unable to open the requested export.</p></div></div><section class="panel warn-panel"><pre>${escapeHtml(result.error)}</pre></section>`;
-    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Graph Handoff</title><style>${dashboardCss()}</style></head><body>${dashboardNav("workflow-graph")}<main>${body}</main></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Graph Handoff</title><style>${dashboardCss()}</style></head><body>${dashboardNav("workflow-graph")}<main id="main-content">${body}</main></body></html>`;
   }
 
   function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[]): string {
@@ -12226,7 +12214,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("dashboard")}
-    <main class="ops-home">
+    <main id="main-content" class="ops-home">
       <div class="ops-topbar">
         <div><h1>System Pulse</h1><p>Live operational view of agent execution, reliability, and flow.</p></div>
         <div class="ops-topbar-actions"><span class="ops-live"><i></i> Live</span><a class="button" href="#start-work">${dashboardIcon("play")} Start workflow</a></div>
@@ -12317,7 +12305,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("info")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -12424,7 +12412,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </div></section>
         <section class="panel"><h2>Snapshot Markdown</h2><pre class="markdown-view">${escapeHtml(result.markdown)}</pre></section>`
       : `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Roles</a><h1>Role Audit Snapshot</h1><p class="muted">Unable to open the requested export.</p></div></div><section class="panel warn-panel"><pre>${escapeHtml(result.error)}</pre></section>`;
-    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Role Audit Snapshot</title><style>${dashboardCss()}</style></head><body>${dashboardNav("roles")}<main>${body}</main></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Role Audit Snapshot</title><style>${dashboardCss()}</style></head><body>${dashboardNav("roles")}<main id="main-content">${body}</main></body></html>`;
   }
 
   function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchParams): string {
@@ -12484,7 +12472,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("discovery")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -12599,7 +12587,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("evaluations")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -12712,7 +12700,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("feedback-inbox")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/feedback-inbox?${escapeHtml(params.toString())}">Feedback Inbox</a>
@@ -12822,7 +12810,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("feedback-inbox")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -12907,7 +12895,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <td>${formatNumber(receipt.totalTokens)}</td><td><span class="status ${receipt.status === "completed" ? "completed" : "failed"}">${escapeHtml(receipt.status)}</span></td>
     </tr>`).join("") || `<tr><td colspan="11">No gateway usage receipts have been observed yet.</td></tr>`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fleet Model Usage</title><style>${dashboardCss()}</style></head><body>
-    ${dashboardNav("fleet-model-usage")}<main><div class="topbar"><div><a href="/settings">Settings</a><h1>Fleet Model Usage</h1><p class="page-intro">Metadata-only usage observed through the authenticated fleet gateway.</p></div><a class="button secondary" href="/api/fleet-model-usage">JSON</a></div>
+    ${dashboardNav("fleet-model-usage")}<main id="main-content"><div class="topbar"><div><a href="/settings">Settings</a><h1>Fleet Model Usage</h1><p class="page-intro">Metadata-only usage observed through the authenticated fleet gateway.</p></div><a class="button secondary" href="/api/fleet-model-usage">JSON</a></div>
     <section class="callout ${report.dashboardSource === "local-fallback" ? "failed" : "completed"}"><strong>Data source</strong><p>${escapeHtml(report.dashboardSource)}${report.dashboardNotice ? ` · ${escapeHtml(report.dashboardNotice)}` : ""}</p></section>
     <section class="metrics">${metricCard("Requests", report.totals.requests, `${report.totals.failures} failed`)}${metricCard("Total Tokens", report.totals.totalTokens, `${report.clients.length} clients`)}${metricCard("Input Tokens", report.totals.inputTokens, `${report.totals.cachedInputTokens} cached`)}${metricCard("Output Tokens", report.totals.outputTokens, `${report.totals.reasoningTokens} reasoning`)}${metricCard("Estimated Cost", `$${report.totals.estimatedCostUsd.toFixed(4)}`, "configured pricing; billing is authoritative")}</section>
     <section class="panel"><h2>Recent Requests</h2><p class="muted">Prompts, responses, credentials, and raw request bodies are never stored. Calls that bypass the gateway are not included.</p><div class="table-wrap"><table><thead><tr><th>Observed</th><th>Client</th><th>Project</th><th>Provider</th><th>Model</th><th>Input</th><th>Cached</th><th>Reasoning</th><th>Output</th><th>Total</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>
@@ -13036,7 +13024,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       </tr>`).join("");
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Governance</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("governance")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Multi-project Governance</h1><p class="muted">Read-only project health, policy drift, provider, queue, and remediation inspection.</p></div><a class="button secondary" href="/api/governance?${escapeHtml(params.toString())}">JSON</a></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Multi-project Governance</h1><p class="muted">Read-only project health, policy drift, provider, queue, and remediation inspection.</p></div><a class="button secondary" href="/api/governance?${escapeHtml(params.toString())}">JSON</a></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
@@ -13149,7 +13137,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     <title>LaunchAgent Log</title>
     <style>${dashboardCss()}</style>
   </head>
-  <body>${dashboardNav("info")}<main><p><a href="/settings">Settings</a></p>${body}</main></body>
+  <body>${dashboardNav("info")}<main id="main-content"><p><a href="/settings">Settings</a></p>${body}</main></body>
   </html>`;
   }
 
@@ -13483,7 +13471,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav(learningView === "settings" ? "daemon-control" : learningView === "diagnostics" ? "learning-diagnostics" : "learning")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Home</a>
@@ -14596,7 +14584,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("model-catalog")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/providers">Providers</a>
@@ -14705,7 +14693,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("model-improvement")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -15270,7 +15258,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("projects")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/projects">Projects</a>
@@ -15386,7 +15374,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("projects")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -15577,7 +15565,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("providers")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -15850,7 +15838,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   <body>
     ${dashboardNav("queue")}
     ${renderQueuePartnerOverlay(partnerProjects, resolvedProjectFilter || ctx.rootDir)}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -16042,7 +16030,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("roadmap")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -16284,7 +16272,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </form>`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Roles</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("roles")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><div class="actions"><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a>${exportForm}</div></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><div class="actions"><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a>${exportForm}</div></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
@@ -16583,7 +16571,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   <body>
     ${dashboardNav("runs")}
     ${renderQueuePartnerOverlay(input.partnerProjects, input.run.projectRootUri, {runId:input.run.id})}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -17073,7 +17061,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("runs")}
-    <main>
+    <main id="main-content">
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
@@ -17468,7 +17456,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Status</th><th>Source DB</th><th>Target Storage</th><th>Warnings / Steps</th><th>Markdown Report</th><th>Guarded Script</th></tr></thead><tbody>${migrationPlanRows || '<tr><td colspan="7">No generated storage migration plans found. Run <code>npm run storage-migrate -- --write-plan</code> to create a reviewed dry-run package.</td></tr>'}</tbody></table></div></section>`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("server-readiness")}
-    <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+    <main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     <details class="readiness-filter"><summary>Inspection scope and advanced filters</summary><section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="192.0.2.10"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section></details>
@@ -17647,7 +17635,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     .training-proposal-table{min-width:1180px;table-layout:fixed}.training-proposal-table th:nth-child(1){width:15%}.training-proposal-table th:nth-child(2){width:24%}.training-proposal-table th:nth-child(3){width:15%}.training-proposal-table th:nth-child(4){width:29%}.training-proposal-table th:nth-child(5){width:17%}.training-proposal-actions input{box-sizing:border-box;width:100%;min-width:0}.training-proposal-actions .actions{display:grid;grid-template-columns:1fr;gap:.4rem;margin-top:.45rem}.training-proposal-actions button{width:100%;white-space:normal}
     </style></head><body>
     ${dashboardNav("training-proposals")}
-    <main><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
+    <main id="main-content"><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
     ${renderDashboardFlash(params)}
     <section class="panel"><form method="get" action="/training-proposals"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
     <section class="metrics">${metricCard("Pending decision", pending, `${inbox.items.length} total proposals`)}${metricCard("Evaluation approved", approved, "run bounded holdouts next")}${metricCard("Evaluated", evaluated, "ready for promotion review")}${metricCard("Last discovery", report?.generatedAt ? formatDashboardDateTimeText(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
@@ -17721,7 +17709,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const jsonQuery = params.toString();
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Activity</title><style>${dashboardCss()}</style></head><body>
     ${dashboardNav("activity")}
-    <main><header><div><p class="eyebrow">Audit</p><h1>Activity</h1><p>One chronological, redacted view of workflow, action, approval, daemon, roadmap, learning, and server events.</p></div><div class="actions"><a class="button secondary" href="/api/activity${jsonQuery ? `?${escapeHtml(jsonQuery)}` : ""}">JSON</a><a class="button secondary" href="/activity">Reset</a></div></header>
+    <main id="main-content"><header><div><p class="eyebrow">Audit</p><h1>Activity</h1><p>One chronological, redacted view of workflow, action, approval, daemon, roadmap, learning, and server events.</p></div><div class="actions"><a class="button secondary" href="/api/activity${jsonQuery ? `?${escapeHtml(jsonQuery)}` : ""}">JSON</a><a class="button secondary" href="/activity">Reset</a></div></header>
     <section class="panel"><form class="workflow-form" method="get" action="/activity">
       <label>Project<select name="project"><option value="">All projects</option>${projectOptions}</select></label>
       <label>Category<select name="category"><option value="">All categories</option>${categoryOptions}</select></label>
@@ -17906,7 +17894,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const runScopeLabel = runScope === "all-projects" ? "all stored projects" : "selected project";
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
     ${capture ? "" : dashboardNav("workflow-graph")}
-    <main>
+    <main id="main-content">
       <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${exportHandoffForm}${captureActions}</div></div>
       <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><input type="hidden" name="orientation" value="${escapeHtml(orientation)}"><input type="hidden" name="stage" value="${escapeHtml(focusedStageId)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Run scope<select name="runScope">${runScopeOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
       ${warningHtml}

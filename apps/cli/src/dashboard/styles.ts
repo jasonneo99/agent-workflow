@@ -45,6 +45,9 @@ export function dashboardCss(): string {
   return dashboardCssCache ??= withDarkOverrides(`
     :root { color-scheme: light; --nav-width: 204px; --page-gutter: clamp(16px, 2vw, 32px); --radius: 10px; --surface: #fff; --border: #dfe3eb; --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 8px 24px rgba(15, 23, 42, .04); }
     *, *::before, *::after { box-sizing: border-box; }
+    .skip-link { position: absolute; left: 12px; top: -48px; z-index: 2000; padding: 10px 14px; border-radius: 8px; background: #1d4ed8; color: #fff; font-weight: 700; text-decoration: none; }
+    .skip-link:focus { top: 12px; }
+    .approval-note-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; }
     html { min-width: 320px; background: #f7f8fb; }
     main { width: calc(100% - var(--nav-width)); margin-left: var(--nav-width); padding: 32px var(--page-gutter) 48px; }
     body { margin: 0; min-width: 320px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }

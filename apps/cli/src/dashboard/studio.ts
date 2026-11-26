@@ -46,6 +46,7 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
   <style>${studioCss()}</style>
 </head>
 <body>
+  <a class="skip-link" href="#task-workspace">Skip to content</a>
   <div class="studio-shell">
     <header class="studio-topbar">
       <a class="studio-brand" href="/studio" aria-label="Agent Workflow Studio home"><img class="studio-brand-mark" src="/assets/agent-workflow-mark.png" alt="" width="28" height="28"><strong>Agent Workflow Studio</strong></a>
@@ -669,6 +670,8 @@ function studioCss(): string {
   return `
     :root { color-scheme: dark; --bg: #0b0e10; --rail: #101417; --surface: #12171a; --surface-2: #171d21; --line: #293136; --line-soft: #20272b; --text: #f1f3ef; --muted: #89939a; --faint: #808a91; --lime: #84f06c; --amber: #f2b84b; --red: #f06b6b; --top: 52px; --rail-width: 234px; }
     * { box-sizing: border-box; }
+    .skip-link { position: absolute; left: 12px; top: -48px; z-index: 100; padding: 10px 14px; background: var(--lime); color: #0b0e10; font-weight: 700; text-decoration: none; }
+    .skip-link:focus { top: 12px; }
     html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     button, input, select, textarea { font: inherit; }
     button, a { -webkit-tap-highlight-color: transparent; }
