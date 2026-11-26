@@ -12,6 +12,7 @@ const source = [
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
+    "./commands/daemon-types.ts",
     "./commands/daemon.ts",
     "./commands/learning.ts",
     "./commands/local-llm.ts",
