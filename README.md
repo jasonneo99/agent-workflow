@@ -226,6 +226,8 @@ templates/       — Project initialization templates
 
 ## Commands
 
+One-shot scripts such as `npm run status` start from the compiled `dist/` build when `npm run build` is newer than every source file, and run the TypeScript sources otherwise (`AGENTFLOW_LAUNCH=tsx` forces sources). `npm run agentflow` and the long-running dashboard, worker and daemon scripts always run the sources.
+
 ```bash
 npm run setup                  # Interactive onboarding
 npm run check                  # Contributor checks before opening a PR
