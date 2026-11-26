@@ -274,3 +274,24 @@ test("approved local holdout thresholds must pass before selecting local", async
     else process.env.LOCAL_MODEL_NAME = previousModel;
   }
 });
+
+test("explicit DEFAULT_MODEL_PROVIDER=mock overrides tier, auto and per-stage provider routing", async () => {
+  const saved = ["DEFAULT_MODEL_PROVIDER", "AGENTFLOW_ROUTING_MODE", "AGENTFLOW_PROVIDER_FAST", "AGENTFLOW_PROVIDER_STANDARD", "AGENTFLOW_PROVIDER_REASONING"].map((key) => [key, process.env[key]] as const);
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "mock";
+    delete process.env.AGENTFLOW_ROUTING_MODE;
+    process.env.AGENTFLOW_PROVIDER_FAST = "codex-cli";
+    process.env.AGENTFLOW_PROVIDER_STANDARD = "codex-cli";
+    process.env.AGENTFLOW_PROVIDER_REASONING = "codex-cli";
+    for (const modelTier of ["fast", "standard", "reasoning"] as const) {
+      const route = await selectModelRoute({ workflowId: "review-pr", stageId: "inspect", agentId: "technical-architect", modelTier, providerOverride: "openai", compiledBrief: "" });
+      assert.equal(route.providerId, "mock");
+      assert.equal(route.estimatedCostTier, "none");
+      assert.match(route.reason, /hard switch/u);
+    }
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});

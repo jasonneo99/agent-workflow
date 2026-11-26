@@ -18,6 +18,9 @@ export * from "./adaptive-evidence.js";
 export * from "./egress-log.js";
 
 export function providerFromEnv(providerOverride?: string): ModelProvider {
+  // Explicit DEFAULT_MODEL_PROVIDER=mock is a hard switch: no override, fallback
+  // candidate or route can construct a live provider while it is set.
+  if (process.env.DEFAULT_MODEL_PROVIDER?.trim().toLowerCase() === "mock") return new MockProvider();
   const provider = providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
 
   if (provider === "auto") {

@@ -58,8 +58,12 @@ export function createCliContext(importMetaUrl: string): CliContext {
   }));
   const packageVersion = readPackageVersion(rootDir);
   const configuredEnvPath = agentWorkflowEnvPath(rootDir);
+  // A provider chosen in the invoking shell (for example DEFAULT_MODEL_PROVIDER=mock)
+  // must survive the durable runtime.env override.
+  const shellProvider = process.env.DEFAULT_MODEL_PROVIDER;
   dotenv.config({ path: configuredEnvPath, quiet: true });
   dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
+  if (shellProvider !== undefined) process.env.DEFAULT_MODEL_PROVIDER = shellProvider;
   return {
     rootDir,
     packageVersion,

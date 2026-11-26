@@ -37,6 +37,9 @@ export async function selectModelRoute(
   options?: { allowedProviderIds?: string[]; routingEngine?: RoutingDecisionEngine }
 ): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
+  // An explicit mock request is a hard switch for deterministic validation:
+  // tier, learned, evidence, auto and per-stage overrides never reach a live provider.
+  const mockLocked = process.env.DEFAULT_MODEL_PROVIDER?.trim().toLowerCase() === "mock";
   const latencyTier = selectLatencyAwareTier(input, requestedModelTier);
   const routingEngine = options?.routingEngine ?? defaultRoutingEngine;
   const preferenceDecision = decideRouting(input, routingEngine, latencyTier);
@@ -45,8 +48,8 @@ export async function selectModelRoute(
     localHoldoutPromotion: preferenceDecision.decision.localHoldout,
     feedbackSignals: preferenceDecision.decision.feedbackSignals
   };
-  const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
-  const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
+  const defaultProvider = mockLocked ? "mock" : input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+  const mode = mockLocked ? "fixed" : defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
   const allowAdaptiveTierPromotion = input.workflowId !== "provider-smoke";
   const modelTier = mode === "adaptive" && allowAdaptiveTierPromotion && preference.promoteFastStages && latencyTier === "fast" ? "standard" : latencyTier;
   const explicitTierProvider = process.env[`AGENTFLOW_PROVIDER_${modelTier.toUpperCase()}`];
@@ -62,13 +65,15 @@ export async function selectModelRoute(
     ? await selectLearnedProvider(taskEvidence.candidate.providerId)
     : undefined;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider, input.workflowId) : undefined;
-  const preferredProviderId = input.providerOverride
+  const preferredProviderId = mockLocked
+    ? "mock"
+    : input.providerOverride
     ? input.providerOverride
     : mode === "fixed"
     ? defaultProvider
     : approvedLocalRoute?.providerId ?? tierProvider ?? evidenceRoute?.providerId ?? learnedRoute?.providerId ?? autoRoute?.providerId ?? defaultProvider;
   const allowedProviderIds = options?.allowedProviderIds === undefined ? undefined : new Set(options.allowedProviderIds);
-  const capabilityFallback = allowedProviderIds && !allowedProviderIds.has(preferredProviderId)
+  const capabilityFallback = !mockLocked && allowedProviderIds && !allowedProviderIds.has(preferredProviderId)
     ? await selectAllowedProvider(modelTier, allowedProviderIds)
     : undefined;
   const providerId = capabilityFallback?.providerId ?? preferredProviderId;
@@ -81,7 +86,7 @@ export async function selectModelRoute(
     mode,
     estimatedCostTier: estimateCostTier(providerId, modelTier),
     reason: [mode === "fixed"
-      ? `Fixed routing uses DEFAULT_MODEL_PROVIDER=${defaultProvider}.`
+      ? mockLocked ? "DEFAULT_MODEL_PROVIDER=mock is a hard switch; all stages use the mock provider." : `Fixed routing uses DEFAULT_MODEL_PROVIDER=${defaultProvider}.`
       : mode === "auto"
         ? [
           `Auto routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
