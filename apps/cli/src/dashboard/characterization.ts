@@ -69,6 +69,8 @@ const LONG_HEX = /\b[0-9a-f]{16,}\b/giu;
 // Short ids (abbreviated uuids, hashes) mix letters and digits.
 const SHORT_HEX = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{6,15}\b/giu;
 const REQUEST_ID = /\breq_[0-9a-z]{6,}\b/giu;
+// Probes of remote services fail with whichever socket error came first.
+const NETWORK_ERROR = /\b(?:read ECONNRESET|Connection terminated unexpectedly|Connection terminated due to connection timeout|socket hang up|connect (?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH)[^"<\n]*|ETIMEDOUT|ECONNRESET)/gu;
 const DIGITS = /\d+(\.\d+)?/gu;
 
 /** Replace run-to-run noise with placeholders. Seeded ids and paths become
@@ -81,6 +83,7 @@ export function normalizeResponse(body: string, context: NormalizeContext): stri
     if (short) text = text.split(short).join(`${label}:short`);
   }
   return text
+    .replace(NETWORK_ERROR, "<network error>")
     .replace(UUID, "<uuid>")
     .replace(ISO, "<time>")
     .replace(LONG_HEX, "<hex>")

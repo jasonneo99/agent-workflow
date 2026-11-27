@@ -30,6 +30,13 @@ test("normalization labels seeded values before stripping run-to-run noise", () 
     '<a href="/run?id=<run:completed>"><run:completed>:short</a> other <uuid> at <time> in #<duration> nonce="<token>"');
 });
 
+test("socket errors from remote probes normalize to one placeholder", () => {
+  const a = normalizeResponse("inspection failed: read ECONNRESET", { labels: [] });
+  const b = normalizeResponse("inspection failed: Connection terminated unexpectedly", { labels: [] });
+  assert.equal(a, "inspection failed: <network error>");
+  assert.equal(a, b);
+});
+
 test("the hash ignores the order of rows that share a timestamp", async () => {
   const { hashNormalized } = await import("./characterization.js");
   assert.equal(hashNormalized("<li>a</li><li>b</li>"), hashNormalized("<li>b</li><li>a</li>"));
