@@ -105,6 +105,7 @@
     "release:atomic": "node scripts/atomic-release.mjs",
     "screenshots:dashboard": "node scripts/capture-dashboard-screenshots.mjs",
     "dashboard:sla": "node scripts/dashboard-sla-canary.mjs",
+    "dashboard:characterize": "node --import tsx scripts/dashboard-characterization.ts",
     "runtime:verify-live": "node scripts/verify-live-runtime.mjs",
     "performance:baseline": "tsx scripts/performance-baseline.ts",
     "performance:compare": "tsx scripts/performance-compare.ts",
