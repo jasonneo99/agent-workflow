@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { dashboardCss } from "./dashboard/styles.js";
-import { dashboardSource } from "./dashboard/test-source.js";
+import { dashboardSource, functionSource } from "./dashboard/test-source.js";
 
 const source = dashboardSource();
 
@@ -14,7 +14,7 @@ test("every dashboard page offers a skip link to its main content", () => {
 });
 
 test("approval decisions share one labelled note and the pressed button carries the decision", () => {
-  const forms = source.slice(source.indexOf("function approvalDecisionForms("), source.indexOf("function approvalDismissForm("));
+  const forms = functionSource("approvalDecisionForms", source);
   assert.equal(forms.match(/name="note"/gu)?.length, 1);
   assert.match(forms, /aria-label="Decision note"/u);
   assert.doesNotMatch(forms, /type="hidden" name="decision"/u);

@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { formatRunEta } from "./lib/builders-runs.js";
 import { estimateRunEta, withWorkerAvailability } from "./dashboard/run-eta.js";
+import { dashboardSource, functionSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 
 test("the ETA label says no worker is running", () => {
   const run = { id: "r", workflowId: "w", projectRootUri: "/p", status: "queued", startedAt: new Date().toISOString(), finishedAt: null };

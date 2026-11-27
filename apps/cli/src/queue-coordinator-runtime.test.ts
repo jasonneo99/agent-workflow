@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 import {candidateMatchesCurrentContract,prepareUnstartedResumeProjection,historicalRecoveryDiagnostic,heldFamilyNextAction,nonLeasableCoordinatorHold,prepareQuarantinedAssessmentProjection,isRetryableCoordinatorConflict,provenanceGapCohortKey,buildProvenanceCohortReviews} from './commands/queue-coordinator.js';
 import {QUEUE_SHARED_ITEM_LIMIT,planQueueCoordinator,type QueueCoordinatorFamily} from '../../../packages/workflow-engine/src/queue-coordinator-plan.js';
 
 const source = () => readFileSync(new URL("./commands/queue-coordinator.ts", import.meta.url), "utf8");
-const daemonSource = () => readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const daemonSource = () => dashboardSource();
 test('provenance gap cohorts are stable, project-scoped and body-free',()=>{
  const a=provenanceGapCohortKey('project-a',['missing scope','missing contract','missing scope']);
  assert.equal(a,provenanceGapCohortKey('project-a',['missing contract','missing scope']));

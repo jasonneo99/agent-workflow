@@ -1,3 +1,13 @@
+import { readRoadmapSuggestionDecisions } from "../dashboard/data/roadmap-decisions.js";
+import { inspectProviderStatus, inspectBedrockStatus, awsCredentialStatusLabel, hasAwsConfiguration, loadBedrockModelIds, inspectCodexCliStatus, inspectOpenAIStatus, loadOpenAITierModelPreview, loadOpenAIModelIds } from "../dashboard/data/provider-status.js";
+import { renderRuntimeMonitorPanel, renderWorkerStatusHtml, runtimeMonitorRecommendations, buildMcpCommandDiagnostics, buildMcpApprovalDiagnostics, buildMcpClientReloadGuidance, tailJsonl, agentWorkflowPluginRoot, runtimeProcessDetail, runtimeProcessGroupKey, processMatchesRuntimeRole, parseLsofListener, parseLaunchctlNumber, resolveSharedHostStorageTarget, artifactLifecyclePlanForAction, loadArtifactLifecycleReport } from "../dashboard/data/runtime-monitor.js";
+import { graphPresetHref, workflowGraphDashboardHref, normalizeDashboardGraphPresetFilters, dashboardGraphPresetsPath, summarizeFocusedStageDelta } from "../dashboard/ui/graph-links.js";
+import { renderRouteReceiptTrendsHtml, renderLocalRouteDecisionDrilldownHtml, renderLocalHoldoutRoutingStatusHtml } from "../dashboard/ui/routing-components.js";
+import { renderFeedbackTargetActionForms, feedbackTargetActionForm, renderFeedbackTargetEvidenceHtml, loadDashboardFeedbackTargets, loadDashboardTuningOverlayStatus, renderTuningProposalsHtml } from "../dashboard/ui/feedback-components.js";
+import { renderMobileApprovalCard, formatApprovalPayload, approvalExecuteForm, approvalDismissForm, formatPendingApprovalNotice } from "../dashboard/ui/approval-components.js";
+import { queueRunActionForm, renderRunInfoDialog, failedRunResolution, estimateQueueItemEta, dashboardRunCanProgress, workerEligibilityReason, workerEligibleForQueueProject } from "../dashboard/ui/run-actions.js";
+import { readFormBody, readJsonBody, respondDashboardAction, renderDashboardActionResult, dashboardUrlFromRequest, renderDashboardLoadingPage, parseDashboardRunScope, parseDashboardRunStatusFilter } from "../dashboard/ui/http.js";
+import { titleCase, formatNumber, truncateMiddle, formatSignedRate, countBy, runApprovalLevelLabel, runApprovalLevelRank, withTimeout } from "../dashboard/ui/format.js";
 import { escapeHtml, dashboardNav, iconLabel, renderDashboardFlash, renderDashboardActionHistory, renderDashboardDateTime, metricCard, renderDashboardStatusPage, dashboardReturnInput, dashboardPagePath, renderDashboardFlashValues, safeDashboardReturnPath } from "../dashboard/ui/layout.js";
 import type { CliContext } from "../lib/context.js";
 import { withClient } from "../../../../packages/storage/src/client.js";
@@ -5,16 +15,16 @@ import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js"
 import { runStateCounts } from "../dashboard/run-state.js";
 import { matchesQuery, pageOf, pagerHtml } from "../dashboard/paging.js";
 import type { Command } from "commander";
-import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary } from "../lib/cli-types.js";
+import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary } from "../lib/cli-types.js";
 import {countAgentImprovementPendingPromotions, renderAgentImprovementPendingBannerHtml} from "../lib/builders-learning.js";
 import { approvalOneLineSummary, approvalRuleBroadTarget, approvalRuleDisplayTarget, approvalRuleExactTarget, buildApprovalBacklogReport, classifyApprovalAutopilotRisk, dismissApprovedAction, formatApprovalAutopilotResult, loadProjectApprovalRules, parseApprovalAutopilotRisk, processDashboardApprovalRuleAction, processRequesterApprovalReply, removeProjectApprovalRule, rolePreviewForApproval, runApprovalAutopilot } from "../lib/builders-approvals.js";
 import { loadContextOperatorReport } from "../lib/builders-context.js";
-import { appendLearningActionRejectionReceipts, buildAgentImprovementEvalPlan, buildAgentImprovementPatchPlan, buildAgentImprovementPromotionQueue, buildDashboardLocalProviderEvidence, buildDashboardRouteReceiptTrends, buildLocalLlmCacheTrendReport, buildLocalLlmCostLedgerReport, buildLocalLlmDownloadRecommendationReport, buildLocalLlmInstallationPlanReport, buildLocalLlmInventoryReport, buildLocalLlmPrunePlanReport, buildLocalLlmRoutingRecommendationReport, buildLocalLlmSmokeOutcomeTrend, buildPromotionRoutingNotePlan, cleanupRuntimeMcpProcesses, compactLearningActionReceiptFiles, decideAgentImprovementPromotions, defaultFeedbackNote, discoverModelIds, emptyLearningActionReceipts, envFlag, formatDuration, formatDurationDelta, formatPromotionRoutingNotePlan, formatUsd, inspectOpenAICompatibleStatus, isProcessAlive, loadAgentImprovementReport, loadCostQualityReportsForDashboardRuns, loadDashboardCandidateComparisonReport, loadDashboardEvaluations, loadDashboardFeedbackInboxReport, loadDashboardFeedbackTargetsFromRuns, loadDashboardLocalHoldoutRoutingStatus, loadLearningActionReceiptHealth, loadLearningDaemonStatus, loadLearningReport, loadLocalLlmRoutingRecommendationReport, loadLocalLlmSetupChecklistReport, loadLocalLlmSetupGuideReport, loadOpenAICompatibleModelIds, loadPreferenceScorecard, loadRoutingConfig, loadRuntimeMcpCleanupCandidates, loadTuningProposals, loadWorkflowShapeOptimization, orderedUnique, parseLearningDaemonMode, parseLearningRiskLevel, parseOfflineFallbackQueueAction, parseProposalIds, parseRuntimeMcpStaleMinutes, parseStaleRunReconcileLimit, readAgentImprovementPromotionQueue, readDashboardJsonFile, readLearningActionReceipts, readLearningApprovalQueue, readLearningSettings, readRouteDecisionFeedbackLog, readTuningApprovalHistory, recordRunFeedback, runOfflineFallbackSync, runtimeMcpCleanupConfig, staleRunReconcileConfig, summarizeWorkflowRun, tuningHistoryEventSignature, uniqueSorted, writeAgentImprovementPromotionQueue, writeCandidateComparisonPlan, writeLearningActionReceipts, writeLocalLlmRoutingRecommendationReport } from "../lib/builders-learning.js";
+import { appendLearningActionRejectionReceipts, buildAgentImprovementEvalPlan, buildAgentImprovementPatchPlan, buildAgentImprovementPromotionQueue, buildDashboardLocalProviderEvidence, buildDashboardRouteReceiptTrends, buildLocalLlmCacheTrendReport, buildLocalLlmCostLedgerReport, buildLocalLlmDownloadRecommendationReport, buildLocalLlmInstallationPlanReport, buildLocalLlmInventoryReport, buildLocalLlmPrunePlanReport, buildLocalLlmRoutingRecommendationReport, buildLocalLlmSmokeOutcomeTrend, buildPromotionRoutingNotePlan, cleanupRuntimeMcpProcesses, compactLearningActionReceiptFiles, decideAgentImprovementPromotions, defaultFeedbackNote, discoverModelIds, emptyLearningActionReceipts, envFlag, formatDuration, formatDurationDelta, formatPromotionRoutingNotePlan, formatUsd, inspectOpenAICompatibleStatus, isProcessAlive, loadAgentImprovementReport, loadCostQualityReportsForDashboardRuns, loadDashboardCandidateComparisonReport, loadDashboardEvaluations, loadDashboardFeedbackInboxReport, loadDashboardLocalHoldoutRoutingStatus, loadLearningActionReceiptHealth, loadLearningDaemonStatus, loadLearningReport, loadLocalLlmRoutingRecommendationReport, loadLocalLlmSetupChecklistReport, loadLocalLlmSetupGuideReport, loadOpenAICompatibleModelIds, loadPreferenceScorecard, loadRoutingConfig, loadRuntimeMcpCleanupCandidates, loadTuningProposals, loadWorkflowShapeOptimization, orderedUnique, parseLearningDaemonMode, parseLearningRiskLevel, parseOfflineFallbackQueueAction, parseProposalIds, parseRuntimeMcpStaleMinutes, parseStaleRunReconcileLimit, readAgentImprovementPromotionQueue, readDashboardJsonFile, readLearningActionReceipts, readLearningApprovalQueue, readLearningSettings, readRouteDecisionFeedbackLog, recordRunFeedback, runOfflineFallbackSync, runtimeMcpCleanupConfig, staleRunReconcileConfig, summarizeWorkflowRun, uniqueSorted, writeAgentImprovementPromotionQueue, writeCandidateComparisonPlan, writeLearningActionReceipts, writeLocalLlmRoutingRecommendationReport } from "../lib/builders-learning.js";
 import { buildDashboardLocalLlmRoutingDecisionTimeline, buildLocalHoldoutResultSummary, buildLocalHoldoutRoutingPromotion, buildLocalLlmBenchmarkReceiptReport, buildLocalLlmRoutingDecisionSnapshotReport, buildLocalLlmRoutingNoteApplicationPlan, buildLocalLlmRoutingNotePlan, emptyLocalHoldoutResultSummary, exportWorkflowRun, formatLocalHoldoutResultSummary, formatLocalHoldoutRoutingPromotion, formatLocalLlmBenchmarkReceiptReport, formatLocalLlmCacheTrendReport, formatLocalLlmCostLedgerReport, formatLocalLlmDownloadRecommendationReport, formatLocalLlmInstallationPlanReport, formatLocalLlmInventoryReport, formatLocalLlmPrunePlanReport, formatLocalLlmRouteSmokeResult, formatLocalLlmRoutingDecisionSnapshotReport, formatLocalLlmRoutingNoteApplicationPlan, formatLocalLlmRoutingNotePlan, formatLocalLlmRoutingRecommendationReport, formatLocalLlmSetupGuideReport, formatRouteDecisionFeedbackResult, loadDashboardLocalLlmRoutingNoteApplicationStatus, loadLocalHoldoutModelPlan, loadLocalLlmBenchmarkReceiptReport, loadLocalLlmCacheTrendReport, loadLocalLlmCostLedgerReport, loadLocalLlmInstallationPlanReport, loadLocalLlmInventoryReport, loadLocalLlmRoutingDecisionSnapshotReport, readLocalHoldoutResultSummary, readLocalLlmRoutingNotePlan, recordRouteDecisionFeedback, runLocalLlmRouteSmoke, watchWorkflowRun, writeLocalHoldoutResultSummary, writeLocalHoldoutRoutingPromotion, writeLocalLlmBenchmarkReceiptReport, writeLocalLlmDownloadRecommendationReport, writeLocalLlmInstallationPlanReport, writeLocalLlmInventoryReport, writeLocalLlmPrunePlanReport, writeLocalLlmRoutingNotePlan, writeLocalLlmSetupGuideReport } from "../lib/builders-local-llm.js";
 import { adoptDiscoveredProjects, buildDashboardProjectAliasMergePlan, discoverLocalProjects, formatDiscoveryAdoptionResult, isPathInside, loadDashboardProjectIdentityGroups, parseSpotlightMode, splitCommaList } from "../lib/builders-project.js";
 import { assessRunStaleInputs, createAgentTaskWorkflow, formatDashboardDateTimeText, formatIndexResult, formatRunEta, formatRunSummary, formatStaleInputWarnings, loadObservabilityReport, resolveWorkflowPreset, runDashboardAgentTask, runDashboardWorkflow, runWorkflowPreset } from "../lib/builders-runs.js";
-import { buildServerApprovalActionPlanReport, buildServerApprovalActionTestAdapterReport, buildServerMutationControlReport, checkServerQueueRateLimit, firstHeader, hashAuditValue, isLoopbackBind, loadRegisteredProjectConfig, loadServerApprovalActionReport, loadServerApprovalPreview, loadServerProjectRegistryReport, loadServerReadinessReport, loadServerRequestAuditLog, loadServerRequestPreview, loadServerRoutePreview, processServerQueueRequest, processSynchronousConversation, rejectProjectIdReason, requestContentLength, resolveServerProjectReference, safeAppendServerRequestAuditEvent, serverAuditErrorCode, serverRequestLimits, validateServerMutationAuth } from "../lib/builders-server.js";
-import {approveAndExecuteAction, compactDashboardText, countStrings, ensureProjectSubdir, evaluateRoleGate, execFileText, executeApprovedAction, formatBytes, formatInlineCounts, indexProjectForRun, isDismissedApproval, isExecutableApprovalAction, isOpenApproval, isRecord, lifecycleExecutionCapabilityEnabled, lifecyclePolicyFromProject, loadAgentsForProject, loadApprovalProjectConfig, loadCostQualityReport, loadLocalProjectConfig, normalizeActorRole, normalizeWorkerId, objectFromRecord, objectValue, pathExists, pathIsFile, queueWorkflow, resolveDashboardProjectPath, resolveLocalProjectRootUri, resumeBlockedRunAfterResolvedApprovals, shellQuote, sleep, stableHash, stringFromRecord, stringValue, truncateText, walk, buildGraphHandoffPayload, safeDisplayUrl, safeErrorMessage} from "../lib/builders-shared.js";
+import { buildServerApprovalActionPlanReport, buildServerApprovalActionTestAdapterReport, buildServerMutationControlReport, checkServerQueueRateLimit, firstHeader, hashAuditValue, loadRegisteredProjectConfig, loadServerApprovalActionReport, loadServerApprovalPreview, loadServerProjectRegistryReport, loadServerReadinessReport, loadServerRequestAuditLog, loadServerRequestPreview, loadServerRoutePreview, processServerQueueRequest, processSynchronousConversation, rejectProjectIdReason, requestContentLength, resolveServerProjectReference, safeAppendServerRequestAuditEvent, serverAuditErrorCode, serverRequestLimits, validateServerMutationAuth } from "../lib/builders-server.js";
+import { approveAndExecuteAction, compactDashboardText, countStrings, ensureProjectSubdir, evaluateRoleGate, execFileText, executeApprovedAction, formatBytes, formatInlineCounts, indexProjectForRun, isDismissedApproval, isExecutableApprovalAction, isOpenApproval, isRecord, lifecycleExecutionCapabilityEnabled, loadAgentsForProject, loadApprovalProjectConfig, loadCostQualityReport, loadLocalProjectConfig, normalizeActorRole, normalizeWorkerId, objectFromRecord, objectValue, pathExists, pathIsFile, queueWorkflow, resolveDashboardProjectPath, resolveLocalProjectRootUri, resumeBlockedRunAfterResolvedApprovals, shellQuote, sleep, stableHash, stringFromRecord, stringValue, truncateText, walk, buildGraphHandoffPayload, safeDisplayUrl } from "../lib/builders-shared.js";
 import { buildObjectArtifactProofReport, formatOfflineFallbackQueue, formatOfflineFallbackSyncResult, loadOfflineFallbackReport, loadStorageMergeEvidenceListing, markOfflineFallbackQueueItemSynced, queueObjectMirrorApproval, recordOfflineFallbackQueueItem, writeStorageProjectConflictDecision } from "../lib/builders-storage.js";
 import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, roleAuditSummaryFromPayload, safeFileSegment, updateEnvValue, writeRoleAuditSnapshot } from "../lib/builders-system.js";
 import { loadAgentRecords, loadAgents, loadProjectConfig, loadWorkflowRecords, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
@@ -50,14 +60,14 @@ import { buildLearningProposalSet } from "../../../../packages/learning-loop/src
 import { executeAllowedCommand, probeCommandExecutionCapabilities, type ExecutionCapabilityProbe } from "../../../../packages/local-tools/src/command-executor.js";
 import { type CatalogProviderKind, explainModelCatalogSelection, normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
-import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../../packages/model-providers/src/openai.js";
+import { configuredOpenAIModelForTier } from "../../../../packages/model-providers/src/openai.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
 import { type ObservabilityReport, buildObservabilityReport } from "../../../../packages/observability/src/index.js";
 import { canonicalJsonHash, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { type GovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
 import { parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap/src/index.js";
 import { resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../../packages/roadmap/src/index.js";
-import { type CostQualityReport, type PreferenceScorecard, type TuningApprovalHistory, type TuningHistoryStatus, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildTuningApplicationPlan, buildTuningProposals, formatCandidateComparisonPlan, formatTuningApplicationPlan } from "../../../../packages/run-reporter/src/index.js";
+import { type CostQualityReport, type PreferenceScorecard, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildTuningApplicationPlan, buildTuningProposals, formatCandidateComparisonPlan, formatTuningApplicationPlan } from "../../../../packages/run-reporter/src/index.js";
 import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { type StorageMigrationPlan } from "../../../../packages/storage/src/migration-plan.js";
@@ -123,7 +133,6 @@ import { type OrchestrationPlan, type OrchestrationStep, createOrchestrationPlan
 import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "../reference-resolution.js";
 import { buildRunOutcomeContract } from "../run-outcome.js";
 import { probeWorkerProviderCapabilities, probeWorkerProviderExecution } from "../worker-provider-capabilities.js";
-import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWorkerIdentity } from "../../../../packages/workflow-engine/src/worker-identity.js";
@@ -134,7 +143,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import YAML from "yaml";
-import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReceiptPreview, ArtifactLifecycleReport, ArtifactLifecycleRequestedActionType, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSource, DashboardAgentSummary, DashboardAgentsReport, DashboardArtifactLifecycleRow, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, RoadmapSuggestionDecisionLog, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardTuningOverlayStatus, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FailedRunResolution, FocusedStageDeltaSummary, FocusedStageOutcomeSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapMilestone, RoadmapPriority, RoadmapTask, RoadmapTaskKind, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, TuningOverlayDocument, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
+import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReport, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSource, DashboardAgentSummary, DashboardAgentsReport, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FocusedStageDeltaSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapMilestone, RoadmapPriority, RoadmapTask, RoadmapTaskKind, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
 import { cleanRoadmapFormText, compareRoadmapTasks, parseRoadmapMilestones, parseRoadmapPriority, parseRoadmapTasks, roadmapPriorityOrder } from "../lib/roadmap-tasks.js";
 
 export function registerDaemonCommands(program: Command, ctx: CliContext): void {
@@ -172,22 +181,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  function agentWorkflowPluginRoot(): string {
-    const sourceRoot = path.join(os.homedir(), "plugins", "agent-workflow");
-    if (fsSync.existsSync(path.join(sourceRoot, ".codex-plugin", "plugin.json"))) return sourceRoot;
-
-    const cacheRoot = path.join(os.homedir(), ".codex", "plugins", "cache", "personal", "agent-workflow");
-    if (!fsSync.existsSync(cacheRoot)) return sourceRoot;
-    const installed = fsSync.readdirSync(cacheRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && fsSync.existsSync(path.join(cacheRoot, entry.name, ".codex-plugin", "plugin.json")))
-      .map((entry) => ({
-        path: path.join(cacheRoot, entry.name),
-        modifiedAt: fsSync.statSync(path.join(cacheRoot, entry.name)).mtimeMs
-      }))
-      .sort((left, right) => right.modifiedAt - left.modifiedAt);
-    return installed[0]?.path ?? sourceRoot;
-  }
-
   async function appendRoadmapRegisterItem(form: URLSearchParams): Promise<DashboardFollowUpResult> {
     const kind: RoadmapTaskKind = form.get("kind") === "bug" ? "bug" : "task";
     const title = cleanRoadmapFormText(form.get("title") ?? "");
@@ -218,14 +211,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       title: "Roadmap item recorded",
       output: `${itemTitle} was added to docs/roadmap.md with milestone ${milestone} and ${priority} priority.`
     };
-  }
-
-  async function readRoadmapSuggestionDecisions(projectDir: string): Promise<RoadmapSuggestionDecisionLog> {
-    const filePath = path.join(projectDir, ".agent-workflow", "learning", "roadmap-suggestion-decisions.json");
-    const result = await readDashboardJsonFile<RoadmapSuggestionDecisionLog>(filePath, (value) =>
-      value.kind === "agentflow_roadmap_suggestion_decisions" && Array.isArray(value.decisions)
-    );
-    return result.value ?? { kind: "agentflow_roadmap_suggestion_decisions", projectRootUri: projectDir, updatedAt: null, decisions: [] };
   }
 
   async function decideRoadmapSuggestion(form: URLSearchParams): Promise<DashboardFollowUpResult> {
@@ -348,25 +333,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </div>`;
   }
 
-  function approvalDismissForm(approvalId: string): string {
-    return `<form class="approval-form" method="post" action="/api/approval-action">
-      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
-      <input type="hidden" name="decision" value="dismiss">
-      <input type="hidden" name="actorRole" value="operator">
-      <input name="note" aria-label="Dismissal note" placeholder="Why skip it?">
-      <button class="secondary" type="submit">Dismiss</button>
-    </form>`;
-  }
-
-  function approvalExecuteForm(approvalId: string): string {
-    return `<form class="approval-form" method="post" action="/api/approval-action">
-      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
-      <input type="hidden" name="decision" value="execute">
-      <input type="hidden" name="actorRole" value="operator">
-      <button type="submit">Execute</button>
-    </form>`;
-  }
-
   function approvalFailedActionForms(approvalId: string, note: string): string {
     return `<div class="actions">
       <p class="muted">${escapeHtml(truncateText(humanizeApprovalFailureText(note), 220))}</p>
@@ -419,129 +385,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return "";
   }
 
-  function artifactAgeBucket(value: string): string {
-    const ageMs = Date.now() - Date.parse(value);
-    if (!Number.isFinite(ageMs) || ageMs < 0) return "unknown";
-    const days = ageMs / 86_400_000;
-    if (days <= 1) return "0-1d";
-    if (days <= 7) return "2-7d";
-    if (days <= 30) return "8-30d";
-    if (days <= 90) return "31-90d";
-    return "90d+";
-  }
-
-  function artifactAgeDays(value: string): number | null {
-    const ageMs = Date.now() - Date.parse(value);
-    if (!Number.isFinite(ageMs) || ageMs < 0) return null;
-    return Math.floor(ageMs / 86_400_000);
-  }
-
   function artifactLifecycleApprovalActionType(action: ArtifactLifecycleAction): ArtifactLifecycleApprovalActionType {
     if (action === "archive") return "artifact_archive";
     if (action === "restore") return "artifact_restore";
     return "artifact_prune";
-  }
-
-  function artifactLifecycleCandidate(
-    artifact: ArtifactLifecycleReport["recentArtifacts"][number],
-    ageDays: number | null,
-    reason: string,
-    action: ArtifactLifecycleAction
-  ): ArtifactLifecycleActionPlan["candidates"][number] {
-    return {
-      artifactId: artifact.id,
-      uri: artifact.uri,
-      runId: artifact.runId,
-      taskId: artifact.taskId,
-      projectName: artifact.projectName,
-      projectRootUri: artifact.projectRootUri,
-      workflowId: artifact.workflowId,
-      runStatus: artifact.runStatus,
-      kind: artifact.kind,
-      contentBytes: artifact.contentBytes,
-      createdAt: artifact.createdAt,
-      ageDays,
-      reason,
-      receiptPreview: artifactLifecycleReceiptPreview({
-        action,
-        artifactId: artifact.id,
-        uri: artifact.uri,
-        runId: artifact.runId,
-        taskId: artifact.taskId,
-        kind: artifact.kind,
-        contentBytes: artifact.contentBytes,
-        reason
-      })
-    };
-  }
-
-  function artifactLifecycleHint(artifact: DashboardArtifactLifecycleRow, ageBucket: string): string {
-    if (artifact.kind === "action_approval" || artifact.kind === "run_feedback" || artifact.kind === "command_output" || artifact.kind === "file_write") {
-      return "retain for audit";
-    }
-    if (artifact.runStatus === "failed" || artifact.runStatus === "running" || artifact.runStatus === "queued") {
-      return "retain until run reviewed";
-    }
-    if ((ageBucket === "31-90d" || ageBucket === "90d+") && artifact.contentBytes > 20_000) {
-      return "candidate for future prune plan";
-    }
-    return "retain by default";
-  }
-
-  function artifactLifecyclePlanForAction(report: ArtifactLifecycleReport, action: ArtifactLifecycleAction): ArtifactPrunePlan | ArtifactLifecycleActionPlan | null {
-    if (action === "prune") return report.prunePlan;
-    if (action === "archive") return report.archivePlan;
-    return report.restorePlan;
-  }
-
-  function artifactLifecycleReceiptPreview(input: {
-    action: ArtifactLifecycleAction;
-    artifactId: string;
-    uri: string;
-    runId: string;
-    taskId: string | null;
-    kind: string;
-    contentBytes: number;
-    reason: string;
-  }): ArtifactLifecycleReceiptPreview {
-    const requestedActionType: Record<ArtifactLifecycleAction, ArtifactLifecycleRequestedActionType> = {
-      prune: "artifact_prune_requested",
-      archive: "artifact_archive_requested",
-      restore: "artifact_restore_requested"
-    };
-    return {
-      actionType: requestedActionType[input.action],
-      target: input.uri,
-      summary: `Would request ${input.action} for ${input.kind} artifact ${input.artifactId}`,
-      metadata: {
-        mode: "dry-run",
-        action: input.action,
-        artifactId: input.artifactId,
-        runId: input.runId,
-        taskId: input.taskId,
-        kind: input.kind,
-        contentBytes: input.contentBytes,
-        reason: input.reason
-      }
-    };
-  }
-
-  function artifactPruneReason(artifact: ArtifactLifecycleReport["recentArtifacts"][number], ageDays: number | null, criteria: ArtifactPrunePlan["criteria"]): string | null {
-    if (!criteria.includeAudit && isAuditArtifact(artifact)) return null;
-    if (artifact.runStatus !== "completed" && artifact.runStatus !== "dismissed" && artifact.runStatus !== "cancelled") return null;
-    if (ageDays === null || ageDays < criteria.minAgeDays) return null;
-    if (artifact.contentBytes < criteria.minBytes) return null;
-    return `${artifact.kind} is ${ageDays} day(s) old, ${formatBytes(artifact.contentBytes)}, and belongs to a ${artifact.runStatus} run.`;
-  }
-
-  function awsCredentialStatusLabel(): string {
-    if (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_SESSION_TOKEN) {
-      return "env credentials configured";
-    }
-    if (process.env.AWS_PROFILE) {
-      return `profile ${process.env.AWS_PROFILE}`;
-    }
-    return "default credential chain";
   }
 
   function backupRestoreCommands(projectRootUri?: string): string[] {
@@ -583,177 +430,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       notes.push("Read-only backup inventory and restore-drill evidence are present for the inspected scope.");
     }
     return notes;
-  }
-
-  function buildArtifactArchivePlan(artifacts: ArtifactLifecycleReport["recentArtifacts"], criteria: ArtifactPrunePlan["criteria"]): ArtifactLifecycleActionPlan {
-    if (criteria.legalHold) {
-      return emptyArtifactLifecycleActionPlan("archive", criteria, "Project legal hold is enabled; archive candidates are suppressed.");
-    }
-    const candidates = artifacts.flatMap((artifact) => {
-      const ageDays = artifactAgeDays(artifact.createdAt);
-      const reason = artifactPruneReason(artifact, ageDays, criteria);
-      if (!reason) return [];
-      return [artifactLifecycleCandidate(artifact, ageDays, reason.replace("belongs to", "is ready for archive review and belongs to"), "archive")];
-    });
-    return {
-      mode: "dry-run",
-      action: "archive",
-      generatedAt: new Date().toISOString(),
-      criteria,
-      totalCandidates: candidates.length,
-      estimatedBytesRecoverable: candidates.reduce((sum, candidate) => sum + candidate.contentBytes + candidate.uri.length, 0),
-      approvalRequired: criteria.requireApproval,
-      notes: [
-        "Dry run only. This plan does not archive, move, delete, or mutate artifacts.",
-        "Approved archive execution copies artifacts into archived snapshots, records lifecycle receipts, and preserves restore metadata.",
-        criteria.includeAudit ? "Audit artifacts were allowed into archive candidate selection by request." : `${artifacts.filter(isAuditArtifact).length} audit artifact(s) were excluded from archive candidate selection.`,
-        ...(candidates.length ? [] : ["No artifacts matched the current archive criteria."])
-      ],
-      candidates
-    };
-  }
-
-  function buildArtifactLifecycleHints(artifacts: ArtifactLifecycleReport["recentArtifacts"], estimatedBytes: number, limit: number): string[] {
-    const hints: string[] = [];
-    const futurePruneCandidates = artifacts.filter((artifact) => artifact.lifecycleHint === "candidate for future prune plan");
-    const failedRunArtifacts = artifacts.filter((artifact) => artifact.runStatus === "failed").length;
-    const auditArtifacts = artifacts.filter((artifact) => artifact.lifecycleHint === "retain for audit").length;
-    if (artifacts.length === limit) hints.push("Report hit the inspection limit; increase --limit before making lifecycle decisions.");
-    if (futurePruneCandidates.length) hints.push(`${futurePruneCandidates.length} older large artifact(s) look like candidates for a future dry-run prune plan.`);
-    if (failedRunArtifacts) hints.push(`${failedRunArtifacts} artifact(s) belong to failed runs; review failures before pruning any related evidence.`);
-    if (auditArtifacts) hints.push(`${auditArtifacts} artifact(s) are audit evidence and should be retained unless project retention policy says otherwise.`);
-    if (estimatedBytes === 0) hints.push("No artifact storage was found in the inspected window.");
-    return hints;
-  }
-
-  function buildArtifactPrunePlan(artifacts: ArtifactLifecycleReport["recentArtifacts"], criteria: ArtifactPrunePlan["criteria"]): ArtifactPrunePlan {
-    if (criteria.legalHold) {
-      return {
-        mode: "dry-run",
-        generatedAt: new Date().toISOString(),
-        criteria,
-        totalCandidates: 0,
-        estimatedBytesRecoverable: 0,
-        approvalRequired: criteria.requireApproval,
-        notes: [
-          "Dry run only. This plan does not delete, archive, or mutate artifacts.",
-          "Project legal hold is enabled; prune candidates are suppressed."
-        ],
-        candidates: []
-      };
-    }
-    const candidates = artifacts.flatMap((artifact) => {
-      const ageDays = artifactAgeDays(artifact.createdAt);
-      const reason = artifactPruneReason(artifact, ageDays, criteria);
-      if (!reason) return [];
-      return [{
-        artifactId: artifact.id,
-        uri: artifact.uri,
-        runId: artifact.runId,
-        taskId: artifact.taskId,
-        projectName: artifact.projectName,
-        projectRootUri: artifact.projectRootUri,
-        workflowId: artifact.workflowId,
-        runStatus: artifact.runStatus,
-        kind: artifact.kind,
-        contentBytes: artifact.contentBytes,
-        createdAt: artifact.createdAt,
-        ageDays,
-        reason,
-        receiptPreview: {
-          actionType: "artifact_prune_requested" as const,
-          target: artifact.uri,
-          summary: `Would request pruning ${artifact.kind} artifact ${artifact.id}`,
-          metadata: {
-            mode: "dry-run" as const,
-            action: "prune" as const,
-            artifactId: artifact.id,
-            runId: artifact.runId,
-            taskId: artifact.taskId,
-            kind: artifact.kind,
-            contentBytes: artifact.contentBytes,
-            reason
-          }
-        }
-      }];
-    });
-    const estimatedBytesRecoverable = candidates.reduce((sum, candidate) => sum + candidate.contentBytes + candidate.uri.length, 0);
-    const auditCount = artifacts.filter(isAuditArtifact).length;
-    const notes = [
-      "Dry run only. This plan does not delete, archive, or mutate artifacts.",
-      "Any future prune execution must recheck current storage state, project policy, and approval requirements.",
-      criteria.includeAudit ? "Audit artifacts were allowed into candidate selection by request." : `${auditCount} audit artifact(s) were excluded from candidate selection.`
-    ];
-    if (!candidates.length) {
-      notes.push("No artifacts matched the current prune criteria.");
-    }
-    return {
-      mode: "dry-run",
-      generatedAt: new Date().toISOString(),
-      criteria,
-      totalCandidates: candidates.length,
-      estimatedBytesRecoverable,
-      approvalRequired: criteria.requireApproval,
-      notes,
-      candidates
-    };
-  }
-
-  async function buildArtifactRestorePlan(artifacts: ArtifactLifecycleReport["recentArtifacts"], criteria: ArtifactPrunePlan["criteria"]): Promise<ArtifactLifecycleActionPlan> {
-    if (criteria.legalHold) {
-      return emptyArtifactLifecycleActionPlan("restore", criteria, "Project legal hold is enabled; restore candidates are suppressed.");
-    }
-    const archivedArtifacts = artifacts.filter((artifact) => artifact.kind === "archived_artifact");
-    const candidates: ArtifactLifecycleActionPlan["candidates"] = [];
-    for (const artifact of archivedArtifacts) {
-      const fullArtifact = await getArtifactByUri(artifact.uri);
-      if (!fullArtifact || fullArtifact.content.originalActionType !== "artifact_archive") continue;
-      const restoreMetadata = objectFromRecord(fullArtifact.content, "restoreMetadata");
-      const target = stringFromRecord(restoreMetadata, "originalUri") || stringFromRecord(fullArtifact.content, "target");
-      if (!target) continue;
-      const ageDays = artifactAgeDays(artifact.createdAt);
-      const reason = `Archived artifact snapshot can be reviewed for restore target ${target}.`;
-      candidates.push({
-        artifactId: artifact.id,
-        uri: target,
-        runId: artifact.runId,
-        taskId: artifact.taskId,
-        projectName: artifact.projectName,
-        projectRootUri: artifact.projectRootUri,
-        workflowId: artifact.workflowId,
-        runStatus: artifact.runStatus,
-        kind: "archived_artifact",
-        contentBytes: artifact.contentBytes,
-        createdAt: artifact.createdAt,
-        ageDays,
-        reason,
-        receiptPreview: artifactLifecycleReceiptPreview({
-          action: "restore",
-          artifactId: artifact.id,
-          uri: target,
-          runId: artifact.runId,
-          taskId: artifact.taskId,
-          kind: "archived_artifact",
-          contentBytes: artifact.contentBytes,
-          reason
-        })
-      });
-    }
-    return {
-      mode: "dry-run",
-      action: "restore",
-      generatedAt: new Date().toISOString(),
-      criteria,
-      totalCandidates: candidates.length,
-      estimatedBytesRecoverable: 0,
-      approvalRequired: criteria.requireApproval,
-      notes: [
-        "Dry run only. This plan does not restore, move, delete, or mutate artifacts.",
-        "Restore candidates come only from archived artifact snapshots.",
-        ...(candidates.length ? [] : ["No archived artifact snapshots were found in the inspected artifact window."])
-      ],
-      candidates
-    };
   }
 
   function buildGraphHandoffPayload(input: {
@@ -813,81 +489,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       })),
       stageHealth,
       focusedStage
-    };
-  }
-
-  function buildMcpApprovalDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["approvalDiagnostics"] {
-    const recentEvents = events.filter((event) => String(event.event ?? "").startsWith("approval-call-")).slice(-8);
-    const lastCall = [...recentEvents].reverse().find((event) => event.event === "approval-call-start");
-    const lastResult = [...recentEvents].reverse().find((event) => event.event === "approval-call-result");
-    const lastCallAt = typeof lastCall?.ts === "string" ? lastCall.ts : null;
-    const lastResultAt = typeof lastResult?.ts === "string" ? lastResult.ts : null;
-    const lastExitCode = typeof lastResult?.exitCode === "number" ? lastResult.exitCode : null;
-    const lastTimedOut = typeof lastResult?.timedOut === "boolean" ? lastResult.timedOut : null;
-    const summary = !recentEvents.length
-      ? "No MCP approval calls have been recorded in the recent stdio log window."
-      : lastResult
-        ? `Last MCP approval call finished with exit code ${lastExitCode ?? "unknown"}${lastTimedOut ? " after timing out" : ""}.`
-        : "An MCP approval call started, but no result event is visible in the recent stdio log window; the client pipe may have closed mid-call.";
-    return {
-      recentEvents,
-      lastCallAt,
-      lastResultAt,
-      lastExitCode,
-      lastTimedOut,
-      summary,
-      fallbackCommand: "npm run agentflow -- approvals --status pending --run <run-id>"
-    };
-  }
-
-  function buildMcpClientReloadGuidance(input: {
-    smoke: RuntimeMonitorReport["mcpPipeline"]["smoke"];
-    lastSpawnAt: string | null;
-    lastExitAt: string | null;
-    lastExitCode: number | null;
-    recentExitCount: number;
-  }): RuntimeMonitorReport["mcpPipeline"]["clientReload"] {
-    const smokePassed = input.smoke.status === "passed";
-    const recentExitAfterSpawn = Boolean(input.lastExitAt && (!input.lastSpawnAt || input.lastExitAt >= input.lastSpawnAt));
-    const suspectedStalePipe = smokePassed && (recentExitAfterSpawn || input.recentExitCount > 1);
-    const summary = suspectedStalePipe
-      ? "Launcher smoke passed, but recent stdio exits suggest a Codex/IDE client pipe may be stale. Restart or reload the client/task if it still reports Transport closed."
-      : smokePassed
-        ? "Launcher smoke passed. If a specific Codex task still reports Transport closed, that task likely needs a client-side reload."
-        : input.smoke.status === "failed"
-          ? "Launcher smoke failed. Fix the launcher/server issue before restarting the client."
-          : "Run MCP smoke before deciding whether this is an Agent Workflow launcher issue or a stale Codex/IDE pipe.";
-    const steps = [
-      "Run MCP Smoke from Runtime Monitor or `npm run runtime-monitor -- --check-mcp`.",
-      "If smoke passes but Codex still reports `Transport closed`, restart the Codex task/app or reload the IDE MCP client so it creates a fresh stdio subprocess.",
-      "If multiple old MCP sessions are shown, preview Cleanup Stale MCP Sessions and terminate only stale Agent Workflow sessions from this checkout.",
-      "If smoke fails, inspect `.agent-workflow/runtime/mcp/launcher.log` and `.agent-workflow/runtime/mcp/stdio.log` before changing provider or storage settings."
-    ];
-    return { suspectedStalePipe, summary, steps };
-  }
-
-  function buildMcpCommandDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["commandDiagnostics"] {
-    const recentEvents = events.filter((event) => String(event.event ?? "").startsWith("command-")).slice(-10);
-    const lastStart = [...recentEvents].reverse().find((event) => event.event === "command-start");
-    const lastClose = [...recentEvents].reverse().find((event) => event.event === "command-close" || event.event === "command-error" || event.event === "command-timeout");
-    const lastStartAt = typeof lastStart?.ts === "string" ? lastStart.ts : null;
-    const lastCloseAt = typeof lastClose?.ts === "string" ? lastClose.ts : null;
-    const lastOperation = typeof (lastClose ?? lastStart)?.operation === "string" ? String((lastClose ?? lastStart)?.operation) : null;
-    const lastExitCode = typeof lastClose?.exitCode === "number" ? lastClose.exitCode : null;
-    const lastTimedOut = typeof lastClose?.timedOut === "boolean" ? lastClose.timedOut : null;
-    const summary = !recentEvents.length
-      ? "No MCP-launched CLI command spans have been recorded in the recent stdio log window."
-      : lastClose
-        ? `Last MCP-launched CLI operation ${lastOperation ?? "unknown"} finished with exit code ${lastExitCode ?? "unknown"}${lastTimedOut ? " after timing out" : ""}.`
-        : `MCP-launched CLI operation ${lastOperation ?? "unknown"} started, but no close event is visible in the recent stdio log window.`;
-    return {
-      recentEvents,
-      lastStartAt,
-      lastCloseAt,
-      lastOperation,
-      lastExitCode,
-      lastTimedOut,
-      summary
     };
   }
 
@@ -1207,43 +808,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }) as typeof response.end;
   }
 
-
-  function countBy(values: string[]): Record<string, number> {
-    return values.reduce<Record<string, number>>((counts, value) => {
-      counts[value] = (counts[value] ?? 0) + 1;
-      return counts;
-    }, {});
-  }
-
-  function countDuplicateTuningHistoryEvents(history: TuningApprovalHistory, status?: TuningHistoryStatus): number {
-    const seen = new Set<string>();
-    let duplicates = 0;
-    for (const event of history.events) {
-      if (status && event.status !== status) {
-        continue;
-      }
-      const key = tuningHistoryEventSignature(event);
-      if (seen.has(key)) {
-        duplicates += 1;
-      } else {
-        seen.add(key);
-      }
-    }
-    return duplicates;
-  }
-
-  function dashboardActionReturnPath(request: http.IncomingMessage, form: URLSearchParams, fallbackPath: string): string | null {
-    const explicit = form.get("returnTo")?.trim();
-    const explicitPath = explicit ? safeDashboardReturnPath(explicit) : null;
-    if (explicitPath) return explicitPath;
-
-    const referer = request.headers.referer;
-    const refererPath = typeof referer === "string" ? safeDashboardReturnPath(referer) : null;
-    if (refererPath) return refererPath;
-
-    return safeDashboardReturnPath(fallbackPath);
-  }
-
   let dashboardActiveRequests = 0;
 
   function dashboardGraphPresetHiddenFields(filters: DashboardGraphPresetFilters): string {
@@ -1264,10 +828,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return Object.entries(fields)
       .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
       .join("");
-  }
-
-  function dashboardGraphPresetsPath(projectDir: string): string {
-    return path.join(projectDir, ".agent-workflow", "graph-presets.json");
   }
 
   const dashboardMaxConcurrentRequests = 6;
@@ -1297,11 +857,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       title: run.displayTitle?.trim() || fallback.title,
       description: run.displayDescription?.trim() || fallback.description
     };
-  }
-
-  function dashboardUrlFromRequest(request: http.IncomingMessage): string {
-    const host = request.headers.host || "127.0.0.1";
-    return `http://${host}`;
   }
 
   function dashboardWorkflowGraphRunFromStorage(run: Awaited<ReturnType<typeof listWorkflowRuns>>[number]): DashboardWorkflowGraphRun {
@@ -1758,23 +1313,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return top + ((bottom - top) * index) / (total - 1);
   }
 
-  function emptyArtifactLifecycleActionPlan(action: "archive" | "restore", criteria: ArtifactPrunePlan["criteria"], note: string): ArtifactLifecycleActionPlan {
-    return {
-      mode: "dry-run",
-      action,
-      generatedAt: new Date().toISOString(),
-      criteria,
-      totalCandidates: 0,
-      estimatedBytesRecoverable: 0,
-      approvalRequired: criteria.requireApproval,
-      notes: [
-        "Dry run only. This plan does not mutate artifacts.",
-        note
-      ],
-      candidates: []
-    };
-  }
-
   function emptyBackupRestoreReport(input: {
     projectRootUri?: string;
     limit: number;
@@ -1846,21 +1384,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return 0;
     }
     return Math.ceil(text.length / 4);
-  }
-
-  function estimateQueueItemEta(item: DashboardQueueItem, historicalRuns: DashboardRunStatus[], workAvailable = true): RunEta {
-    if(item.approvalWait)return {state:"paused",totalTasks:item.totalTasks,completedTasks:item.completedTasks,
-      reason:"ETA paused while an exact approval is required.",estimatedCompletionAt:null,remainingMs:null,
-      projectedTotalMs:null,confidence:"none",source:"none",sampleCount:0};
-    const tasks = [
-      ...Array.from({ length: item.completedTasks }, () => ({ status: "completed" })),
-      ...Array.from({ length: item.runningTasks }, () => ({ status: "running" })),
-      ...Array.from({ length: item.queuedTasks }, () => ({ status: "queued" })),
-      ...Array.from({ length: item.failedTasks }, () => ({ status: "failed" }))
-    ];
-    while (tasks.length < item.totalTasks) tasks.push({ status: item.runStatus === "blocked" ? "blocked" : "queued" });
-    const run = { id: item.runId, workflowId: item.workflowId, projectRootUri: item.projectRootUri, status: item.runStatus, startedAt: item.startedAt, finishedAt: null };
-    return withWorkerAvailability(estimateRunEta({ run, tasks, historicalRuns }), dashboardRunCanProgress(workAvailable, run, tasks));
   }
 
   function explainDashboardTierSelection(input: {
@@ -1964,92 +1487,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  function failedRunResolution(reason?: string | null): FailedRunResolution {
-    const normalized = reason?.trim().toLowerCase() ?? "";
-    if (/auth(?:entication|orization)?|not authenticated|credential/u.test(normalized)) {
-      return {
-        headline: "Provider authentication failed",
-        summary: "Authentication must be repaired on the worker that will claim the retry before execution can safely continue.",
-        instructions: [
-          "Open Providers and verify the configured provider on the intended worker.",
-          "For Codex CLI, run: npm run agentflow -- provider-use codex-cli --login --check",
-          "After the provider check succeeds on that worker, choose Retry Failed Stages."
-        ],
-        automaticRepair: "operator-required"
-      };
-    }
-    if (/billing|payment/u.test(normalized)) {
-      return {
-        headline: "Provider billing is not configured",
-        summary: "The model API rejected the request because billing verification failed on the provider account. No prompt was executed and no tokens were used.",
-        instructions: [
-          "Open the provider billing settings (for Muse: the Model API dashboard at dev.meta.ai) and add a payment method, then verify billing is active.",
-          "Re-run the API check from the project root: node check-muse-api.mjs — chat completions should report OK.",
-          "Choose Retry Failed Stages."
-        ],
-        automaticRepair: "operator-required"
-      };
-    }
-    if (/fallback|provider retry|provider.*failed|model route/u.test(normalized)) {
-      return {
-        headline: "Provider routing failed",
-        summary: "Agent Workflow will preserve the failure and can retry only after a healthy provider route or worker is available.",
-        instructions: [
-          "Open Providers and confirm at least one eligible route reports ready.",
-          "If a remote worker is unhealthy, route the retry to an authenticated worker or repair that node's provider configuration.",
-          "Choose Retry Failed Stages, or Diagnose & Fix when the provider is healthy but the stage still fails."
-        ],
-        automaticRepair: "operator-required"
-      };
-    }
-    if (/policy|permission|not allowed|approval/u.test(normalized)) {
-      return {
-        headline: "Policy or approval prevented execution",
-        summary: "The workflow cannot broaden its own authority; review the denied action and grant only the narrow permission actually required.",
-        instructions: [
-          "Open Approvals and inspect the exact denied command or file write.",
-          "Approve the bounded action or repair the project's policy from Settings.",
-          "Return here and choose Retry Failed Stages."
-        ],
-        automaticRepair: "operator-required"
-      };
-    }
-    if (/enoent|missing executable|command not found/u.test(normalized)) {
-      return {
-        headline: "Required executable is unavailable",
-        summary: "Install or configure the missing executable on the worker, then retry the failed stage.",
-        instructions: [
-          "Inspect the failure evidence below for the missing executable name.",
-          "Install it or update the worker PATH without storing credentials in the repository.",
-          "Choose Retry Failed Stages after the command is available."
-        ],
-        automaticRepair: "operator-required"
-      };
-    }
-    if (/lease|worker.*stale|worker.*stopped/u.test(normalized)) {
-      return {
-        headline: "Worker execution was interrupted",
-        summary: "Expired leases can be safely recovered while preserving completed checkpoints.",
-        instructions: [
-          "Confirm a healthy worker is running in Settings.",
-          "Use Recover Expired Leases on the Queue page if the lease remains active past its deadline.",
-          "Retry the failed stage after ownership is released."
-        ],
-        automaticRepair: "eligible"
-      };
-    }
-    return {
-      headline: "Workflow failed",
-      summary: "Agent Workflow will attempt bounded diagnosis when evidence supports it; otherwise start a focused repair run from the preserved failure evidence.",
-      instructions: [
-        "Review the failed stage and receipts below for the last confirmed cause.",
-        "Choose Retry Failed Stages when the prerequisite is already fixed.",
-        "Choose Diagnose & Fix to create a governed root-cause repair with refreshed project context."
-      ],
-      automaticRepair: "eligible"
-    };
-  }
-
   function fallbackDashboardModelCatalogReport(): DashboardModelCatalogReport {
     return {
       kind: "agentflow_model_catalog_report",
@@ -2069,16 +1506,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     if (bucket === "probably_accept") return "accepted";
     if (bucket === "probably_reject") return "rejected";
     return "revised";
-  }
-
-  function feedbackTargetActionForm(runId: string, rating: FeedbackRating, label: string, note: string): string {
-    return `<form class="feedback-form compact-feedback-form" method="post" action="/api/follow-up">
-      <input type="hidden" name="runId" value="${escapeHtml(runId)}">
-      <input type="hidden" name="action" value="feedback">
-      <input type="hidden" name="rating" value="${escapeHtml(rating)}">
-      <input name="note" value="${escapeHtml(note)}" aria-label="${escapeHtml(label)} feedback note" placeholder="Why?">
-      <button type="submit">${escapeHtml(label)}</button>
-    </form>`;
   }
 
   function filterGovernanceReport(report: GovernanceReport, params: URLSearchParams): GovernanceReport {
@@ -2119,19 +1546,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <input type="hidden" name="stageId" value="${escapeHtml(input.stageId)}">
       <button type="submit"${input.disabled ? " disabled" : ""}>Suggest Fix</button>
     </form>`;
-  }
-
-  function formatApprovalAge(ms: number): string {
-    if (ms < 60_000) return "just now";
-    if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-    if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-    return `${Math.floor(ms / 86_400_000)}d ago`;
-  }
-
-  function formatApprovalPayload(payload: Record<string, unknown>): string {
-    const hash = typeof payload.payloadHash === "string" ? payload.payloadHash.slice(0, 12) : "unknown";
-    const bytes = typeof payload.bytes === "number" ? `, ${formatNumber(payload.bytes)} bytes` : "";
-    return `payload hash ${hash}${bytes}`;
   }
 
   function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -2397,10 +1811,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return value === null ? "n/a" : `${value}%`;
   }
 
-  function formatNumber(value: number): string {
-    return new Intl.NumberFormat("en-US").format(Math.round(value));
-  }
-
   async function formatPendingApprovalInboxNotice(projectRootUri?: string): Promise<string> {
     const approvals = await listActionApprovals({
       projectRootUri,
@@ -2427,39 +1837,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
         executable ? `  execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
         "  MCP/Codex: ask the user to choose approve and execute, approve only, reject, always exact, always broad, execute, or dismiss; then call agentflow_approvals with the matching field and id."
-      );
-    }
-    return lines.filter(Boolean).join("\n");
-  }
-
-  async function formatPendingApprovalNotice(runId: string, projectRootUri?: string): Promise<string> {
-    const approvals = await listActionApprovals({
-      runId,
-      projectRootUri,
-      status: "pending",
-      limit: 10
-    });
-    if (!approvals.length) {
-      return "";
-    }
-
-    const lines = [
-      "Approval required:",
-      "The workflow can keep processing other stages, but these side effects are waiting for approval in your current client."
-    ];
-    for (const approval of approvals) {
-      const executable = isExecutableApprovalAction(approval.actionType);
-      lines.push(
-        `- ${approval.actionType} ${approval.target}`,
-        `  id: ${approval.id}`,
-          `  requested by: ${approval.stageId} (${approval.agentId})`,
-          `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
-          executable ? `  approve and execute in CLI: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver` : "",
-          approval.actionType === "local_command" || approval.actionType === "file_write" || approval.actionType === "executor_adapter" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
-          approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
-          executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
-          `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
-          "  approve in MCP/Codex: ask the user to choose approve and execute, approve only, reject, always exact, always broad, execute, or dismiss; then call agentflow_approvals with the matching field and id."
       );
     }
     return lines.filter(Boolean).join("\n");
@@ -2603,11 +1980,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     ].join("\n");
   }
 
-  function formatSignedRate(value: number | null): string {
-    if (value === null) return "";
-    return `${value > 0 ? "+" : ""}${value}%`;
-  }
-
   function formatStageHealthTitle(health: DashboardWorkflowStageHealth): string {
     const active = health.queuedTasks + health.runningTasks;
     return `${health.totalTasks} stage tasks: ${health.completedTasks} completed, ${health.failedTasks} failed, ${active} queued/running, ${health.cancelledTasks} cancelled`;
@@ -2649,21 +2021,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   function graphHandoffViewerHref(project: string, fileName: string): string {
     const query = new URLSearchParams({ project, file: fileName });
     return `/graph-handoff?${query.toString()}`;
-  }
-
-  function graphPresetHref(preset: DashboardGraphPreset): string {
-    return workflowGraphDashboardHref(preset.filters.workflow, preset.filters.project, preset.filters.policyProfile, {
-      view: preset.filters.view,
-      orientation: preset.filters.orientation,
-      category: preset.filters.category,
-      approval: preset.filters.approval,
-      policyStatus: preset.filters.policyStatus,
-      runLimit: preset.filters.runLimit,
-      runStatus: preset.filters.runStatus,
-      runScope: preset.filters.runScope,
-      capture: false,
-      stage: preset.filters.stage
-    });
   }
 
   async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -5799,19 +5156,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     response.end(renderDashboardHtml(runs, workflows, health, throughput));
   }
 
-  function hasAwsConfiguration(): boolean {
-    return Boolean(
-      process.env.AWS_PROFILE
-        || process.env.AWS_REGION
-        || process.env.BEDROCK_REGION
-        || process.env.BEDROCK_MODEL
-        || process.env.BEDROCK_MODEL_STANDARD
-        || process.env.AWS_ACCESS_KEY_ID
-        || process.env.AWS_SESSION_TOKEN
-        || process.env.AWS_WEB_IDENTITY_TOKEN_FILE
-    );
-  }
-
   function hasExpiredLease(item: DashboardQueueItem): boolean {
     return Boolean(item.runningLeaseExpiresAt && Date.parse(item.runningLeaseExpiresAt) < Date.now());
   }
@@ -5863,163 +5207,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-  }
-
-  async function inspectBedrockStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
-    const model = process.env.BEDROCK_MODEL ?? process.env.BEDROCK_MODEL_ID ?? "auto";
-    const awsProfile = process.env.AWS_PROFILE || "default";
-    const awsRegion = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
-    const discovered = await discoverModelIds(() => loadBedrockModelIds());
-    const tierModels = loadGenericTierModelPreview({
-      catalog: discovered.models,
-      provider: "bedrock",
-      baseModel: model,
-      tierEnvPrefix: "BEDROCK_MODEL"
-    });
-    const configuredModels = (["fast", "standard", "reasoning"] as const)
-      .map((tier) => process.env[`BEDROCK_MODEL_${tier.toUpperCase()}`] || model)
-      .filter((item) => item !== "auto");
-    const configuredModelsAvailable = configuredModels.every((item) => discovered.models.includes(item));
-    return {
-      providerId: "bedrock",
-      label: "AWS Bedrock",
-      configured: hasAwsConfiguration(),
-      status: discovered.error || !configuredModelsAvailable ? "missing" : "ready",
-      model,
-      apiKeyStatus: awsCredentialStatusLabel(),
-      awsProfile,
-      awsRegion,
-      tierModels,
-      details: discovered.error
-        ? [`Bedrock model list check failed: ${discovered.error}`]
-        : !configuredModelsAvailable
-          ? [`Configured Bedrock model not listed: ${configuredModels.filter((item) => !discovered.models.includes(item)).join(", ")}`]
-          : [`AWS credential chain can list ${discovered.models.length} foundation models. ${formatTierModelPreview(tierModels)}`]
-    };
-  }
-
-  async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
-    const selected = (process.env.DEFAULT_MODEL_PROVIDER ?? "").trim() === "codex-cli";
-    const configured = selected || Boolean(process.env.CODEX_CLI_BIN || process.env.CODEX_CLI_AUTH_MODE);
-    const tierModels = codexCliTierModelPreview();
-    try {
-      const provider = providerFromEnv("codex-cli");
-      const readiness = provider.check ? await provider.check() : { ready: true, details: ["Codex CLI is ready."] };
-      return {
-        providerId: "codex-cli",
-        label: "Codex CLI / ChatGPT",
-        configured,
-        status: readiness.ready ? "ready" : "missing",
-        model: codexCliModelSummary(tierModels),
-        apiKeyStatus: readiness.ready ? "ChatGPT authenticated" : "login required",
-        details: readiness.details,
-        tierModels
-      };
-    } catch (error) {
-      return {
-        providerId: "codex-cli",
-        label: "Codex CLI / ChatGPT",
-        configured,
-        status: "missing",
-        model: codexCliModelSummary(tierModels),
-        apiKeyStatus: "login required",
-        details: [safeErrorMessage(error)],
-        tierModels
-      };
-    }
-  }
-
-  async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
-    const configured = Boolean(process.env.OPENAI_API_KEY);
-    if (!configured) {
-      return {
-        providerId: "openai",
-        label: "OpenAI",
-        configured,
-        status: "not configured",
-        model: process.env.OPENAI_MODEL || "auto",
-        apiKeyStatus: "missing",
-        details: ["OPENAI_API_KEY is not configured."]
-      };
-    }
-
-    const discovered = await discoverModelIds(() => loadOpenAIModelIds());
-    const tierModels = await loadOpenAITierModelPreview(discovered.models);
-    const configuredModels = (["fast", "standard", "reasoning"] as const)
-      .map((tier) => configuredOpenAIModelForTier(tier))
-      .filter((model) => model !== "auto");
-    const configuredModelsAvailable = configuredModels.every((model) => discovered.models.includes(model));
-    return {
-      providerId: "openai",
-      label: "OpenAI",
-      configured,
-      status: discovered.error || !configuredModelsAvailable ? "missing" : "ready",
-      model: process.env.OPENAI_MODEL || "auto",
-      apiKeyStatus: "configured",
-      tierModels,
-      details: discovered.error
-        ? [`Model list check failed: ${discovered.error}`]
-        : !configuredModelsAvailable
-          ? [`Configured OpenAI model not listed: ${configuredModels.filter((model) => !discovered.models.includes(model)).join(", ")}`]
-          : [`API key configured. ${discovered.models.length} models listed. ${formatTierModelPreview(tierModels)}`]
-    };
-  }
-
-  async function inspectProviderStatus(input: {
-    providerId: "bedrock" | "kiro";
-    label: string;
-    configured: boolean;
-    model?: string;
-    apiKeyStatus?: string;
-    awsProfile?: string;
-    awsRegion?: string;
-    alwaysCheck?: boolean;
-  }): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
-    if (!input.configured && !input.alwaysCheck) {
-      return {
-        providerId: input.providerId,
-        label: input.label,
-        configured: false,
-        status: "not configured",
-        model: input.model,
-        apiKeyStatus: input.apiKeyStatus,
-        awsProfile: input.awsProfile,
-        awsRegion: input.awsRegion,
-        details: ["Provider-specific configuration was not found."]
-      };
-    }
-
-    try {
-      const provider = providerFromEnv(input.providerId);
-      const result = provider.check ? await provider.check() : { ready: true, details: [`${input.providerId} configured.`] };
-      return {
-        providerId: input.providerId,
-        label: input.label,
-        configured: input.configured,
-        status: result.ready ? "ready" : "missing",
-        model: input.model,
-        apiKeyStatus: input.apiKeyStatus,
-        awsProfile: input.awsProfile,
-        awsRegion: input.awsRegion,
-        details: result.details.map(safeErrorMessage)
-      };
-    } catch (error) {
-      return {
-        providerId: input.providerId,
-        label: input.label,
-        configured: input.configured,
-        status: "missing",
-        model: input.model,
-        apiKeyStatus: input.apiKeyStatus,
-        awsProfile: input.awsProfile,
-        awsRegion: input.awsRegion,
-        details: [safeErrorMessage(error)]
-      };
-    }
-  }
-
-  function isAuditArtifact(artifact: { kind: string }): boolean {
-    return artifact.kind === "action_approval" || artifact.kind === "run_feedback" || artifact.kind === "command_output" || artifact.kind === "file_write";
   }
 
   function isFocusedStageFixRun(run: Awaited<ReturnType<typeof listWorkflowRunsForProject>>[number], workflowId: string, stageId: string): boolean {
@@ -6087,79 +5274,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return { ...target, pending: counts.pending, deferred: counts.deferred, current: selectedKey === key };
     }));
     return { projects: entries.filter((entry): entry is AgentImprovementPendingProject => entry !== null) };
-  }
-
-  async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kind?: string; limit?: number; prunePlan?: boolean; archivePlan?: boolean; restorePlan?: boolean; minAgeDays?: number; minBytes?: number; includeAudit?: boolean } = {}): Promise<ArtifactLifecycleReport> {
-    const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
-    const artifactKind = input.kind?.trim() || null;
-    const limit = input.limit ?? 500;
-    const retentionPolicy = await resolveArtifactLifecyclePolicy(projectRootUri);
-    const artifacts = await listArtifactLifecycle({
-      projectRootUri: projectRootUri ?? undefined,
-      kind: artifactKind ?? undefined,
-      limit
-    });
-    const recentArtifacts = artifacts.map((artifact) => {
-      const ageBucket = artifactAgeBucket(artifact.createdAt);
-      return {
-        ...artifact,
-        ageBucket,
-        lifecycleHint: artifactLifecycleHint(artifact, ageBucket)
-      };
-    });
-    const estimatedBytes = recentArtifacts.reduce((sum, artifact) => sum + artifact.contentBytes + artifact.uri.length, 0);
-    const reviewHints = buildArtifactLifecycleHints(recentArtifacts, estimatedBytes, limit);
-    const policySource = input.minAgeDays !== undefined || input.minBytes !== undefined || input.includeAudit !== undefined ? "override" : retentionPolicy.source;
-    const prunePlan = input.prunePlan
-      ? buildArtifactPrunePlan(recentArtifacts, {
-        policySource,
-        minAgeDays: input.minAgeDays ?? retentionPolicy.retentionDays,
-        minBytes: input.minBytes ?? retentionPolicy.minPruneBytes,
-        includeAudit: input.includeAudit ?? !retentionPolicy.retainAuditArtifacts,
-        legalHold: retentionPolicy.legalHold,
-        requireApproval: retentionPolicy.requireApprovalForPrune
-      })
-      : null;
-    const archivePlan = input.archivePlan
-      ? buildArtifactArchivePlan(recentArtifacts, prunePlan?.criteria ?? {
-        policySource,
-        minAgeDays: input.minAgeDays ?? retentionPolicy.retentionDays,
-        minBytes: input.minBytes ?? retentionPolicy.minPruneBytes,
-        includeAudit: input.includeAudit ?? !retentionPolicy.retainAuditArtifacts,
-        legalHold: retentionPolicy.legalHold,
-        requireApproval: retentionPolicy.requireApprovalForPrune
-      })
-      : null;
-    const restorePlan = input.restorePlan
-      ? await buildArtifactRestorePlan(recentArtifacts, prunePlan?.criteria ?? archivePlan?.criteria ?? {
-        policySource,
-        minAgeDays: input.minAgeDays ?? retentionPolicy.retentionDays,
-        minBytes: input.minBytes ?? retentionPolicy.minPruneBytes,
-        includeAudit: true,
-        legalHold: retentionPolicy.legalHold,
-        requireApproval: retentionPolicy.requireApprovalForPrune
-      })
-      : null;
-    return {
-      kind: "agentflow_artifact_lifecycle_report",
-      generatedAt: new Date().toISOString(),
-      projectRootUri,
-      artifactKind,
-      limit,
-      retentionPolicy,
-      prunePlan,
-      archivePlan,
-      restorePlan,
-      approvalQueues: [],
-      totalArtifacts: recentArtifacts.length,
-      estimatedBytes,
-      byProject: countStrings(recentArtifacts.map((artifact) => artifact.projectName)),
-      byKind: countStrings(recentArtifacts.map((artifact) => artifact.kind)),
-      byAgeBucket: countStrings(recentArtifacts.map((artifact) => artifact.ageBucket)),
-      byRunStatus: countStrings(recentArtifacts.map((artifact) => artifact.runStatus)),
-      reviewHints,
-      recentArtifacts
-    };
   }
 
   async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
@@ -6339,13 +5453,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  async function loadBedrockModelIds(): Promise<string[]> {
-    const region = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
-    const client = new BedrockClient({ region });
-    const response = await client.send(new ListFoundationModelsCommand({}));
-    return uniqueSorted(response.modelSummaries?.map((model) => model.modelId).filter((modelId): modelId is string => Boolean(modelId)) ?? []);
-  }
-
   async function loadCachedDashboardReport<T>(key: string, load: () => Promise<T>, ttlMs = dashboardReportCacheTtlMs): Promise<T> {
     let cached = dashboardReportCache.get(key);
     if (!cached && isDurableDashboardReportKey(key)) {
@@ -6394,22 +5501,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     response.end(renderDashboardLoadingPage(page.title, page.nav));
     return undefined;
-  }
-
-  function renderDashboardLoadingPage(title: string, nav: Parameters<typeof dashboardNav>[0]): string {
-    return `<!doctype html>
-  <html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${escapeHtml(title)} · loading</title>
-    <noscript><meta http-equiv="refresh" content="2"></noscript>
-    <style>${dashboardCss()}</style>
-  </head>
-  <body>${dashboardNav(nav)}<main id="main-content"><div class="topbar"><div><a href="/">Dashboard</a><h1>${escapeHtml(title)}</h1></div></div><section class="panel loading-page" data-dashboard-loading><p class="loading-line" role="status" aria-live="polite"><span class="loading-dot" aria-hidden="true"></span><span data-loading-text>Running live checks for this page. It opens by itself when they finish.</span></p><p class="muted">The first visit after the dashboard starts checks providers and local services; later visits use the saved result and refresh it in the background.</p></section></main>
-  <script>(()=>{const key="agentflow.loading:"+location.pathname+location.search;let tries=0;try{tries=Number(sessionStorage.getItem(key)||"0")+1;sessionStorage.setItem(key,String(tries))}catch{}if(tries>40){try{sessionStorage.removeItem(key)}catch{}document.querySelector("[data-loading-text]").textContent="This page is still loading. Refresh to check again.";return}setTimeout(()=>location.reload(),750)})();</script>
-  </body>
-  </html>`;
   }
 
   async function loadQueueCardSnapshot(projectRootUri: string | undefined, requestRefresh = false): Promise<QueueCardSnapshot<DashboardQueueSnapshot>> {
@@ -6611,13 +5702,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       installedManifest: manifest,
       installedChecksum: manifest?.checksum.value
     });
-  }
-
-  async function loadDashboardFeedbackTargets(projectRuns: Awaited<ReturnType<typeof listWorkflowRunsForProject>>): Promise<DashboardFeedbackTarget[]> {
-    const candidates = projectRuns
-      .filter((run) => run.status === "completed" || run.status === "failed")
-      .slice(0, 25);
-    return loadDashboardFeedbackTargetsFromRuns(candidates, 8);
   }
 
   async function loadDashboardFleetUsageReport(): Promise<DashboardFleetUsageReport> {
@@ -7326,53 +6410,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return rows;
   }
 
-  async function loadDashboardTuningOverlayStatus(projectDir: string): Promise<DashboardTuningOverlayStatus> {
-    const overlayPath = path.join(projectDir, ".agent-workflow", "tuning", "proposals.json");
-    const overlayResult = await readDashboardJsonFile<TuningOverlayDocument>(overlayPath, (value) =>
-      value.kind === "agentflow_tuning_overlay" &&
-      Array.isArray(value.selectedIds) &&
-      Array.isArray(value.proposals)
-    );
-    const history = await readTuningApprovalHistory(projectDir).catch(() => null);
-    const appliedEvents = history?.events.filter((event) => event.status === "applied").length ?? 0;
-    const appliedProposalIds = [...new Set((history?.events ?? [])
-      .filter((event) => event.status === "applied")
-      .map((event) => event.proposalId))]
-      .sort();
-    const latestAppliedAt = history?.events
-      .filter((event) => event.status === "applied")
-      .map((event) => event.occurredAt)
-      .sort()
-      .at(-1) ?? null;
-    const duplicateAppliedEvents = history ? countDuplicateTuningHistoryEvents(history, "applied") : 0;
-    return {
-      exists: overlayResult.exists && !overlayResult.error && Boolean(overlayResult.value),
-      path: ".agent-workflow/tuning/proposals.json",
-      generatedAt: overlayResult.value?.generatedAt ?? null,
-      sourceGeneratedAt: overlayResult.value?.sourceGeneratedAt ?? null,
-      sourceRunsAnalyzed: overlayResult.value?.sourceRunsAnalyzed ?? null,
-      selectedIds: overlayResult.value?.selectedIds ?? [],
-      appliedProposalIds,
-      proposalCount: overlayResult.value?.proposals?.length ?? 0,
-      proposalKinds: countStrings((overlayResult.value?.proposals ?? []).map((proposal) => proposal.kind)),
-      latestAppliedAt,
-      appliedEvents,
-      duplicateAppliedEvents,
-      error: overlayResult.error
-    };
-  }
-
   /** True when a worker or supervisor heartbeat is live, so queued work will be picked up. */
   async function loadDashboardWorkAvailable(): Promise<boolean> {
     return loadCachedDashboardReport("dashboard:work-available", async () => {
       const [worker, supervisor] = await Promise.all([loadDashboardWorkerStatus().catch(() => null), loadDashboardSupervisorStatus().catch(() => null)]);
       return worker?.status === "running" || supervisor?.status === "running";
     }, 2_000);
-  }
-
-  /** A run that holds a lease is executing (possibly inline, without a heartbeat). */
-  function dashboardRunCanProgress(workAvailable: boolean, run: { status: string }, tasks: Array<{ status: string }> = []): boolean {
-    return workAvailable || run.status === "leased" || run.status === "running" || tasks.some((task) => task.status === "leased" || task.status === "running");
   }
 
   async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
@@ -7650,29 +6693,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       canRestartClientPipe: false,
       reason: "Agent Workflow cannot reconnect a client-owned stdio pipe from inside the server. It can verify the launcher, preserve evidence, and provide safe local recovery commands."
     };
-  }
-
-  async function loadOpenAIModelIds(): Promise<string[]> {
-    return loadOpenAIModelCatalog();
-  }
-
-  async function loadOpenAITierModelPreview(catalog: string[]): Promise<NonNullable<DashboardInfo["provider"]["tierModels"]>> {
-    return Promise.all((["fast", "standard", "reasoning"] as const).map(async (tier) => {
-      const configured = configuredOpenAIModelForTier(tier);
-      if (configured !== "auto") {
-        return { tier, model: configured, source: "env" as const };
-      }
-      const model = selectOpenAIModelFromCatalog(catalog, tier);
-      if (model) {
-        return { tier, model, source: "catalog" as const };
-      }
-      try {
-        const resolved = await resolveOpenAIModelForTier(tier);
-        return { tier, model: resolved.model, source: resolved.source };
-      } catch {
-        return { tier, model: "unavailable", source: "unavailable" as const };
-      }
-    }));
   }
 
   async function loadProjectSchedules(projectDir: string): Promise<ScheduleEntry[]> {
@@ -8594,18 +7614,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return latest;
   }
 
-  function workerEligibleForQueueProject(worker:{projectRootUri:string|null;projectIdentityId:string|null;sourceRevision:string|null},item:{projectIdentityId?:string|null;sourceRevision?:string|null}):boolean{
-    if(worker.projectRootUri===null)return true;
-    return Boolean(item.projectIdentityId&&item.sourceRevision&&worker.projectIdentityId===item.projectIdentityId&&worker.sourceRevision===item.sourceRevision);
-  }
-
-  function workerEligibilityReason(workers:Array<{projectRootUri:string|null;projectIdentityId:string|null;sourceRevision:string|null}>,item:{projectIdentityId?:string|null;sourceRevision?:string|null},eligibleCount:number):string{
-    if(eligibleCount)return `${eligibleCount} active worker${eligibleCount===1?" is":"s are"} eligible for this project identity and source revision.`;
-    if(!workers.length)return "No active worker currently attests the required capability.";
-    if(!item.projectIdentityId||!item.sourceRevision)return "The queued run lacks durable project identity or source-revision evidence required for a scoped worker.";
-    return "Active capable workers are scoped to a different project identity or source revision.";
-  }
-
   function localHoldoutComparisonForm(report: DashboardCandidateComparisonReport): string {
     const returnTo = `/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}`;
     return `<form class="inline-form" method="post" action="/api/follow-up">
@@ -8636,50 +7644,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <input type="hidden" name="action" value="local-holdout-results">
       <button type="submit">${iconLabel("clipboard", "Capture Holdout Results")}</button>
     </form>`;
-  }
-
-  function localRouteDecisionExplanation(
-    group: DashboardRouteReceiptTrendGroup,
-    holdout: DashboardLocalHoldoutRoutingStatus
-  ): { label: string; severity: "good" | "warning" | "info"; reason: string; nextAction: string } {
-    if (group.classification === "local-selected") {
-      return {
-        label: "local selected",
-        severity: group.fallbackCount ? "warning" : "good",
-        reason: holdout.thresholdSummary
-          ? `Approved holdout routing is active. ${holdout.thresholdSummary}. ${holdout.evidenceSummary ?? ""}`.trim()
-          : "Local routing was selected from a reviewed local preference or provider route.",
-        nextAction: group.fallbackCount
-          ? "Watch fallback and quality before expanding this route further."
-          : "Keep collecting quality, latency, and feedback evidence."
-      };
-    }
-    if (group.classification === "local-skipped") {
-      return {
-        label: "local skipped",
-        severity: "warning",
-        reason: group.latestReason || "Local routing was requested, but readiness or threshold evidence prevented local execution.",
-        nextAction: holdout.approved
-          ? "Check the local endpoint/model readiness and rerun the low-risk route smoke."
-          : "Capture and approve passing holdout results before expecting local selection."
-      };
-    }
-    if (group.classification === "hosted-fallback") {
-      return {
-        label: "hosted fallback",
-        severity: "warning",
-        reason: group.latestReason || "Hosted fallback was used after local or candidate routing could not complete.",
-        nextAction: "Inspect route receipts, local endpoint health, and fallback thresholds before raising local routing scope."
-      };
-    }
-    return {
-      label: "hosted selected",
-      severity: "info",
-      reason: group.latestReason || "Hosted provider remained the selected route for this stage.",
-      nextAction: holdout.status === "needs-promotion"
-        ? "Approve low-risk local routing if holdout evidence is acceptable."
-        : "Keep hosted routing unless cost, quality, and holdout evidence recommend a local trial."
-    };
   }
 
   function mcpRecoveryPaths(): Pick<RuntimeMonitorReport["mcpPipeline"]["recovery"], "directory" | "markdownPath" | "jsonPath" | "scriptPath" | "writeCommand"> {
@@ -8754,25 +7718,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  function normalizeDashboardGraphPresetFilters(filters: Record<string, unknown>): DashboardGraphPresetFilters {
-    const view = stringValue(filters.view);
-    const orientation = stringValue(filters.orientation);
-    return {
-      workflow: stringValue(filters.workflow)?.trim() || "build-feature",
-      project: stringValue(filters.project)?.trim() || "templates/project",
-      policyProfile: stringValue(filters.policyProfile)?.trim() || "local",
-      view: view === "mind-map" || view === "network" ? view : "graph",
-      orientation: orientation === "radial" ? "radial" : "horizontal",
-      category: stringValue(filters.category)?.trim() || "",
-      approval: stringValue(filters.approval)?.trim() || "all",
-      policyStatus: stringValue(filters.policyStatus)?.trim() || "all",
-      runStatus: parseDashboardRunStatusFilter(stringValue(filters.runStatus) ?? "all"),
-      runLimit: String(parseDashboardRunLimit(stringValue(filters.runLimit) ?? "50", 50)),
-      runScope: parseDashboardRunScope(stringValue(filters.runScope) ?? "project"),
-      stage: stringValue(filters.stage)?.trim() || ""
-    };
-  }
-
   function normalizeDashboardProvider(value: string, options: { allowBlank: boolean }): string | undefined {
     const trimmed = value.trim();
     if (!trimmed && options.allowBlank) {
@@ -8781,33 +7726,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const normalized = normalizeProviderRef(trimmed);
     const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "groq", "openrouter", "nvidia", "muse", "openai-compatible", "bedrock", "kiro"]);
     return supported.has(normalized) ? normalized : undefined;
-  }
-
-  function parseDashboardRunScope(value: string): "project" | "all-projects" {
-    return value === "all-projects" || value === "all" ? "all-projects" : "project";
-  }
-
-  function parseDashboardRunStatusFilter(value: string): string {
-    return ["all", "active", "failed", "blocked", "completed", "queued", "leased", "running", "cancelled"].includes(value) ? value : "all";
-  }
-
-  function parseLaunchctlNumber(output: string, key: string): number | null {
-    const pattern = new RegExp(`\\b${key}\\s*=\\s*(\\d+)\\b`);
-    const match = output.match(pattern);
-    return match ? Number.parseInt(match[1] ?? "", 10) : null;
-  }
-
-  function parseLsofListener(output: string): { command: string; pid: number } | null {
-    const line = output.split(/\r?\n/).slice(1).find((item) => item.trim());
-    if (!line) return null;
-    const parts = line.trim().split(/\s+/);
-    const pid = Number.parseInt(parts[1] ?? "", 10);
-    return Number.isFinite(pid) ? { command: parts[0] ?? "unknown", pid } : null;
-  }
-
-  function percentRate(count: number, total: number): number | null {
-    if (!total) return null;
-    return Math.round((count / total) * 1000) / 10;
   }
 
   function previewText(value: string): string {
@@ -10115,15 +9033,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
   }
 
-  function processMatchesRuntimeRole(args: string, role: RuntimeMonitorReport["processes"][number]["role"]): boolean {
-    if (role === "supervisor") return /scripts\/dev-agentflow\.mjs/.test(args);
-    if (role === "dashboard") return /apps\/cli\/src\/index\.ts dashboard\b/.test(args) || /npm run agentflow dashboard\b/.test(args);
-    if (role === "worker") return /apps\/cli\/src\/index\.ts worker\b/.test(args) || /npm run agentflow worker\b/.test(args);
-    if (role === "learning-daemon") return /apps\/cli\/src\/index\.ts learning-daemon\b/.test(args) || /npm run agentflow learning-daemon\b/.test(args);
-    if (role === "mcp") return /apps\/mcp\/src\/index\.(ts|js)/.test(args);
-    return false;
-  }
-
   async function processServerOrchestrationRequest(request: http.IncomingMessage, body: unknown, limits = serverRequestLimits()): Promise<ServerOrchestrationReport> {
     const payload = objectValue(body);
     const requestedProjectId = stringValue(payload.projectId)?.trim() ?? "";
@@ -10736,16 +9645,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">${iconLabel("refresh", "Recover Expired Leases")}</button></form>`;
   }
 
-  function queueRunActionForm(runId: string, action: string, label: string, variant: "primary" | "secondary" = "primary"): string {
-    const iconName: DashboardIconName = action === "cancel" ? "x" : action.includes("requeue") || action.includes("recover") || action.includes("retry") ? "refresh" : "play";
-    return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel(iconName, label)}</button></form>`;
-  }
-
-  function rateDelta(after: number | null, before: number | null): number | null {
-    if (after === null || before === null) return null;
-    return Math.round((after - before) * 10) / 10;
-  }
-
   async function readBoundedDashboardResponse(response: Response, maxBytes: number): Promise<string> {
     if (!response.body) return "";
     const reader = response.body.getReader();
@@ -10788,14 +9687,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  async function readFormBody(request: http.IncomingMessage): Promise<URLSearchParams> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-    }
-    return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-  }
-
   function readGovernedReusePlan(artifacts: Awaited<ReturnType<typeof listArtifacts>>): GovernedReusePlan | null {
     const compiled = artifacts.find((artifact) => artifact.kind === "compiled_brief");
     const metadata = objectValue(compiled?.content?.metadata);
@@ -10804,41 +9695,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return plan as unknown as GovernedReusePlan;
   }
 
-  async function readJsonBody(request: http.IncomingMessage, maxBytes = 64_000): Promise<unknown> {
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    for await (const chunk of request) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-      bytes += buffer.length;
-      if (bytes > maxBytes) {
-        throw new Error(`JSON request body exceeds ${maxBytes} bytes.`);
-      }
-      chunks.push(buffer);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8").trim();
-    if (!raw) return {};
-    return JSON.parse(raw) as unknown;
-  }
-
   async function readScheduleState(statePath: string): Promise<Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>> {
     try {
       return JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>;
     } catch {
       return {};
     }
-  }
-
-  function renderActionResultSummary(output: string): string {
-    const summaryRows = output.split(/\r?\n/).map((line) => line.trim()).filter((line) =>
-      /^(Approved|Executed|Skipped|Approval requests|Requeued|Affected runs|Queued stages):\s/u.test(line)
-    ).slice(0, 6);
-    if (!summaryRows.length) {
-      return "";
-    }
-    return `<div class="meta-grid compact">${summaryRows.map((line) => {
-      const [label = "Result", ...rest] = line.split(":");
-      return `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(rest.join(":").trim())}</div>`;
-    }).join("")}</div>`;
   }
 
   function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: AgentImprovementEvalPlan | null, promotionQueue: AgentImprovementPromotionQueue | null): string {
@@ -11990,31 +10852,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<div class="ops-daemon-layout"><div class="ops-daemon-chart">${bars || '<div class="ops-empty"><strong>No daemon action receipts yet</strong><span>Heartbeat monitoring remains active.</span></div>'}</div><div class="ops-daemon-facts"><div><span>Status</span><strong class="${status === "running" ? "good-text" : "warn-text"}">${escapeHtml(status)}</strong></div><div><span>Cycles</span><strong>${formatNumber(daemon?.ticks ?? supervisor.ticks)}</strong></div><div><span>Last cycle</span><strong>${renderDashboardDateTime(lastCycle, "none")}</strong></div><div><span>Actions</span><strong>${formatNumber(events.length)}</strong></div></div></div><div class="ops-legend"><span><i class="daemon-applied"></i>Applied</span><span><i class="daemon-planned"></i>Planned</span><span><i class="daemon-other"></i>Closed</span></div>`;
   }
 
-  function renderDashboardActionResult(result: DashboardFollowUpResult): string {
-    const actionLinks = `
-      <div class="actions">
-        <a class="button" href="/approvals?status=pending">Pending Approvals</a>
-        <a class="button secondary" href="/approvals?status=approved">Approved</a>
-        <a class="button secondary" href="/approvals?status=executed">Executed</a>
-        <a class="button secondary" href="/queue">Queue</a>
-        <a class="button secondary" href="/">Dashboard</a>
-      </div>
-    `;
-    const body = result.ok
-      ? `<section class="panel action-result success"><h1>${escapeHtml(result.title)}</h1>${renderActionResultSummary(result.output)}<pre>${escapeHtml(result.output)}</pre>${result.runId ? `<p><a class="button" href="/run?id=${encodeURIComponent(result.runId)}">Open run</a></p>` : ""}${actionLinks}</section>`
-      : `<section class="panel action-result failed"><h1>Action failed</h1><pre>${escapeHtml(result.error)}</pre>${actionLinks}</section>`;
-    return `<!doctype html>
-  <html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Dashboard Action</title>
-    <style>${dashboardCss()}</style>
-  </head>
-  <body>${dashboardNav("dashboard")}<main id="main-content"><p><a href="/">Dashboard</a></p>${body}</main></body>
-  </html>`;
-  }
-
   /** Errors on API and asset paths stay plain text; page requests get the layout. */
   function finishDashboardPageError(request: http.IncomingMessage, response: http.ServerResponse): void {
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
@@ -12741,35 +11578,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </main>
   </body>
   </html>`;
-  }
-
-  function renderFeedbackTargetActionForms(target: DashboardFeedbackTarget): string {
-    return `
-      <div class="feedback-row-actions">
-        ${feedbackTargetActionForm(target.runId, "accepted", "Accept", defaultFeedbackNote(target, "accepted"))}
-        ${feedbackTargetActionForm(target.runId, "revised", "Revise", defaultFeedbackNote(target, "revised"))}
-        ${feedbackTargetActionForm(target.runId, "rejected", "Reject", defaultFeedbackNote(target, "rejected"))}
-      </div>
-    `;
-  }
-
-  function renderFeedbackTargetEvidenceHtml(target: DashboardFeedbackTarget): string {
-    const quality = target.quality
-      ? [
-        `quality ${target.quality.averageQuality ?? "n/a"}`,
-        `${target.quality.qualityPassCount} pass`,
-        `${target.quality.qualityFailCount} review`,
-        `${target.quality.fallbackCount} fallback`,
-        target.quality.averageLatencyMs === null ? "" : `avg ${formatDuration(target.quality.averageLatencyMs)}`
-      ].filter(Boolean).join(" · ")
-      : "quality n/a";
-    const findings = target.summary?.keyFindings.length
-      ? `<strong>Findings</strong><ul>${target.summary.keyFindings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : "";
-    const failures = target.summary?.failures.length
-      ? `<strong>Failures</strong><ul>${target.summary.failures.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : "";
-    return `<span class="muted">${escapeHtml(quality)}</span>${findings}${failures}`;
   }
 
   function renderFeedbackTargetPrimaryActionForm(target: DashboardFeedbackInboxItem, rating: FeedbackRating): string {
@@ -13619,44 +12427,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `;
   }
 
-  function renderLocalHoldoutRoutingStatusHtml(status: DashboardLocalHoldoutRoutingStatus): string {
-    const statusClass = status.status === "active" || status.status === "approved"
-      ? "completed"
-      : status.status === "error" || status.status === "blocked"
-        ? "failed"
-        : "queued";
-    const evidenceSuites = status.evidenceSuites.length ? status.evidenceSuites.join(", ") : "none";
-    const promotableSuites = status.promotableSuites.length ? status.promotableSuites.join(", ") : "none";
-    return `
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <h2>Local Holdout Routing</h2>
-            <span class="muted">Reviewed local LLM promotion state and hosted fallback posture.</span>
-          </div>
-          <span class="status ${statusClass}">${escapeHtml(status.status)}</span>
-        </div>
-        <div class="metric-grid">
-          ${metricCard("Results", status.resultsExists ? status.resultsDecision ?? "present" : "missing", status.resultsPath)}
-          ${metricCard("Promotion", status.promotionExists ? status.promotionStatus ?? "present" : "missing", status.promotionPath)}
-          ${metricCard("Approved", status.approved ? "yes" : "no", status.maxRisk ? `max risk ${status.maxRisk}` : "approval gate")}
-          ${metricCard("Thresholds", status.thresholdSummary ?? "missing", "promotion gate")}
-          ${metricCard("Holdout Evidence", status.evidenceSummary ?? "missing", "captured result")}
-          ${metricCard("Local Routed", status.localStageCount, "recent local/BYO stages")}
-          ${metricCard("Hosted Routed", status.hostedStageCount, "recent hosted stages")}
-          ${metricCard("Local Fallback", status.localFallbackRate === null ? "n/a" : status.localFallbackRate, "recent local/BYO fallback rate")}
-        </div>
-        <div class="meta-grid compact">
-          <div><strong>Evidence Suites</strong>${escapeHtml(evidenceSuites)}</div>
-          <div><strong>Promotable Suites</strong>${escapeHtml(promotableSuites)}</div>
-          <div><strong>Fallback Boundary</strong>${escapeHtml(status.hostedFallbackBoundary)}</div>
-          <div><strong>Recommendation</strong>${escapeHtml(status.recommendation)}</div>
-        </div>
-        ${status.error ? `<p class="error">${escapeHtml(status.error)}</p>` : ""}
-      </section>
-    `;
-  }
-
   function renderLocalLlmBenchmarkReceiptsHtml(report: LocalLlmBenchmarkReceiptReport): string {
     const statusClass = report.status === "completed" ? "completed" : report.status === "runtime-needed" || report.status === "no-installed-models" ? "failed" : "queued";
     const rows = report.receipts.map((receipt) => `
@@ -14320,96 +13090,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <p class="muted">${escapeHtml(evidence.recommendation)}</p>
       </section>
     `;
-  }
-
-  function renderLocalRouteDecisionDrilldownHtml(
-    trends: DashboardRouteReceiptTrendReport,
-    holdout: DashboardLocalHoldoutRoutingStatus
-  ): string {
-    const rows = trends.topGroups.map((group) => {
-      const explanation = localRouteDecisionExplanation(group, holdout);
-      return `
-        <tr>
-          <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)} / ${escapeHtml(group.agentId)}</span></td>
-          <td><span class="flag ${explanation.severity === "good" ? "good" : explanation.severity === "warning" ? "warn" : "queued"}">${escapeHtml(explanation.label)}</span></td>
-          <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}<br><span class="muted">${formatNumber(group.runs)} receipt(s)</span></td>
-          <td>${group.averageQuality ?? "n/a"}<br><span class="muted">${group.averageLatencyMs === null ? "latency n/a" : `${formatNumber(group.averageLatencyMs)}ms avg`}</span></td>
-          <td>${group.fallbackCount}<br><span class="muted">${group.runs ? Number((group.fallbackCount / group.runs).toFixed(2)) : 0} fallback rate</span></td>
-          <td><span>${escapeHtml(truncateText(explanation.reason, 220))}</span>${explanation.reason.length > 220 ? `<details class="run-task-details"><summary>View rationale</summary><div>${escapeHtml(truncateText(explanation.reason, 1200))}</div></details>` : ""}<strong>Next:</strong> ${escapeHtml(explanation.nextAction)}</td>
-          <td>${routeDecisionFeedbackForm(trends.projectRootUri, group)}</td>
-        </tr>
-      `;
-    }).join("");
-    return `
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <h2>Local Route Decision Drilldown</h2>
-            <span class="muted">Why recent stages selected local, skipped local, or used hosted fallback.</span>
-          </div>
-          <span class="status ${holdout.approved ? "completed" : "queued"}">${holdout.approved ? "holdout approved" : holdout.status}</span>
-        </div>
-        <div class="table-wrap"><table><thead><tr><th>Stage</th><th>Decision</th><th>Route</th><th>Quality/Latency</th><th>Fallback</th><th>Reason / Next Action</th><th>Feedback</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">No recent route receipts are available yet.</td></tr>"}</tbody></table></div>
-      </section>
-    `;
-  }
-
-  function renderMobileApprovalCard(approval: DashboardActionApproval, backlogItem?: ApprovalBacklogItem): string {
-    const risk = backlogItem?.autopilotRisk ?? (approval.actionType === "deployment" || approval.actionType === "autonomy" ? "high" : "medium");
-    const ageReference = approval.updatedAt ?? approval.createdAt;
-    const ageMs = Math.max(0, Date.now() - Date.parse(ageReference));
-    const executable = isExecutableApprovalAction(approval.actionType);
-    const decisionControls = approval.status === "pending"
-      ? `<div class="mobile-approval-actions">
-          <form method="post" action="/api/approval-action">
-            <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
-            <input type="hidden" name="decision" value="rejected">
-            <input type="hidden" name="actorRole" value="approver">
-            <button class="danger secondary" type="submit">Reject</button>
-          </form>
-          ${approval.actionType === "local_command" || approval.actionType === "file_write" ? `<form method="post" action="/api/approval-rule-action">
-            <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
-            <input type="hidden" name="actorRole" value="approver">
-            <input type="hidden" name="target" value="${escapeHtml(approvalRuleExactTarget(approval))}">
-            <input type="hidden" name="approveCurrent" value="on">
-            <input type="hidden" name="note" value="Always approve ${escapeHtml(approvalRuleDisplayTarget(approval, approvalRuleExactTarget(approval)))}">
-            <button class="secondary" type="submit">Always allow</button>
-          </form>` : ""}
-          <form method="post" action="/api/approval-action">
-            <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
-            <input type="hidden" name="decision" value="${executable ? "approve_execute" : "approved"}">
-            <input type="hidden" name="actorRole" value="approver">
-            <button type="submit">${executable ? "Approve & run" : "Approve"}</button>
-          </form>
-        </div>`
-      : approval.status === "approved" && executable
-        ? `<div class="mobile-approval-actions two-up">${approvalDismissForm(approval.id)}${approvalExecuteForm(approval.id).replace(">Execute<", ">Execute now<")}</div>`
-        : approval.status === "failed" && executable
-          ? `<div class="mobile-approval-actions two-up">${approvalDismissForm(approval.id)}${approvalExecuteForm(approval.id).replace(">Execute<", ">Retry now<")}</div>`
-          : `<p class="muted">${escapeHtml(approval.decisionNote ?? "No action available.")}</p>`;
-    return `<article class="mobile-approval-card risk-${escapeHtml(risk)}">
-      <div class="mobile-approval-meta">
-        <span class="approval-risk"><strong>${escapeHtml(titleCase(risk))} risk</strong></span>
-        <span class="approval-kind">${escapeHtml(titleCase(approval.actionType.replaceAll("_", " ")))}</span>
-        <span class="approval-age">${escapeHtml(formatApprovalAge(ageMs))}</span>
-      </div>
-      <div class="mobile-approval-context">
-        <strong>${escapeHtml(approval.projectName)}</strong>
-        <span>${escapeHtml(approval.workflowId)} · ${escapeHtml(approval.stageId)}</span>
-      </div>
-      <code class="mobile-approval-target">${escapeHtml(approval.target)}</code>
-      <details class="mobile-approval-details">
-        <summary>View details</summary>
-        <dl>
-          <div><dt>Requested by</dt><dd>${escapeHtml(approval.agentId)}</dd></div>
-          <div><dt>Why</dt><dd>${escapeHtml(approval.rationale)}</dd></div>
-          <div><dt>Approval ID</dt><dd>${escapeHtml(approval.id)}</dd></div>
-          <div><dt>Run</dt><dd><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId)}</a></dd></div>
-          <div><dt>Payload</dt><dd>${escapeHtml(formatApprovalPayload(approval.payload))}</dd></div>
-        </dl>
-      </details>
-      ${decisionControls}
-    </article>`;
   }
 
   function renderModelCatalogHtml(report: DashboardModelCatalogReport): string {
@@ -16180,42 +14860,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Decision Role</th><th>Execution Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="6">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
   }
 
-  function renderRouteReceiptTrendsHtml(report: DashboardRouteReceiptTrendReport): string {
-    const rows = report.topGroups.map((group) => `
-      <tr>
-        <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)} / ${escapeHtml(group.agentId)}</span></td>
-        <td><span class="flag ${group.classification === "local-selected" ? "good" : group.classification === "local-skipped" || group.classification === "hosted-fallback" ? "warn" : "queued"}">${escapeHtml(group.classification.replace(/-/g, " "))}</span></td>
-        <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}</td>
-        <td>${formatNumber(group.runs)}</td>
-        <td>${formatNumber(group.fallbackCount)}</td>
-        <td>${group.averageQuality ?? "n/a"}</td>
-        <td>${group.averageLatencyMs === null ? "n/a" : `${formatNumber(group.averageLatencyMs)}ms`}</td>
-        <td>${escapeHtml(truncateText(group.latestReason || "no route reason recorded", 180))}</td>
-      </tr>
-    `).join("");
-    return `
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <h2>Route Receipt Trends</h2>
-            <span class="muted">Recent model_route receipts grouped by local selection, skipped local preference, and fallback behavior.</span>
-          </div>
-          <span class="flag ${report.totalReceipts ? "good" : "warn"}">${formatNumber(report.totalReceipts)} receipts</span>
-        </div>
-        <div class="metric-grid">
-          ${metricCard("Reports", report.reportsAnalyzed, "recent runs with quality data")}
-          ${metricCard("Local Selected", report.localSelected, "approved local holdout route")}
-          ${metricCard("Local Skipped", report.localSkipped, "local preference present but unavailable")}
-          ${metricCard("Hosted Fallback", report.hostedFallback, "provider retry receipts")}
-          ${metricCard("Hosted Selected", report.hostedSelected, "normal hosted or default route")}
-          ${metricCard("Selection Rate", report.localSelectionRate === null ? "n/a" : report.localSelectionRate, "local-selected / all receipts")}
-          ${metricCard("Fallback Rate", report.fallbackRate === null ? "n/a" : report.fallbackRate, "fallbacks / all receipts")}
-        </div>
-        <div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Class</th><th>Provider/Tier</th><th>Runs</th><th>Fallbacks</th><th>Quality</th><th>Latency</th><th>Latest Reason</th></tr></thead><tbody>${rows || "<tr><td colspan=\"8\">No route receipts found in the inspected run window.</td></tr>"}</tbody></table></div>
-      </section>
-    `;
-  }
-
   function renderRunApprovalLevelControl(
     run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
     ceiling: string
@@ -16606,57 +15250,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderRunInfoDialog(input: {
-    idSuffix?: string;
-    runId: string;
-    workflowId?: string;
-    status?: string;
-    projectName?: string;
-    projectRootUri?: string;
-    task?: string;
-    startedAt?: string | null;
-    blockedReason?: string | null;
-    failedReason?: string | null;
-    summary?: string[];
-  }): string {
-    const dialogId = `run-info-${[input.runId, input.idSuffix].filter(Boolean).join("-").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-    const rows = [
-      ["Run", input.runId],
-      ["Status", input.status],
-      ["Workflow", input.workflowId],
-      ["Project", input.projectName],
-      ["Project path", input.projectRootUri],
-      ["Started", input.startedAt ? formatDashboardDateTimeText(input.startedAt) : undefined]
-    ].filter(([, value]) => Boolean(value)).map(([label, value]) => `
-      <div><strong>${escapeHtml(label ?? "")}</strong><span>${escapeHtml(String(value))}</span></div>
-    `).join("");
-    const summary = input.summary?.filter(Boolean).length
-      ? `<ul>${input.summary.filter(Boolean).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : "<p class=\"muted\">No compact run summary is available for this row yet.</p>";
-    return `<button type="button" class="secondary compact-button" onclick="document.getElementById('${escapeHtml(dialogId)}').showModal()">${iconLabel("info", "Info")}</button>
-      <dialog class="run-info-dialog" id="${escapeHtml(dialogId)}">
-        <div>
-          <div class="section-heading">
-            <div>
-              <h2>Run Info</h2>
-              <span class="muted">${escapeHtml(input.workflowId ?? "workflow")} · ${escapeHtml(input.runId.slice(0, 8))}</span>
-            </div>
-            <form method="dialog"><button class="secondary" type="submit">${iconLabel("x", "Close")}</button></form>
-          </div>
-          <div class="meta-grid compact">${rows}</div>
-          ${input.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; open the full run for stage evidence.")}</p>` : ""}
-          ${input.status === "failed" ? `<h3>Reason Failed</h3><p class="warn-box">${escapeHtml(input.failedReason?.trim() || "No specific failure reason was recorded. Open the full run for stage evidence.")}</p><h3>How to resolve</h3><ol>${failedRunResolution(input.failedReason).instructions.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol>` : ""}
-          ${input.task ? `<h3>Task</h3><p>${escapeHtml(input.task)}</p>` : ""}
-          <h3>Summary</h3>
-          ${summary}
-          <div class="dialog-actions">
-            <a class="button" href="/run?id=${encodeURIComponent(input.runId)}">${iconLabel("activity", "Open Full Run")}</a>
-            <form method="dialog"><button class="secondary" type="submit">${iconLabel("check", "Stay Here")}</button></form>
-          </div>
-        </div>
-      </dialog>`;
-  }
-
   function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): string {
     return `(() => {
       const runId = ${serializeInlineScriptJson(runId)};
@@ -17031,199 +15624,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSearchParams = new URLSearchParams()): string {
-    const sharedHostRows = report.sharedHost.services.map((service) => `
-      <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
-    `).join("");
-    const localRows = report.localServices.map((service) => `
-      <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
-    `).join("");
-    const portRows = report.ports.map((port) => `
-      <tr><td>${escapeHtml(port.label)}<br><span class="muted">:${port.port}</span></td><td><span class="status ${port.status === "listening" ? "completed" : "queued"}">${escapeHtml(port.status)}</span></td><td>${port.pid ? `pid ${port.pid}` : "none"}</td><td>${escapeHtml(port.command || "")}</td></tr>
-    `).join("");
-    const processRows = report.processes.map((processGroup) => `
-      <tr><td>${escapeHtml(processGroup.role)}</td><td><span class="status ${processGroup.status === "ok" ? "completed" : "queued"}">${escapeHtml(processGroup.status)}</span></td><td>${formatNumber(processGroup.count)}</td><td>${processGroup.pids.map((pid) => `<code>${pid}</code>`).join(" ") || "none"}</td><td>${escapeHtml(processGroup.detail)}</td></tr>
-    `).join("");
-    const cleanupRows = report.mcpCleanup.candidates.map((candidate) => `
-      <label class="bulk-approval-row">
-        <input type="checkbox" name="pid" value="${candidate.pid}" checked>
-        <span><strong>PID ${candidate.pid}</strong> parent ${candidate.parentPid ?? "n/a"} · <span class="flag ${candidate.autoCleanable ? "good" : "queued"}">${candidate.autoCleanable ? "auto-cleanable" : candidate.risk}</span><br><span class="muted">age ${candidate.ageMs === null ? "n/a" : escapeHtml(formatDuration(candidate.ageMs))} · session ${escapeHtml(candidate.sessionKey)}</span><br><span class="muted">${escapeHtml(candidate.reason)}</span><br><code>${escapeHtml(compactDashboardText(candidate.command, 220))}</code></span>
-      </label>
-    `).join("");
-    const staleRunRows = report.staleRuns.candidates.map((run) => `
-      <tr>
-        <td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
-        <td><span class="status queued">${escapeHtml(run.runStatus)}</span> -> <span class="status completed">${escapeHtml(run.recommendedStatus)}</span></td>
-        <td>${formatNumber(run.completedTasks)}/${formatNumber(run.totalTasks)} completed<br><span class="muted">${formatNumber(run.cancelledTasks)} cancelled</span></td>
-        <td>${renderDashboardDateTime(run.startedAt, "n/a")}</td>
-        <td>${escapeHtml(compactDashboardText(run.task, 160))}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
-      </tr>
-    `).join("");
-    const containerRows = report.docker.containers.map((container) => `
-      <tr><td>${escapeHtml(container.name)}</td><td>${escapeHtml(container.image)}</td><td>${escapeHtml(container.ports)}</td></tr>
-    `).join("");
-    const mcpStdioRows = report.mcpPipeline.lastStdioEvents.slice(-6).reverse().map((event) => `
-      <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
-    `).join("");
-    const mcpLauncherRows = report.mcpPipeline.lastLauncherEvents.slice(-6).reverse().map((event) => `
-      <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
-    `).join("");
-    const mcpApprovalRows = report.mcpPipeline.approvalDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
-      <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
-    `).join("");
-    const mcpCommandRows = report.mcpPipeline.commandDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
-      <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td>${escapeHtml(String(event.operation ?? "unknown"))}</td><td>${escapeHtml(String(event.exitCode ?? event.timedOut ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
-    `).join("");
-    const mcpReloadSteps = report.mcpPipeline.clientReload.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
-    const mcpReloadClass = report.mcpPipeline.clientReload.suspectedStalePipe ? "failed" : report.mcpPipeline.smoke.status === "passed" ? "completed" : "queued";
-    const recommendations = report.recommendations.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
-    return `<section class="panel">
-      <div class="section-heading">
-        <div><h2>Runtime Monitor</h2><span class="muted">Local process inventory plus shared host/shared storage and localhost fallback health.</span></div>
-        <a class="button secondary" href="/api/runtime-monitor">JSON</a>
-      </div>
-      <div class="metric-grid">
-        ${metricCard("shared host", report.sharedHost.reachable ? "online" : "attention", report.sharedHost.host ?? "not configured")}
-        ${metricCard("Local Fallback", report.localServices.every((service) => service.reachable) ? "ready" : "stopped", "localhost storage services")}
-        ${metricCard("Docker", report.docker.status, report.docker.message)}
-        ${metricCard("Local Model", report.localModelRuntime.endpointHealthy ? "online" : "attention", `${report.localModelRuntime.serviceStatus} · ${report.localModelRuntime.modelCount} models`)}
-        ${metricCard("MCP Processes", report.processes.find((item) => item.role === "mcp")?.count ?? 0, "active local MCP server processes")}
-        ${metricCard("MCP Pipeline", report.mcpPipeline.status, report.mcpPipeline.smoke.status === "passed" ? `${report.mcpPipeline.smoke.toolCount ?? 0} tools verified` : report.mcpPipeline.smoke.message)}
-        ${metricCard("Stale Runs", report.staleRuns.candidateCount, report.staleRuns.autoReconcile.enabled ? "daemon auto-reconcile on" : "manual reconcile")}
-      </div>
-      <details class="governance-details"${!report.localModelRuntime.endpointHealthy ? " open" : ""}>
-        <summary>Durable Local Model Runtime (${escapeHtml(report.localModelRuntime.serviceStatus)})</summary>
-        <p class="muted">A dedicated LaunchAgent owns local inference so model failures do not restart the dashboard, workers, or learning daemon. Its wrapper resolves the current Homebrew Ollama symlink on every start, avoiding version-pinned executable paths after upgrades.</p>
-        <div class="meta-grid compact">
-          <div><strong>Runtime</strong>${escapeHtml(report.localModelRuntime.runtime)}</div>
-          <div><strong>Executable</strong><code>${escapeHtml(report.localModelRuntime.executable ?? "not installed")}</code></div>
-          <div><strong>Service</strong>${escapeHtml(report.localModelRuntime.serviceStatus)}${report.localModelRuntime.pid ? ` · pid ${report.localModelRuntime.pid}` : ""}</div>
-          <div><strong>Endpoint</strong>${report.localModelRuntime.endpointHealthy ? "healthy" : "unavailable"} · <code>${escapeHtml(report.localModelRuntime.endpoint)}</code></div>
-          <div><strong>Models</strong>${formatNumber(report.localModelRuntime.modelCount)}</div>
-          <div><strong>Selected Model</strong>${escapeHtml(report.localModelRuntime.selectedModel)}</div>
-          <div><strong>Plist</strong><code>${escapeHtml(report.localModelRuntime.plistPath)}</code></div>
-          <div><strong>Logs</strong><code>${escapeHtml(report.localModelRuntime.stdoutPath)}</code><br><code>${escapeHtml(report.localModelRuntime.stderrPath)}</code></div>
-        </div>
-        <div class="callout ${report.localModelRuntime.endpointHealthy ? "completed" : "queued"}"><strong>Next action</strong><p>${escapeHtml(report.localModelRuntime.guidance)}</p></div>
-        <p><code>${escapeHtml(report.localModelRuntime.installCommand)}</code></p>
-        <p><code>${escapeHtml(report.localModelRuntime.restartCommand)}</code></p>
-      </details>
-      <div class="meta-grid compact">
-        <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
-        <div><strong>Shared Host Source</strong>${escapeHtml(report.sharedHost.source)}</div>
-        <div><strong>Storage Host</strong>${escapeHtml(report.storageHost ?? "not configured")}</div>
-        <div><strong>Docker Detail</strong>${escapeHtml(report.docker.message)}</div>
-      </div>
-      <div class="split-grid">
-        <div><h3>shared host / Shared Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${sharedHostRows || '<tr><td colspan="3">No shared storage host configured.</td></tr>'}</tbody></table></div></div>
-        <div><h3>Local Fallback Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${localRows}</tbody></table></div></div>
-      </div>
-      <h3>Local Ports</h3>
-      <div class="table-wrap"><table><thead><tr><th>Port</th><th>Status</th><th>PID</th><th>Command</th></tr></thead><tbody>${portRows}</tbody></table></div>
-      <h3>Agent Workflow Processes</h3>
-      <div class="table-wrap"><table><thead><tr><th>Role</th><th>Status</th><th>Count</th><th>PIDs</th><th>Detail</th></tr></thead><tbody>${processRows}</tbody></table></div>
-      <details class="governance-details"${report.staleRuns.candidateCount ? " open" : ""}>
-        <summary>Reconcile Stale Terminal Runs (${formatNumber(report.staleRuns.candidateCount)} candidate${report.staleRuns.candidateCount === 1 ? "" : "s"})</summary>
-        <p class="muted">Repairs parent workflow runs that still show queued/running even though every child task is already terminal. The daemon can do this automatically because it only updates Agent Workflow run bookkeeping and writes a receipt.</p>
-        <div class="meta-grid compact">
-          <div><strong>Daemon Auto Reconcile</strong>${report.staleRuns.autoReconcile.enabled ? "on" : "off"}</div>
-          <div><strong>Limit</strong>${formatNumber(report.staleRuns.autoReconcile.limit)}</div>
-          <div><strong>Preview CLI</strong><code>${escapeHtml(report.staleRuns.previewCommand)}</code></div>
-          <div><strong>Execute CLI</strong><code>${escapeHtml(report.staleRuns.executeCommand)}</code></div>
-        </div>
-        <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Tasks</th><th>Started</th><th>Task</th></tr></thead><tbody>${staleRunRows || '<tr><td colspan="5">No stale terminal workflow runs found.</td></tr>'}</tbody></table></div>
-        ${report.staleRuns.candidateCount ? `<form method="post" action="/api/runtime-monitor-action">
-          ${dashboardReturnInput("/server-readiness", params)}
-          <input type="hidden" name="action" value="reconcile-stale-runs">
-          <button type="submit">Reconcile Stale Runs</button>
-        </form>` : ""}
-      </details>
-      <details class="governance-details"${report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status !== "not-run" ? " open" : ""}>
-        <summary>MCP Pipeline (${escapeHtml(report.mcpPipeline.status)})</summary>
-        <p class="muted">Codex starts Agent Workflow MCP on demand over stdio, so zero active MCP processes can be normal between tool calls. This section checks the plugin launcher path instead.</p>
-        <div class="meta-grid compact">
-          <div><strong>Plugin</strong>${report.mcpPipeline.pluginEnabled ? "enabled" : "disabled"}</div>
-          <div><strong>Launcher</strong>${report.mcpPipeline.launcherExists ? "found" : "missing"}${report.mcpPipeline.launcherExecutable ? " / executable" : ""}</div>
-          <div><strong>Repo</strong>${escapeHtml(report.mcpPipeline.resolvedRepo ?? "not resolved")}</div>
-          <div><strong>Built Server</strong>${report.mcpPipeline.serverBuilt ? "yes" : "no"}</div>
-          <div><strong>Last Spawn</strong>${renderDashboardDateTime(report.mcpPipeline.lastSpawnAt)}</div>
-          <div><strong>Last Exit</strong>${renderDashboardDateTime(report.mcpPipeline.lastExitAt)}${report.mcpPipeline.lastExitCode === null ? "" : ` code ${report.mcpPipeline.lastExitCode}`}</div>
-          <div><strong>Smoke</strong>${escapeHtml(report.mcpPipeline.smoke.status)} · ${escapeHtml(report.mcpPipeline.smoke.message)}</div>
-          <div><strong>Smoke CLI</strong><code>${escapeHtml(report.mcpPipeline.smoke.command)}</code></div>
-          <div><strong>Launcher Log</strong><code>${escapeHtml(report.mcpPipeline.launcherLogPath)}</code></div>
-          <div><strong>Stdio Log</strong><code>${escapeHtml(report.mcpPipeline.stdioLogPath)}</code></div>
-        </div>
-        <div class="callout ${mcpReloadClass}">
-          <strong>Codex / IDE Reload Guidance</strong>
-          <p>${escapeHtml(report.mcpPipeline.clientReload.summary)}</p>
-          <ul>${mcpReloadSteps}</ul>
-        </div>
-        <div class="callout queued">
-          <strong>MCP Approval-Call Diagnostics</strong>
-          <p>${escapeHtml(report.mcpPipeline.approvalDiagnostics.summary)}</p>
-          <p><code>${escapeHtml(report.mcpPipeline.approvalDiagnostics.fallbackCommand)}</code></p>
-        </div>
-        <div class="callout queued">
-          <strong>MCP Command Spans</strong>
-          <p>${escapeHtml(report.mcpPipeline.commandDiagnostics.summary)}</p>
-        </div>
-        <div class="callout ${report.mcpPipeline.recovery.status === "available" ? "completed" : "queued"}">
-          <strong>MCP Recovery Package</strong>
-          <p>${escapeHtml(report.mcpPipeline.recovery.recommendedAction)}</p>
-          <div class="meta-grid compact">
-            <div><strong>Status</strong>${escapeHtml(report.mcpPipeline.recovery.status)}</div>
-            <div><strong>Last Written</strong>${renderDashboardDateTime(report.mcpPipeline.recovery.lastWrittenAt)}</div>
-            <div><strong>Can Restart Client Pipe</strong>${report.mcpPipeline.recovery.canRestartClientPipe ? "yes" : "no"}</div>
-            <div><strong>Reason</strong>${escapeHtml(report.mcpPipeline.recovery.reason)}</div>
-            <div><strong>Runbook</strong><code>${escapeHtml(report.mcpPipeline.recovery.markdownPath)}</code></div>
-            <div><strong>Script</strong><code>${escapeHtml(report.mcpPipeline.recovery.scriptPath)}</code></div>
-          </div>
-        </div>
-        <div class="button-row">
-          <form method="post" action="/api/runtime-monitor-action">
-            ${dashboardReturnInput("/server-readiness", params)}
-            <input type="hidden" name="action" value="check-mcp">
-            <button type="submit">Run MCP Smoke</button>
-          </form>
-          <form method="post" action="/api/runtime-monitor-action">
-            ${dashboardReturnInput("/server-readiness", params)}
-            <input type="hidden" name="action" value="write-mcp-recovery">
-            <button type="submit">Write Recovery Package</button>
-          </form>
-        </div>
-        <div class="split-grid">
-          <div><h3>Launcher Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpLauncherRows || '<tr><td colspan="3">No launcher events recorded.</td></tr>'}</tbody></table></div></div>
-          <div><h3>Stdio Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpStdioRows || '<tr><td colspan="3">No stdio events recorded.</td></tr>'}</tbody></table></div></div>
-        </div>
-        <h3>Approval Call Events</h3>
-        <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpApprovalRows || '<tr><td colspan="3">No MCP approval calls recorded in the recent log window.</td></tr>'}</tbody></table></div>
-        <h3>Command Span Events</h3>
-        <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Operation</th><th>Exit/Timeout</th><th>Detail</th></tr></thead><tbody>${mcpCommandRows || '<tr><td colspan="5">No MCP command spans recorded in the recent log window.</td></tr>'}</tbody></table></div>
-      </details>
-      <details class="governance-details"${report.mcpCleanup.candidateCount ? " open" : ""}>
-        <summary>Cleanup Stale MCP Sessions (${formatNumber(report.mcpCleanup.candidateCount)} candidate${report.mcpCleanup.candidateCount === 1 ? "" : "s"})</summary>
-        <p class="muted">Preview-only by default. These candidates are limited to Agent Workflow MCP commands from this checkout.</p>
-        <div class="meta-grid compact">
-          <div><strong>Daemon Auto Cleanup</strong>${report.mcpCleanup.autoCleanup.enabled ? escapeHtml(report.mcpCleanup.autoCleanup.mode) : "off"}</div>
-          <div><strong>Stale Threshold</strong>${formatNumber(report.mcpCleanup.autoCleanup.staleMinutes)} min</div>
-          <div><strong>Auto-cleanable</strong>${formatNumber(report.mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length)}</div>
-          <div><strong>Preview CLI</strong><code>${escapeHtml(report.mcpCleanup.previewCommand)}</code></div>
-          <div><strong>Execute CLI</strong><code>${escapeHtml(report.mcpCleanup.executeCommand)}</code></div>
-          <div><strong>Auto Low Risk CLI</strong><code>${escapeHtml(`${report.mcpCleanup.executeCommand} --auto-low-risk`)}</code></div>
-        </div>
-        ${cleanupRows ? `<form class="bulk-approval-form" method="post" action="/api/runtime-monitor-action">
-          ${dashboardReturnInput("/server-readiness", params)}
-          <input type="hidden" name="action" value="cleanup-mcp">
-          <div class="bulk-approval-list">${cleanupRows}</div>
-          <label class="checkbox-row"><input type="checkbox" name="confirmed" required> Confirm terminating the selected Agent Workflow MCP candidate processes</label>
-          <button class="danger" type="submit">Terminate Selected MCP Candidates</button>
-        </form>` : `<p>No Agent Workflow MCP cleanup candidates found.</p>`}
-      </details>
-      ${containerRows ? `<details class="governance-details"><summary>Docker Containers</summary><div class="table-wrap"><table><thead><tr><th>Name</th><th>Image</th><th>Ports</th></tr></thead><tbody>${containerRows}</tbody></table></div></details>` : ""}
-      <ul>${recommendations}</ul>
-    </section>`;
-  }
-
   function renderServerApprovalActionPlanPanel(report: ServerApprovalActionPlanReport, testAdapter: ServerApprovalActionTestAdapterReport): string {
     const statusClass = report.status === "ready" ? "completed" : report.status === "blocked" ? "failed" : "queued";
     const testStatusClass = testAdapter.status === "pass" ? "completed" : "failed";
@@ -17591,55 +15991,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </main></body></html>`;
   }
 
-  function renderTuningProposalsHtml(proposalSet: TuningProposalSet, tuningOverlay?: DashboardTuningOverlayStatus): string {
-    const appliedIds = new Set([
-      ...(tuningOverlay?.selectedIds ?? []),
-      ...(tuningOverlay?.appliedProposalIds ?? [])
-    ]);
-    const activeProposals = proposalSet.proposals.filter((proposal) => !appliedIds.has(proposal.id));
-    const appliedCurrentProposals = proposalSet.proposals.filter((proposal) => appliedIds.has(proposal.id));
-    const summary = proposalSet.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-    const rows = activeProposals.slice(0, 8).map((proposal) => `
-      <tr>
-        <td>${escapeHtml(proposal.id)}<br><span class="flag ${proposal.priority === "high" ? "bad" : proposal.priority === "medium" ? "warn" : "good"}">${escapeHtml(proposal.priority)}</span></td>
-        <td>${escapeHtml(proposal.kind)}</td>
-        <td>${escapeHtml(proposal.workflowId)}<br><span class="muted">${escapeHtml(proposal.stageId)} / ${escapeHtml(proposal.agentId)}</span></td>
-        <td>${escapeHtml(proposal.recommendation)}</td>
-        <td>${escapeHtml(proposal.patchHint)}</td>
-      </tr>
-    `).join("");
-    const appliedRows = appliedCurrentProposals.slice(0, 8).map((proposal) => `
-      <tr>
-        <td>${escapeHtml(proposal.id)}<br><span class="flag good">applied</span></td>
-        <td>${escapeHtml(proposal.kind)}</td>
-        <td>${escapeHtml(proposal.workflowId)}<br><span class="muted">${escapeHtml(proposal.stageId)} / ${escapeHtml(proposal.agentId)}</span></td>
-        <td>${escapeHtml(proposal.recommendation)}</td>
-        <td>${escapeHtml(tuningOverlay?.latestAppliedAt ? `Applied ${formatDashboardDateTimeText(tuningOverlay.latestAppliedAt)}` : "Applied in project-local tuning overlay.")}</td>
-      </tr>
-    `).join("");
-    const appliedNotice = appliedCurrentProposals.length
-      ? `<p class="success">${formatNumber(appliedCurrentProposals.length)} current proposal(s) already have project-local tuning overlay/history and are hidden from the active list.</p>`
-      : tuningOverlay?.exists
-        ? `<p class="muted">A tuning overlay exists, but none of the current proposal ids match its applied ids. New evidence may have generated fresh proposals.</p>`
-        : "";
-
-    return `
-      <ul>${summary}</ul>
-      ${appliedNotice}
-      <form class="inline-form" method="post" action="/api/follow-up">
-        <input type="hidden" name="action" value="apply-tuning-dry-run">
-        <input type="hidden" name="project" value="${escapeHtml(proposalSet.projectRootUri)}">
-        <input name="ids" value="${escapeHtml(activeProposals.length ? "all" : "")}" aria-label="Proposal ids" placeholder="No active proposal ids">
-        <button type="submit">Dry Run Apply</button>
-      </form>
-      <table>
-        <thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Patch Hint</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan=\"5\">No active unapplied tuning proposals.</td></tr>"}</tbody>
-      </table>
-      ${appliedRows ? `<details class="governance-details"><summary>Applied Current Proposals</summary><div class="table-wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Status</th></tr></thead><tbody>${appliedRows}</tbody></table></div></details>` : ""}
-    `;
-  }
-
   function renderUnifiedActivityHtml(report: UnifiedActivityReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
     const option = (value: string, label: string, selected: string | null) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`;
     const projectOptions = projects.map((project) => option(project.rootUri, project.name, report.filters.project)).join("");
@@ -17676,66 +16027,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     <section class="panel"><div class="section-heading"><div><h2>Unified Timeline</h2><span class="muted">Newest first · generated ${renderDashboardDateTime(report.generatedAt)}</span></div></div>${pagerHtml("/activity", params, eventPage, "Timeline")}<div class="table-wrap"><table><thead><tr><th>When</th><th>Level</th><th>Event</th><th>Project / Run</th><th>Status / Actor</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No activity matches these filters.</td></tr>'}</tbody></table></div>${pagerHtml("/activity", params, eventPage, "Timeline")}</section>
     <section class="panel"><h2>Coverage and privacy</h2><ul>${report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></section>
     </main></body></html>`;
-  }
-
-  function renderWorkerStatusHtml(worker: DashboardWorkerStatus, options: { compact?: boolean } = {}): string {
-    const age = worker.ageMs === null ? "n/a" : formatDuration(Math.max(0, worker.ageMs));
-    const extraLanes = worker.lanes.filter((lane) => lane.heartbeatPath !== worker.heartbeatPath);
-    const activeLanes = worker.lanes.filter((lane) => lane.status === "running").length;
-    const displayedLanes = [
-      ...worker.lanes.filter((lane) => lane.status === "running"),
-      ...worker.lanes.filter((lane) => lane.status !== "running")
-    ].slice(0, 3);
-    const hiddenLanes = Math.max(0, worker.lanes.length - displayedLanes.length);
-    const probeSummary=(worker.executionCapabilityProbes??[]).map(probe=>`${probe.id}: ${probe.status} · runtime ${probe.runtimeVersion} · ${probe.digest.slice(0,12)}${probe.reason?` · ${probe.reason}`:""}`).join(" | ")||"none recorded";
-    const remoteFleetRows=(worker.remoteFleetTrust??[]).map(host=>`<tr><td>${escapeHtml(host.hostId)}</td><td><span class="status ${host.state==="trusted"?"completed":host.state==="not-delivered"?"queued":"failed"}">${escapeHtml(host.state)}</span><br><span class="muted">${escapeHtml(host.trustState)}</span></td><td>${host.deliveryLagMs===null?"n/a":escapeHtml(formatDuration(host.deliveryLagMs))}</td><td>${host.workerFreshnessMs===null?"n/a":escapeHtml(formatDuration(host.workerFreshnessMs))}</td><td>${escapeHtml(host.runtimeBuildDigest?.slice(0,16)??"none")}</td><td>${escapeHtml(host.keyLifecycle)}${host.nextKeyExpiryAt?`<br><span class="muted">${renderDashboardDateTime(host.nextKeyExpiryAt)}</span>`:""}</td><td>${escapeHtml(host.trustReason)}</td></tr>`).join("");
-    const detail = `
-      <div class="meta-grid">
-        <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
-        <div><strong>Worker ID</strong>${escapeHtml(worker.workerId ?? "none")}</div>
-        <div><strong>Host Identity</strong>${escapeHtml(worker.hostId ?? "legacy local")}</div>
-        <div><strong>Heartbeat Trust</strong>${escapeHtml(worker.heartbeatTrustState ?? "unknown")} · ${escapeHtml(worker.heartbeatTrustReason ?? "no trust decision")}</div>
-        <div><strong>Runtime Build</strong>${escapeHtml(worker.runtimeBuildDigest?.slice(0,16) ?? "not attested")}</div>
-        <div><strong>PID</strong>${worker.pid ?? "none"}</div>
-        <div><strong>Process</strong>${worker.processAlive ? "alive" : "not running"}</div>
-        <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(worker.lastHeartbeatAt, "none")}</div>
-        <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
-        <div><strong>Tick Count</strong>${formatNumber(worker.ticks)}</div>
-        <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
-        <div><strong>Project Scope</strong>${escapeHtml(worker.projectRootUri ?? "all projects")}</div>
-        <div><strong>Project Identity</strong>${escapeHtml(worker.projectIdentityId ?? (worker.projectRootUri ? "unavailable" : "all projects"))}</div>
-        <div><strong>Identity Generation</strong>${worker.projectIdentityGeneration ?? "n/a"}</div>
-        <div><strong>Source Revision</strong>${escapeHtml(worker.sourceRevision?.slice(0,12) ?? (worker.projectRootUri ? "unavailable" : "not scoped"))}</div>
-        <div><strong>Concurrency</strong>${worker.concurrency ?? "n/a"}</div>
-        <div><strong>Per-project cap</strong>${worker.perProjectConcurrency ?? "n/a"}</div>
-        <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
-        <div><strong>Ready Providers</strong>${escapeHtml(worker.providerIds?.join(", ") || "legacy/unknown")}</div>
-        <div><strong>Unavailable Providers</strong>${escapeHtml(worker.unavailableProviderIds?.join(", ") || "none")}</div>
-        <div><strong>Execution Capabilities</strong>${escapeHtml(worker.executionCapabilities?.join(", ") || "none")}</div>
-        <div><strong>Capability Probes</strong>${escapeHtml(probeSummary)}</div>
-      </div>
-      <div class="meta-grid compact">
-        <div><strong>Last Tick</strong>${worker.claimed} claimed / ${worker.completed} completed / ${worker.failed} failed</div>
-        <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
-        <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
-      </div>
-      ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status / trust</th><th>Providers</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}<br><span class="muted">${escapeHtml(lane.hostId ?? "legacy local")}</span></td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span><br><span class="muted">${escapeHtml(lane.heartbeatTrustState ?? "unknown")}</span></td><td>${escapeHtml(lane.providerIds?.join(", ") || "legacy/unknown")}</td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
-      <h3>Remote Fleet Attestation</h3>${remoteFleetRows?`<div class="table-wrap"><table><thead><tr><th>Host</th><th>State / trust</th><th>Delivery lag</th><th>Worker freshness</th><th>Runtime build</th><th>Key lifecycle</th><th>Evidence</th></tr></thead><tbody>${remoteFleetRows}</tbody></table></div>`:`<p class="muted">No remote fleet hosts are enrolled. Local live-process trust remains separate.</p>`}
-      ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(displayedLanes.length)} of ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry${hiddenLanes ? `; ${formatNumber(hiddenLanes)} older inactive lane${hiddenLanes === 1 ? "" : "s"} hidden.` : "."}</p>` : ""}
-    `;
-    if (!options.compact) return detail;
-    return `
-      <div class="worker-summary">
-        <div><strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></strong><span>${escapeHtml(workerStatusDetail(worker))}</span></div>
-        <div><strong>${formatNumber(activeLanes || Number(worker.status === "running"))}</strong><span>active lane${(activeLanes || Number(worker.status === "running")) === 1 ? "" : "s"}</span></div>
-        <div><strong>${worker.claimed} / ${worker.completed} / ${worker.failed}</strong><span>last tick</span></div>
-        <div><strong>${escapeHtml(age)}</strong><span>heartbeat age</span></div>
-      </div>
-      <details class="governance-details compact-details">
-        <summary>Worker details and lanes</summary>
-        ${detail}
-      </details>
-    `;
   }
 
   function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -18442,69 +16733,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `;
   }
 
-  async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Promise<ArtifactLifecyclePolicy> {
-    const fallback: ArtifactLifecyclePolicy = {
-      source: "default",
-      retentionDays: 30,
-      minPruneBytes: 20_000,
-      retainAuditArtifacts: true,
-      legalHold: false,
-      requireApprovalForPrune: true,
-      allowArchiveExecution: false,
-      allowRestoreExecution: false,
-      allowPruneExecution: false
-    };
-    const localProjectRootUri = projectRootUri ? await resolveLocalProjectRootUri(projectRootUri) : null;
-    if (!localProjectRootUri || !await pathExists(path.join(localProjectRootUri, ".agent-workflow", "project.yaml"))) {
-      return fallback;
-    }
-    try {
-      const project = await loadProjectConfig(localProjectRootUri);
-      return lifecyclePolicyFromProject(project, "project");
-    } catch {
-      return fallback;
-    }
-  }
-
-  function resolveSharedHostStorageTarget(): { host: string | null; source: RuntimeMonitorReport["sharedHost"]["source"] } {
-    if (process.env.AGENTFLOW_SHARED_STORAGE_HOST?.trim()) {
-      return { host: process.env.AGENTFLOW_SHARED_STORAGE_HOST.trim(), source: "AGENTFLOW_SHARED_STORAGE_HOST" };
-    }
-    const configured = defaultServiceEndpoints();
-    const nonLocal = configured.find((service) => !isLoopbackBind(service.host));
-    return nonLocal ? { host: nonLocal.host, source: "configured-endpoints" } : { host: null, source: "not-configured" };
-  }
-
-  function respondDashboardAction(
-    request: http.IncomingMessage,
-    response: http.ServerResponse,
-    form: URLSearchParams,
-    result: DashboardFollowUpResult,
-    fallbackPath: string
-  ): void {
-    const returnPath = result.ok && result.redirectToRun && result.runId
-      ? `/run?id=${encodeURIComponent(result.runId)}`
-      : dashboardActionReturnPath(request, form, fallbackPath);
-    if (!returnPath) {
-      response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderDashboardActionResult(result));
-      return;
-    }
-
-    const target = new URL(returnPath, "http://localhost");
-    target.searchParams.delete("notice");
-    target.searchParams.delete("error");
-    target.searchParams.delete("actionRun");
-    if (result.ok) {
-      target.searchParams.set("notice", truncateText(result.title || "Action completed", 180));
-      if (result.runId) target.searchParams.set("actionRun", result.runId);
-    } else {
-      target.searchParams.set("error", truncateText(result.error || "Action failed", 240));
-    }
-    response.writeHead(303, { location: `${target.pathname}${target.search}${target.hash}` });
-    response.end();
-  }
-
   function restoreDrillCommands(projectRootUri?: string): string[] {
     const projectArg = projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : "";
     return [
@@ -18520,52 +16748,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `/role-audit?${query.toString()}`;
   }
 
-  function routeDecisionFeedbackForm(projectDir: string, group: DashboardRouteReceiptTrendGroup): string {
-    const returnTo = `/model-improvement?project=${encodeURIComponent(projectDir)}&limit=50`;
-    const commonInputs = [
-      ["returnTo", returnTo],
-      ["project", projectDir],
-      ["action", "route-feedback"],
-      ["workflowId", group.workflowId],
-      ["stageId", group.stageId],
-      ["agentId", group.agentId],
-      ["providerId", group.providerId],
-      ["modelTier", group.modelTier],
-      ["routeClass", group.classification],
-      ["runs", String(group.runs)],
-      ["fallbackCount", String(group.fallbackCount)],
-      ["averageQuality", group.averageQuality === null ? "" : String(group.averageQuality)],
-      ["averageLatencyMs", group.averageLatencyMs === null ? "" : String(group.averageLatencyMs)]
-    ].map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`).join("");
-    return `<form class="feedback-form route-feedback-form" method="post" action="/api/follow-up">
-      ${commonInputs}
-      <input name="note" aria-label="Route feedback note" placeholder="optional note">
-      <div class="button-row compact">
-        <button type="submit" name="rating" value="helpful">${iconLabel("check", "Helpful")}</button>
-        <button type="submit" name="rating" value="costly">${iconLabel("warning", "Costly")}</button>
-        <button type="submit" name="rating" value="neutral" class="secondary">${iconLabel("message", "Neutral")}</button>
-      </div>
-    </form>`;
-  }
-
   function runActionForm(runId: string, action: string, label: string, variant: "primary" | "secondary" = "primary"): string {
     return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel("play", label)}</button></form>`;
-  }
-
-  function runApprovalLevelLabel(level: string): string {
-    return ({
-      "0": "Advisory only",
-      "1": "Draft artifacts",
-      "2": "Edit local files",
-      "3": "Run local commands and tests",
-      "4": "External actions with approval",
-      "5": "Trusted scheduled automation",
-      "wide-open": "All configured actions"
-    } as Record<string, string>)[level] ?? "Custom policy";
-  }
-
-  function runApprovalLevelRank(level: string): number {
-    return level === "wide-open" ? 6 : Number.parseInt(level, 10);
   }
 
   async function runDashboardFollowUp(input: {
@@ -19208,57 +17392,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
   }
 
-  function runtimeMonitorRecommendations(input: {
-    sharedHostReachable: boolean;
-    localServicesReachable: boolean;
-    docker: RuntimeMonitorReport["docker"];
-    processes: RuntimeMonitorReport["processes"];
-    mcpPipeline: RuntimeMonitorReport["mcpPipeline"];
-    staleRunCount: number;
-    localModelRuntime?: RuntimeMonitorReport["localModelRuntime"];
-  }): string[] {
-    const notes: string[] = [];
-    if (input.sharedHostReachable) notes.push("shared host/shared storage is reachable and can remain the primary state plane.");
-    else notes.push("shared host/shared storage is not fully reachable; use offline fallback before queueing new shared-state work.");
-    if (!input.localServicesReachable) notes.push("Local Postgres/Redis/MinIO fallback services are stopped or incomplete, which is expected while shared host is healthy.");
-    if (input.docker.status === "unavailable") notes.push("Docker/Colima is unavailable from this shell, so local fallback containers cannot be inspected here.");
-    const mcp = input.processes.find((processGroup) => processGroup.role === "mcp");
-    if (mcp && mcp.count > 4) notes.push("Consider restarting Codex or cleaning stale MCP sessions if MCP calls behave inconsistently.");
-    if (input.mcpPipeline.status !== "ok") notes.push("MCP pipeline needs attention; run npm run runtime-monitor -- --check-mcp and restart Codex if the launcher passes but Codex still reports Transport closed.");
-    else notes.push("MCP pipeline is configured for on-demand stdio launch; zero active MCP processes can be normal between Codex calls.");
-    if (input.staleRunCount > 0) notes.push(`${input.staleRunCount} stale terminal workflow run(s) can be reconciled because all child tasks are already terminal.`);
-    if (input.localModelRuntime && !input.localModelRuntime.endpointHealthy) notes.push(input.localModelRuntime.guidance);
-    return notes;
-  }
-
-  function runtimeProcessDetail(role: RuntimeMonitorReport["processes"][number]["role"], count: number, physicalCount = count): string {
-    if (role === "mcp" && count > 4) return "Multiple MCP server processes are active. This can be normal across Codex sessions, but stale duplicates are worth cleaning up.";
-    if (role === "mcp" && count === 0) return "No MCP process is currently active; Codex starts the stdio MCP server on demand.";
-    if (count === 0) return `${role} process was not found locally.`;
-    const physical = physicalCount > count ? ` (${physicalCount} wrapper/child processes)` : "";
-    return `${count} logical ${role} process${count === 1 ? "" : "es"} found locally${physical}.`;
-  }
-
-  function runtimeProcessGroupKey(
-    row: { pid: number; parentPid: number | null; args: string },
-    role: RuntimeMonitorReport["processes"][number]["role"],
-    rowsByPid: Map<number, { pid: number; parentPid: number | null; args: string }>
-  ): string {
-    let current = row;
-    let root = row;
-    const seen = new Set<number>();
-    while (current.parentPid && !seen.has(current.parentPid)) {
-      seen.add(current.pid);
-      const parent = rowsByPid.get(current.parentPid);
-      if (!parent || !processMatchesRuntimeRole(parent.args, role)) {
-        break;
-      }
-      root = parent;
-      current = parent;
-    }
-    return `${role}:${root.pid}`;
-  }
-
   function safeWorkerHeartbeatFileSegment(value: string): string {
     return value.replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^-+|-+$/g, "") || "worker";
   }
@@ -19369,73 +17502,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       .reduce((sum, match) => sum + Number(match[1]), 0);
   }
 
-  function summarizeFocusedStageDelta(baselineRows: DashboardWorkflowStageRun[], verificationRows: DashboardWorkflowStageRun[]): FocusedStageDeltaSummary {
-    const baseline = summarizeFocusedStageOutcomes(baselineRows);
-    const verification = summarizeFocusedStageOutcomes(verificationRows);
-    const completedDelta = rateDelta(verification.completedRate, baseline.completedRate);
-    const failedDelta = rateDelta(verification.failedRate, baseline.failedRate);
-    const activeDelta = rateDelta(verification.activeRate, baseline.activeRate);
-    let label = "Need verification";
-    if (verification.total > 0 && completedDelta !== null && failedDelta !== null) {
-      if (failedDelta < 0 || completedDelta > 0) {
-        label = "Improved";
-      } else if (failedDelta > 0 || completedDelta < 0) {
-        label = "Regressed";
-      } else {
-        label = "No change";
-      }
-    }
-    return { baseline, verification, completedDelta, failedDelta, activeDelta, label };
-  }
-
-  function summarizeFocusedStageOutcomes(rows: DashboardWorkflowStageRun[]): FocusedStageOutcomeSummary {
-    const total = rows.length;
-    const completed = rows.filter((row) => row.taskStatus === "completed").length;
-    const failed = rows.filter((row) => row.taskStatus === "failed").length;
-    const active = rows.filter((row) => row.taskStatus === "queued" || row.taskStatus === "running").length;
-    const cancelled = rows.filter((row) => row.taskStatus === "cancelled").length;
-    return {
-      total,
-      completed,
-      failed,
-      active,
-      cancelled,
-      completedRate: percentRate(completed, total),
-      failedRate: percentRate(failed, total),
-      activeRate: percentRate(active, total)
-    };
-  }
-
-  async function tailJsonl(filePath: string, maxLines: number): Promise<Array<Record<string, unknown>>> {
-    const raw = await fs.readFile(filePath, "utf8").catch(() => "");
-    if (!raw.trim()) return [];
-    return raw.trim().split(/\r?\n/).slice(-maxLines).map((line) => {
-      try {
-        return JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        return { event: "unparseable", detail: compactDashboardText(line, 240) };
-      }
-    });
-  }
-
   function tailText(value: string, maxChars: number): string {
     if (value.length <= maxChars) return value;
     return `...truncated to latest ${maxChars} characters...\n${value.slice(-maxChars)}`;
   }
 
-  function titleCase(value: string): string {
-    return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
-  }
-
   function trainingEvaluationVerdict(summary: string | null | undefined): "PASS" | "FAIL" | "INCONCLUSIVE" | null {
     const match = summary?.trim().match(/^(PASS|FAIL|INCONCLUSIVE)\b/u);
     return match ? match[1] as "PASS" | "FAIL" | "INCONCLUSIVE" : null;
-  }
-
-  function truncateMiddle(value: string, maxLength: number): string {
-    if (value.length <= maxLength) return value;
-    const keep = Math.max(4, Math.floor((maxLength - 1) / 2));
-    return `${value.slice(0, keep)}...${value.slice(-keep)}`;
   }
 
   async function updateDashboardModel(input: { provider: string; model: string }): Promise<DashboardFollowUpResult> {
@@ -19624,37 +17698,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T | Promise<T>): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<T>((resolve) => {
-          timer = setTimeout(() => resolve(onTimeout()), timeoutMs);
-        })
-      ]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
   function workerActionForm(runId: string, mode: "batch" | "watch", label: string, variant: "primary" | "secondary" = "primary"): string {
     return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button${variant === "secondary" ? ' class="secondary"' : ""} type="submit">${iconLabel(mode === "watch" ? "activity" : "play", label)}</button></form>`;
-  }
-
-  function workerStatusDetail(worker: DashboardWorkerStatus): string {
-    if (worker.status === "running") {
-      return `Worker ${worker.workerId ?? "unknown"} is processing queued stages. Last heartbeat ${worker.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, worker.ageMs))} ago`}.`;
-    }
-    if (worker.status === "missing") {
-      return "No worker heartbeat found. Start one with npm run worker:daemon.";
-    }
-    if (worker.status === "stopped") {
-      return "Worker stopped cleanly. Start one with npm run worker:daemon.";
-    }
-    return "Worker heartbeat is stale. Restart with npm run worker:daemon, or requeue interrupted stages from Queue.";
   }
 
   function workflowGraphApiHref(
@@ -19676,30 +17721,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     if (options.runScope === "all-projects") query.set("runScope", "all-projects");
     if (options.stage) query.set("stage", options.stage);
     return `/api/workflow-graph?${query.toString()}`;
-  }
-
-  function workflowGraphDashboardHref(
-    workflowId: string,
-    project: string,
-    policyProfile: string,
-    options: { view: string; orientation?: "horizontal" | "radial"; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; runScope?: "project" | "all-projects"; capture: boolean; stage?: string }
-  ): string {
-    const query = new URLSearchParams({
-      workflow: workflowId,
-      project,
-      policyProfile,
-      view: options.view
-    });
-    if (options.view === "network" && options.orientation === "radial") query.set("orientation", "radial");
-    if (options.category) query.set("category", options.category);
-    if (options.approval !== "all") query.set("approval", options.approval);
-    if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
-    if (options.runLimit !== "50") query.set("runLimit", options.runLimit);
-    if (options.runStatus !== "all") query.set("runStatus", options.runStatus);
-    if (options.runScope === "all-projects") query.set("runScope", "all-projects");
-    if (options.stage) query.set("stage", options.stage);
-    if (options.capture) query.set("capture", "1");
-    return `/workflow-graph?${query.toString()}`;
   }
 
   function workflowGraphHandoffExportForm(input: {
