@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { renderStudioHtml } from "./studio.js";
+import { dashboardSource } from "./test-source.js";
 
 const workflows = [
   { id: "build-feature", name: "Build Feature", triggers: { manual: true } },
@@ -85,7 +86,7 @@ test("studio escapes configured project paths", () => {
 test("coordinator history is exposed consistently by CLI, MCP, dashboard, and Studio", () => {
   const cli=readFileSync(new URL("../commands/runs.ts",import.meta.url),"utf8");
   const mcp=readFileSync(new URL("../../../mcp/src/index.ts",import.meta.url),"utf8");
-  const dashboard=readFileSync(new URL("../commands/daemon.ts",import.meta.url),"utf8");
+  const dashboard=dashboardSource();
   assert.match(cli,/coordinator-history-\$\{action\}/);assert.match(cli,/\["archive", "restore"\]/);
   assert.match(cli,/COORDINATOR_HISTORY_ARCHIVE_CONFIRMATION/);assert.match(cli,/executionAuthorityGranted:false/);
   assert.match(mcp,/agentflow_coordinator_history/);assert.match(mcp,/Exact human-approved obsolete run list/);
@@ -94,7 +95,7 @@ test("coordinator history is exposed consistently by CLI, MCP, dashboard, and St
 });
 
 test("studio run-now queues and watches inline without blocking the submit", () => {
-  const dashboard = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  const dashboard = dashboardSource();
   const handler = dashboard.slice(dashboard.indexOf("/api/studio-task"), dashboard.indexOf("/api/studio-task") + 5000);
   assert.match(handler, /form\.get\("submitMode"\) === "run-now"/);
   assert.match(handler, /watch: false/);
@@ -120,7 +121,7 @@ test("studio exposes a Dev mode panel backed by the dev-session API", () => {
   assert.match(html, /Proposed changes/);
   assert.match(html, /No queue, no run/);
 
-  const dashboard = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  const dashboard = dashboardSource();
   assert.match(dashboard, /\/api\/dev-session/);
   assert.match(dashboard, /\/api\/dev-sessions/);
   assert.match(dashboard, /streamDevSessionMessage\(/);

@@ -35,7 +35,7 @@ test('verified code repairs durably notify only the captured original request',(
 });
 test('queue cards distinguish verified-fix callback queue, transport and acknowledgment evidence',()=>{
  const storage=readFileSync(new URL('../../../packages/storage/src/postgres.ts',import.meta.url),'utf8');
- const dashboard=readFileSync(new URL('./commands/daemon.ts',import.meta.url),'utf8');
+ const dashboard=dashboardSource();
  assert.match(storage,/queue-partner-code-fix:%/);
  assert.match(storage,/acknowledged_at is not null then 'acknowledged'/);
  assert.match(storage,/transport_accepted_at is not null.*then 'transport_accepted'/s);
@@ -75,7 +75,7 @@ test('runtime-owned failures require a live compatible worker capability before 
 });
 test('queue cards expose evidence-bound failure ownership without granting repair',()=>{
  const storage=readFileSync(new URL('../../../packages/storage/src/postgres.ts',import.meta.url),'utf8');
- const dashboard=readFileSync(new URL('./commands/daemon.ts',import.meta.url),'utf8');
+ const dashboard=dashboardSource();
  assert.match(storage,/classifyFailureOwnership/);assert.match(storage,/kind='command_output'/);
  assert.match(dashboard,/Failure owner:/);assert.match(dashboard,/Classification grants no repair or replay authority/);
 });

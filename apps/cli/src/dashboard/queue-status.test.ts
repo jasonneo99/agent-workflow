@@ -3,6 +3,7 @@ import test from 'node:test';
 import {Script} from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {renderQueueStatusHtml,queueStatusClientScript} from './queue-status.js';
+import { dashboardSource } from "./test-source.js";
 test('queue table has precisely the requested columns, accessible filters and responsive layout',()=>{
  const html=renderQueueStatusHtml();assert.deepEqual([...html.matchAll(/<th scope="col">([^<]+)<\/th>/gu)].map(m=>m[1]),['Name','Status','Issue','Fix']);
  assert.match(html,/<title>Queue status · Agent Workflow<\/title>/);assert.match(html,/meta name="viewport"/);assert.match(html,/aria-describedby="queue-note"/);
@@ -25,7 +26,7 @@ test('queue total is independent of history and acceptance views and exposes sha
  assert.match(code,/const queueContext=data.rows.filter\(matches\)/);assert.match(code,/count-total'\).textContent=String\(queueContext.length\)/);assert.match(code,/count-review'\).textContent=String\(data.acceptanceReviewRows.filter\(matches\).length\)/);assert.match(code,/count-history'\).textContent=String\(data.historyRows.filter\(matches\).length\)/);assert.match(code,/report.queueSnapshot.capturedAt/);assert.match(code,/report.queueSnapshot.ageMs/);assert.match(code,/report.queueSnapshot.refreshing/);
 });
 test('dashboard serves a no-store local GET surface and refuses mutations or malformed scope',()=>{
- const code=readFileSync(new URL('../commands/daemon.ts',import.meta.url),'utf8'),start=code.indexOf('requestUrl.pathname === "/queue-status"'),end=code.indexOf('requestUrl.pathname === "/api/queue-partner-activity"',start),route=code.slice(start,end);
+ const code=dashboardSource(),start=code.indexOf('requestUrl.pathname === "/queue-status"'),end=code.indexOf('requestUrl.pathname === "/api/queue-partner-activity"',start),route=code.slice(start,end);
  assert.ok(start>0&&end>start);assert.match(route,/request.method !== "GET"/);assert.match(route,/isTrustedLocalDashboardRequest/);assert.match(route,/parseQueueStatusProject/);assert.match(route,/\["partner", "all"\]/);assert.match(route,/"cache-control": "no-store"/);assert.match(route,/503/);assert.doesNotMatch(route,/runWorkerOnce|recordRunAction|approveAndExecute|replayWorkflow/);
  assert.match(route,/loadQueueCardSnapshot\(undefined\)/);assert.match(route,/items: snapshot.value.queue/);assert.match(route,/queueSnapshotHeaders\(snapshot\)/);assert.doesNotMatch(route,/listWorkflowQueue\(/);
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSourcePaths } from "./dashboard/test-source.js";
 
 test("approval autopilot replays a blocked run after its final required action executes", () => {
   const source = [
@@ -13,7 +14,7 @@ test("approval autopilot replays a blocked run after its final required action e
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",
@@ -92,7 +93,7 @@ test("approval autopilot does not create a second replacement after inline appro
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",
@@ -171,7 +172,7 @@ test("learning daemon recovers approval executions interrupted by its prior proc
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",
@@ -252,7 +253,7 @@ test("exact project policy approvals execute with rollback evidence and resume b
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",

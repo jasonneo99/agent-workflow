@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {Script} from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {queueCardActivityScript,renderQueueCardActivityLine} from './queue-card-activity.js';
+import { dashboardSource } from "./test-source.js";
 test('status changes replace only the current-action subtitle value without markup, card reload or history mutation',()=>{
  const subtitle={title:''},line={dataset:{queueActivity:'one'},textContent:'Old',closest:()=>subtitle};const sandbox:any={document:{querySelectorAll:()=>[line]}};
  new Script(queueCardActivityScript()).runInNewContext(sandbox);
@@ -11,7 +12,7 @@ test('status changes replace only the current-action subtitle value without mark
  assert.doesNotMatch(queueCardActivityScript(),/innerHTML|fetch\(|reload\(|appendChild/);
 });
 test('rendered card has exactly one accessible bounded line and worker updates it in place',()=>{
- const source=readFileSync(new URL('../commands/daemon.ts',import.meta.url),'utf8');
+ const source=dashboardSource();
  const line=renderQueueCardActivityLine('run','<img onerror=attack>');
  assert.equal((line.match(/data-queue-activity=/gu)??[]).length,1);
  assert.match(line,/white-space:nowrap;overflow:hidden;text-overflow:ellipsis/);

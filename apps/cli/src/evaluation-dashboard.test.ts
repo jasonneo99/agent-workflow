@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSource, dashboardSourcePaths } from "./dashboard/test-source.js";
 
 const source = [
     "./blocked-run-supersession.ts",
@@ -12,7 +13,7 @@ const source = [
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",
@@ -86,7 +87,7 @@ test("evaluation dashboard bounds per-run report loading", () => {
 });
 
 test("evaluation readiness belongs to providers while suite history uses evaluator identities", () => {
-  const daemon = readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+  const daemon = dashboardSource();
   const start = daemon.indexOf("function renderEvaluationsHtml(");
   const end = daemon.indexOf("\n  }", start);
   const renderer = daemon.slice(start, end);

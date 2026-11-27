@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
+import { dashboardSource } from "./dashboard/test-source.js";
 test('Guide evidence diagnostics reuse the bounded inventory and preserve audit-only semantics',()=>{
  const source=readFileSync(new URL('./commands/learning.ts',import.meta.url),'utf8');
  assert.match(source,/command\('guide-evidence-diagnostics'\)/);assert.match(source,/legacyGuideEvidenceInventory\(selected\.id\)/);
@@ -10,7 +11,7 @@ test('Guide evidence diagnostics reuse the bounded inventory and preserve audit-
 });
 
 test("dashboard exposes the same bounded read-only Guide inventory", () => {
-  const source = readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+  const source = dashboardSource();
   assert.match(source, /\/api\/guide-evidence-diagnostics/);
   assert.match(source, /legacyGuideEvidenceInventory\(selected\.id\)/);
   assert.match(source, /Guide Evidence Integrity/);

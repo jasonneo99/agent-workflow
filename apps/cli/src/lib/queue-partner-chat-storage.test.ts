@@ -4,6 +4,7 @@ import type http from "node:http";
 import { readFileSync } from "node:fs";
 import { chainReceipt } from "../../../../packages/workflow-engine/src/receipt-chain.js";
 import { isTrustedPartnerCommandRequest, partnerProposalReceiptMatches, partnerApprovalEffectMatches } from "./queue-partner-chat-storage.js";
+import { dashboardSource } from "../dashboard/test-source.js";
 
 const request = (headers: Record<string, string> = {}, remote = "127.0.0.1") => ({ socket: { remoteAddress: remote }, headers: { host: "localhost:17888", origin: "http://localhost:17888", "content-type": "application/json", "x-agentflow-queue-partner": "1", ...headers } }) as unknown as http.IncomingMessage;
 
@@ -50,7 +51,7 @@ test("production integration scopes storage, retains claims and does not bypass 
   assert.match(source, /queue_partner_operator_repair_requested/);
   assert.match(source, /state\.metadata\.suiteId/);
   assert.doesNotMatch(source, /cancelWorkflowRun|retryFailedWorkflowRun|requeueRunning|delete from/i);
-  const daemon = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  const daemon = dashboardSource();
   const route = daemon.slice(daemon.indexOf('requestUrl.pathname === "/api/queue-partner-message"'), daemon.indexOf('requestUrl.pathname === "/api/server-conversation"'));
   assert.ok(route.indexOf("isTrustedPartnerCommandRequest") < route.indexOf("parsePartnerMessage"));
   assert.match(route, /resolveServerProjectReference/); assert.match(route, /config.team.default_actor_role/);

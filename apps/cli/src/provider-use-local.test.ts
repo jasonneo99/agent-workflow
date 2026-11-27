@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSourcePaths } from "./dashboard/test-source.js";
 
 test("provider-use accepts the first-class local provider", () => {
   const source = [
@@ -13,7 +14,7 @@ test("provider-use accepts the first-class local provider", () => {
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",

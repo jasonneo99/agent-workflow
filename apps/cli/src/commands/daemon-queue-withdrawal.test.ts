@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "../dashboard/test-source.js";
 
-const source = await readFile(new URL("./daemon.ts", import.meta.url), "utf8");
+const source = await Promise.resolve(dashboardSource());
 
 test("queue exposes governed unsuccessful-run withdrawal without weakening Partner dismissal protection", () => {
   assert.match(source, /action === "withdraw-unaccepted"/u);

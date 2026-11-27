@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER, workflowDeliveryRepairReason, workflowRepairLesson, workflowRepairPrevention, workflowRootRepairAction } from "./workflow-supervision.js";
+import { dashboardSourcePaths } from "./dashboard/test-source.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = [
@@ -14,7 +15,7 @@ const cliSource = [
     "./commands/context-extra.ts",
     "./commands/context-thresholds.ts",
     "./commands/context.ts",
-    "./commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "./commands/learning.ts",
     "./commands/local-llm.ts",
     "./commands/project.ts",

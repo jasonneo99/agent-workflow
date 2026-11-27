@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
-const daemon=readFileSync(new URL('./commands/daemon.ts',import.meta.url),'utf8');
+import { dashboardSource } from "./dashboard/test-source.js";
+const daemon=dashboardSource();
 const coordinator=readFileSync(new URL('./commands/queue-coordinator.ts',import.meta.url),'utf8');
 test('activity endpoint is exact registered project, local GET, no-store and read-only',()=>{
  const start=daemon.indexOf('if (requestUrl.pathname === "/api/queue-partner-activity")');

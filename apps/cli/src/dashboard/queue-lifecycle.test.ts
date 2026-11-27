@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { queueLifecyclePresentation } from "./queue-lifecycle.js";
+import { dashboardSource } from "./test-source.js";
 
 test("queue presentation calls work running only with an actual leased task", () => {
   assert.deepEqual(queueLifecyclePresentation({ runStatus: "running", queuedTasks: 0, runningTasks: 1 }), {
@@ -18,7 +19,7 @@ test("terminal evidence outranks task-count projection", () => {
 });
 
 test("queue cards and active totals use task-backed presentation", () => {
-  const source = readFileSync(new URL("../commands/daemon.ts", import.meta.url), "utf8");
+  const source = dashboardSource();
   const start = source.indexOf("function renderQueueHtml");
   const end = source.indexOf("function renderReadinessGroup", start);
   const queueView = source.slice(start, end);

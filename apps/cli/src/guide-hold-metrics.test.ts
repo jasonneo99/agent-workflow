@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
+import { dashboardSource } from "./dashboard/test-source.js";
 
 test('CLI exposes bounded observational Guide adoption metrics',()=>{
  const source=readFileSync(new URL('./commands/learning.ts',import.meta.url),'utf8');
@@ -20,7 +21,7 @@ test('CLI exposes bounded observational Guide adoption metrics',()=>{
 });
 
 test('dashboard exposes hold latency and coalescing without action authority',()=>{
- const source=readFileSync(new URL('./commands/daemon.ts',import.meta.url),'utf8');
+ const source=dashboardSource();
  assert.match(source,/\/api\/guide-adoption-hold-metrics/);
  assert.match(source,/queuePartnerGuideRegistryHoldMetrics\(selected\.id/);
  assert.match(source,/Guide Adoption Holds/);
