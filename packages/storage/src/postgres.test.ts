@@ -253,6 +253,7 @@ test("queue and dashboard lookups have indexes for recovery, receipts, and task 
   assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_repair_source_idx[\s\S]+evaluation_metadata->>'sourceRunId'/u);
   assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_schedule_idx[\s\S]+ON workflow_tasks\(run_id, status, available_at, started_at\)/u);
   assert.match(source, /CREATE INDEX IF NOT EXISTS action_receipts_run_type_created_idx[\s\S]+ON action_receipts\(run_id, action_type, created_at DESC\)/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS action_receipts_queue_decision_idx[\s\S]+ON action_receipts\(run_id, \(metadata->>'decisionId'\)\) WHERE action_type = 'queue_partner_decision'/u);
 });
 
 test("migration moves legacy metadata lineage onto the indexed replacement relation", () => {

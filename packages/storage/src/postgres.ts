@@ -360,6 +360,10 @@ export async function migrateStorage(): Promise<void> {
       ON action_receipts(run_id, action_type, created_at DESC)
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS action_receipts_queue_decision_idx
+      ON action_receipts(run_id, (metadata->>'decisionId')) WHERE action_type = 'queue_partner_decision'
+    `);
+    await client.query(`
       ALTER TABLE action_receipts
       ADD COLUMN IF NOT EXISTS prev_hash text,
       ADD COLUMN IF NOT EXISTS receipt_hash text,
