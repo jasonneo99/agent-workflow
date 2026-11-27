@@ -26,10 +26,18 @@ export const queueDecisionReadSql=`select a.content,a.created_at
   and a.content->>'projectId'=r.project_id::text and a.content->>'runId'=r.id::text
   and a.content->>'familyId'=r.project_id::text||':'||r.run_set_id::text
   and a.content->>'decision'<>'outcome' and ($1::uuid is null or r.project_id=$1::uuid)
-  and exists(select 1 from action_receipts rc where rc.run_id=r.id
-   and rc.agent_id='workflow-orchestrator' and rc.action_type='queue_partner_decision'
-   and rc.target=r.project_id::text||':'||r.run_set_id::text
-   and rc.metadata_serialization_version=2 and rc.metadata=a.content)
+  and case when jsonb_typeof(a.content->'decisionId')='string'
+   -- Equal JSON implies an equal string decisionId, so probing the indexed id
+   -- first (action_receipts_queue_decision_idx) finds the same receipts while
+   -- comparing full JSON only for that decision, not every family receipt.
+   then exists(select 1 from action_receipts rc where rc.run_id=r.id
+    and rc.action_type='queue_partner_decision' and rc.metadata->>'decisionId'=a.content->>'decisionId'
+    and rc.agent_id='workflow-orchestrator' and rc.target=r.project_id::text||':'||r.run_set_id::text
+    and rc.metadata_serialization_version=2 and rc.metadata=a.content)
+   else exists(select 1 from action_receipts rc where rc.run_id=r.id
+    and rc.agent_id='workflow-orchestrator' and rc.action_type='queue_partner_decision'
+    and rc.target=r.project_id::text||':'||r.run_set_id::text
+    and rc.metadata_serialization_version=2 and rc.metadata=a.content) end
  order by a.created_at desc,a.uri desc limit 1`;
 type FamilyIdentity={runId:string;projectId:string;runSetId:string;startedAt:string;replacementRunId:string|null;parentRunIds:string[];idempotencyKey:string|null;source:string|null;actor:string|null;legacySources:string|null;runStatus:string;visible:boolean};
 /** Historical tracking only, preserving each registered execution scope.
