@@ -22,6 +22,6 @@ test("approval decisions share one labelled note and the pressed button carries 
 });
 
 test("run feedback notes are labelled", () => {
-  const feedback = source.slice(source.indexOf("function feedbackForm("), source.indexOf("function feedbackRatingForBucket("));
+  const feedback = functionSource("feedbackForm", source);
   assert.match(feedback, /<input name="note" aria-label="\$\{escapeHtml\(label\)\} note"/u);
 });

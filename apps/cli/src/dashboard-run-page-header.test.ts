@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { dashboardSource } from "./dashboard/test-source.js";
+import { dashboardSource, functionSource } from "./dashboard/test-source.js";
 
 const source = dashboardSource();
-const page = source.slice(source.indexOf("  function renderRunDetailHtml("));
-const commandCenter = source.slice(source.indexOf("  function renderRunCommandCenterBody("), source.indexOf("  function renderRunContinuationBanner("));
+const page = functionSource("renderRunDetailHtml", source);
+const commandCenter = functionSource("renderRunCommandCenterBody", source);
 
 test("the run page title is the task; the id is secondary text", () => {
   assert.match(page.slice(0, 9000), /<h1 class="run-title">\$\{escapeHtml\(runTitle\)\}<\/h1>/u);

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { dashboardSource } from "./dashboard/test-source.js";
+import { dashboardSource, functionSource } from "./dashboard/test-source.js";
 
 const source = dashboardSource();
-const page = source.slice(source.indexOf("const RUNS_PAGE_STATUS_FILTERS"), source.indexOf("  function renderRunsHtml("));
-const render = source.slice(source.indexOf("  function renderRunsHtml("));
+// The status filter constant and its parsers, wherever they live.
+const page = source;
+const render = functionSource("renderRunsHtml", source);
 
 test("runs page has status chips for every state, including Blocked", () => {
   assert.match(page, /\["all", "All"\], \["failed", "Failed"\], \["blocked", "Blocked"\], \["queued", "Queued"\], \["running", "Running"\], \["completed", "Completed"\]/u);

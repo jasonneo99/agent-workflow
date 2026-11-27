@@ -29,13 +29,18 @@ export function dashboardSource(): string {
 export function functionSource(name: string, source = dashboardSource()): string {
   const match = new RegExp(`(?:async\\s+)?function ${name}\\b`, "u").exec(source);
   if (!match) throw new Error(`function ${name} not found in dashboard source`);
-  // The body opens at the first brace that ends a line, past any braces in
-  // parameter or return types.
-  const start = source.indexOf("{\n", match.index);
+  // Skip the parameter list by paren depth (parameter types can span lines
+  // and contain braces), then take the first brace that ends a line.
+  let paren = 0, index = source.indexOf("(", match.index);
+  for (; index < source.length; index += 1) {
+    if (source[index] === "(") paren += 1;
+    else if (source[index] === ")" && --paren === 0) break;
+  }
+  const start = source.indexOf("{\n", index);
   let depth = 0;
-  for (let index = start; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}" && --depth === 0) return source.slice(match.index, index + 1);
+  for (let at = start; at < source.length; at += 1) {
+    if (source[at] === "{") depth += 1;
+    else if (source[at] === "}" && --depth === 0) return source.slice(match.index, at + 1);
   }
   return source.slice(match.index);
 }

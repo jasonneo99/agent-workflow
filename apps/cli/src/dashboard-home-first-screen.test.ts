@@ -4,7 +4,8 @@ import test from "node:test";
 import { dashboardSource } from "./dashboard/test-source.js";
 
 const source = dashboardSource();
-const home = source.slice(source.indexOf("  function renderDashboardHtml("), source.indexOf('<section class="ops-panel start-work" id="start-work">'));
+const homeStart = source.search(/function renderDashboardHtml\(/u);
+const home = source.slice(homeStart, source.indexOf('<section class="ops-panel start-work" id="start-work">', homeStart));
 
 test("home opens with Needs you, Running now and Failed or blocked before the KPIs and charts", () => {
   const needs = home.indexOf('nowPanel("now-needs-you", "Needs you"');
