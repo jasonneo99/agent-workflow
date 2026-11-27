@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import { dashboardSource } from "./dashboard/test-source.js";
+import { dashboardSource, functionSource } from "./dashboard/test-source.js";
 const code=dashboardSource();
 test('queue and exact run pages share one context-bound partner overlay',()=>{
  assert.match(code,/renderQueuePartnerOverlay\(partnerProjects, resolvedProjectFilter \|\| ctx.rootDir\)/);
@@ -9,7 +9,7 @@ test('queue and exact run pages share one context-bound partner overlay',()=>{
  assert.match(code,/partnerProjects: \(await listProjectStorageSummaries\(100\)\).filter\(project => project.rootUri === details.run!\.projectRootUri\)/);
 });
 test('live page refresh cannot erase an open partner conversation',()=>{
- const queue=code.slice(code.indexOf('function renderQueueHtml('),code.indexOf('function renderReadinessGroup('));
+ const queue=functionSource('renderQueueHtml',code);
  assert.match(queue,/queueCardRefreshScript\(\)/);
  assert.match(queue,/if \(event.data.changed\) cards.request\(\)/);
  assert.doesNotMatch(queue,/window.location.reload/);
