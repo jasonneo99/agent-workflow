@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 
 test("Discovery filters and pages its candidate list", () => {
   assert.match(source, /const candidatePage = pageOf\(matchingCandidates, params, 25\);/u);

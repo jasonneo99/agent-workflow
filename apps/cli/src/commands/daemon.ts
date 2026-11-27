@@ -1,3 +1,4 @@
+import { renderAgentsHtml, compareAgentSummaries, loadDashboardAgentSummaries } from "../dashboard/pages/agents/view.js";
 import { renderDashboardInfoHtml, renderLaunchAgentLogHtml, tailText } from "../dashboard/pages/settings/view.js";
 import { renderRoadmapDashboardHtml } from "../dashboard/pages/roadmap/view.js";
 import { renderRolesHtml, renderGovernanceHtml, filterGovernanceReport, renderDashboardRoleAuditView } from "../dashboard/pages/governance/view.js";
@@ -27,12 +28,12 @@ import { buildDashboardLocalLlmRoutingDecisionTimeline, buildLocalHoldoutResultS
 import { adoptDiscoveredProjects, buildDashboardProjectAliasMergePlan, discoverLocalProjects, formatDiscoveryAdoptionResult, isPathInside, loadDashboardProjectIdentityGroups, parseSpotlightMode, splitCommaList } from "../lib/builders-project.js";
 import { assessRunStaleInputs, createAgentTaskWorkflow, formatDashboardDateTimeText, formatIndexResult, formatRunEta, formatRunSummary, formatStaleInputWarnings, loadObservabilityReport, resolveWorkflowPreset, runDashboardAgentTask, runDashboardWorkflow, runWorkflowPreset } from "../lib/builders-runs.js";
 import { buildServerApprovalActionPlanReport, buildServerApprovalActionTestAdapterReport, buildServerMutationControlReport, checkServerQueueRateLimit, firstHeader, hashAuditValue, loadRegisteredProjectConfig, loadServerApprovalActionReport, loadServerApprovalPreview, loadServerProjectRegistryReport, loadServerReadinessReport, loadServerRequestAuditLog, loadServerRequestPreview, loadServerRoutePreview, processServerQueueRequest, processSynchronousConversation, rejectProjectIdReason, requestContentLength, resolveServerProjectReference, safeAppendServerRequestAuditEvent, serverAuditErrorCode, serverRequestLimits, validateServerMutationAuth } from "../lib/builders-server.js";
-import { approveAndExecuteAction, compactDashboardText, countStrings, ensureProjectSubdir, evaluateRoleGate, execFileText, executeApprovedAction, formatBytes, formatInlineCounts, indexProjectForRun, isDismissedApproval, isExecutableApprovalAction, isOpenApproval, isRecord, lifecycleExecutionCapabilityEnabled, loadAgentsForProject, loadApprovalProjectConfig, loadCostQualityReport, loadLocalProjectConfig, normalizeActorRole, normalizeWorkerId, objectFromRecord, objectValue, pathExists, pathIsFile, queueWorkflow, resolveDashboardProjectPath, resolveLocalProjectRootUri, resumeBlockedRunAfterResolvedApprovals, shellQuote, sleep, stableHash, stringFromRecord, stringValue, truncateText, walk, buildGraphHandoffPayload, safeDisplayUrl } from "../lib/builders-shared.js";
+import { approveAndExecuteAction, compactDashboardText, countStrings, ensureProjectSubdir, evaluateRoleGate, execFileText, executeApprovedAction, formatBytes, formatInlineCounts, indexProjectForRun, isDismissedApproval, isExecutableApprovalAction, isOpenApproval, isRecord, lifecycleExecutionCapabilityEnabled, loadAgentsForProject, loadApprovalProjectConfig, loadCostQualityReport, loadLocalProjectConfig, normalizeActorRole, normalizeWorkerId, objectFromRecord, objectValue, pathExists, pathIsFile, queueWorkflow, resolveDashboardProjectPath, resolveLocalProjectRootUri, resumeBlockedRunAfterResolvedApprovals, shellQuote, sleep, stableHash, stringFromRecord, stringValue, truncateText, buildGraphHandoffPayload, safeDisplayUrl } from "../lib/builders-shared.js";
 import { buildObjectArtifactProofReport, formatOfflineFallbackQueue, formatOfflineFallbackSyncResult, loadOfflineFallbackReport, loadStorageMergeEvidenceListing, markOfflineFallbackQueueItemSynced, queueObjectMirrorApproval, recordOfflineFallbackQueueItem, writeStorageProjectConflictDecision } from "../lib/builders-storage.js";
 import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, roleAuditSummaryFromPayload, safeFileSegment, updateEnvValue, writeRoleAuditSnapshot } from "../lib/builders-system.js";
-import { loadAgentRecords, loadAgents, loadProjectConfig, loadWorkflowRecords, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
+import { loadAgentRecords, loadAgents, loadProjectConfig, loadWorkflowRecords, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { loadCommittedBundleManifest } from "../../../../packages/agent-registry/src/manifest.js";
-import { type ProjectConfig, type WorkflowDefinition, agentCardSchema, projectConfigSchema } from "../../../../packages/agent-registry/src/schemas.js";
+import { type ProjectConfig, type WorkflowDefinition, projectConfigSchema } from "../../../../packages/agent-registry/src/schemas.js";
 import { addGlobalTrustedCommand, globalTrustedCommandsPath, loadGlobalTrustedCommands, normalizeTrustedCommandPattern, removeGlobalTrustedCommand } from "../../../../packages/agent-registry/src/trusted-commands.js";
 import { type BundleRegistryReport, type ProjectBundlePin, type ProjectBundleState, buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundleRegistryReport, buildBundleUpgradePreview, formatBundleLifecyclePlan, loadBundleRegistry, normalizePolicy, verifyBundle, writeBundleLifecyclePlan } from "../../../../packages/bundle-trust/src/index.js";
 import { buildClientCapabilityContract } from "../../../../packages/client-capabilities/src/index.js";
@@ -145,7 +146,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import YAML from "yaml";
-import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReport, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSource, DashboardAgentSummary, DashboardAgentsReport, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FocusedStageDeltaSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapPriority, RoadmapTaskKind, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
+import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReport, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSummary, DashboardAgentsReport, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FocusedStageDeltaSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapPriority, RoadmapTaskKind, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
 import { cleanRoadmapFormText, parseRoadmapMilestones, parseRoadmapPriority, parseRoadmapTasks, roadmapPriorityOrder } from "../lib/roadmap-tasks.js";
 
 export function registerDaemonCommands(program: Command, ctx: CliContext): void {
@@ -776,10 +777,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   function cliOptionValue<T extends string | number | undefined>(value: T, flags: string[], fallback: T): T {
     const wasProvided = process.argv.some((arg) => flags.includes(arg) || flags.some((flag) => arg.startsWith(`${flag}=`)));
     return wasProvided ? value : fallback;
-  }
-
-  function compareAgentSummaries(a: DashboardAgentSummary, b: DashboardAgentSummary): number {
-    return a.category.localeCompare(b.category) || a.id.localeCompare(b.id);
   }
 
   function compiledBriefTextFromArtifacts(artifacts: Awaited<ReturnType<typeof listArtifacts>>): string {
@@ -5540,50 +5537,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     };
   }
 
-  async function loadDashboardAgentSummaries(
-    directory: string,
-    source: DashboardAgentSource,
-    warnings: string[],
-    sharedIds = new Set<string>()
-  ): Promise<DashboardAgentSummary[]> {
-    let files: string[];
-    try {
-      files = (await walk(directory)).filter((filePath) => /\.ya?ml$/u.test(filePath)).sort();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || source === "shared") {
-        warnings.push(`Could not read ${source} agents from ${directory}: ${(error as Error).message}`);
-      }
-      return [];
-    }
-    const summaries: DashboardAgentSummary[] = [];
-    for (const filePath of files) {
-      try {
-        const agent = await loadYamlFile(filePath, agentCardSchema);
-        const stat = await fs.stat(filePath).catch(() => null);
-        summaries.push({
-          id: agent.id,
-          displayName: agent.display_name,
-          category: agent.category,
-          autonomy: agent.autonomy,
-          modelStrategy: agent.model_strategy,
-          modelTier: agent.model_tier,
-          purpose: agent.purpose,
-          useWhen: agent.use_when,
-          can: agent.can,
-          requiresApproval: agent.requires_approval,
-          contextMaxTokens: agent.context_budget.max_tokens,
-          source,
-          sourcePath: filePath,
-          modifiedAt: stat?.mtime.toISOString() ?? null,
-          overridesShared: source === "project-local" && sharedIds.has(agent.id)
-        });
-      } catch (error) {
-        warnings.push(`Could not load agent ${filePath}: ${(error as Error).message}`);
-      }
-    }
-    return summaries.sort(compareAgentSummaries);
-  }
-
   async function loadDashboardAgents(projectDir?: string): Promise<DashboardAgentsReport> {
     const warnings: string[] = [];
     const sharedAgents = await loadDashboardAgentSummaries(path.join(ctx.rootDir, "agents"), "shared", warnings);
@@ -7645,11 +7598,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       scriptPath: path.join(directory, "mcp-client-recovery.sh"),
       writeCommand: "npm run runtime-monitor -- --check-mcp --write-mcp-recovery"
     };
-  }
-
-  /** Filters the rows of the table named by each [data-filter-rows] search box, in the page. */
-  function dashboardRowFilterScript(): string {
-    return `<script>document.querySelectorAll("input[data-filter-rows]").forEach((input)=>{const table=document.getElementById(input.getAttribute("data-filter-rows"));if(!table)return;input.addEventListener("input",()=>{const needle=input.value.trim().toLowerCase();table.querySelectorAll("tbody tr").forEach((row)=>{row.hidden=Boolean(needle)&&!row.textContent.toLowerCase().includes(needle)})})});</script>`;
   }
 
   /** "On this page" links to every section heading of a long page, built in the browser. */
@@ -9805,93 +9753,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         ${promotionCards || '<p class="muted">No promotion-ready agent patches queued yet.</p>'}
       </section>
     `;
-  }
-
-
-  function renderAgentsHtml(report: DashboardAgentsReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
-    const selectedProject = report.projectRootUri ?? "";
-    const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${selectedProject === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
-    const categoryCounts = report.effectiveAgents.reduce<Record<string, number>>((counts, agent) => {
-      counts[agent.category] = (counts[agent.category] ?? 0) + 1;
-      return counts;
-    }, {});
-    const sharedOverridden = report.projectAgents.filter((agent) => agent.overridesShared).length;
-    const jsonParams = new URLSearchParams();
-    if (selectedProject) jsonParams.set("project", selectedProject);
-    const renderAgentRows = (agents: DashboardAgentSummary[]) => agents.map((agent) => `
-      <tr>
-        <td><strong>${escapeHtml(agent.displayName)}</strong><br><code>${escapeHtml(agent.id)}</code></td>
-        <td><span class="flag ${agent.source === "project-local" ? "good" : "neutral"}">${escapeHtml(agent.source)}</span>${agent.overridesShared ? '<br><span class="flag warn">overrides shared</span>' : ""}</td>
-        <td>${escapeHtml(agent.category)}<br><span class="muted">autonomy ${escapeHtml(String(agent.autonomy))}</span></td>
-        <td>${escapeHtml(agent.purpose)}</td>
-        <td>${agent.can.slice(0, 6).map((capability) => `<code>${escapeHtml(capability)}</code>`).join(" ") || '<span class="muted">none listed</span>'}</td>
-        <td>${agent.requiresApproval.map((approval) => `<code>${escapeHtml(approval)}</code>`).join(" ") || '<span class="muted">none</span>'}</td>
-        <td>${formatNumber(agent.contextMaxTokens)}<br><span class="muted">${escapeHtml(agent.modelStrategy)} / ${escapeHtml(agent.modelTier)}</span></td>
-        <td>${renderDashboardDateTime(agent.modifiedAt, "unknown")}<br><code>${escapeHtml(agent.sourcePath)}</code></td>
-      </tr>
-    `).join("");
-    const effectiveRows = renderAgentRows(report.effectiveAgents);
-    const projectRows = renderAgentRows(report.projectAgents);
-    const sharedRows = renderAgentRows(report.sharedAgents);
-    const warningRows = report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
-    return `<!doctype html>
-  <html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Agent Workflow Agents</title>
-    <style>${dashboardCss()}</style>
-  </head>
-  <body>
-    ${dashboardNav("agents")}
-    <main id="main-content">
-      <div class="topbar">
-        <div>
-          <a href="/">Dashboard</a>
-          <h1>Agents</h1>
-          <p class="muted">Shared reusable agents plus project-local agents from <code>.agent-workflow/agents</code>.</p>
-        </div>
-        <a class="button secondary" href="/api/agents?${escapeHtml(jsonParams.toString())}">JSON</a>
-      </div>
-      ${renderDashboardFlash(params)}
-      ${renderDashboardActionHistory()}
-      <section class="panel">
-        <form method="get" class="workflow-form">
-          <label class="wide">Project
-            <select name="project"><option value="">shared agents only</option>${projectOptions}</select>
-          </label>
-          <div class="form-actions"><button type="submit">Inspect</button></div>
-        </form>
-        <p class="muted">Use this page to confirm which local specialists a selected project adds on top of the open-source bundle.</p>
-      </section>
-      ${report.warnings.length ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${warningRows}</ul></section>` : ""}
-      <section class="panel">
-        <div class="metric-grid">
-          ${metricCard("Effective Agents", report.effectiveAgents.length, "available for selected project")}
-          ${metricCard("Shared", report.sharedAgents.length, "from reusable bundle")}
-          ${metricCard("Project Local", report.projectAgents.length, selectedProject || "no project selected")}
-          ${metricCard("Overrides", sharedOverridden, "project-local cards replacing shared ids")}
-          ${metricCard("Automatic", categoryCounts.automatic ?? 0, "background-capable agents")}
-          ${metricCard("Product", categoryCounts.product ?? 0, "UX, product, and site agents")}
-        </div>
-        <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}${selectedProject ? ` for ${escapeHtml(selectedProject)}` : ""}.</p>
-      </section>
-      <section class="panel">
-        <div class="section-heading"><h2>Effective Roster</h2><label class="list-filter">Filter agents<input type="search" data-filter-rows="effective-roster" placeholder="name, category or purpose"></label></div>
-        <div class="table-wrap"><table id="effective-roster"><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${effectiveRows || '<tr><td colspan="8">No agents found.</td></tr>'}</tbody></table></div>
-      </section>
-      <section class="panel">
-        <h2>Project-Local Agents</h2>
-        <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${projectRows || '<tr><td colspan="8">No project-local agents found for the selected project.</td></tr>'}</tbody></table></div>
-      </section>
-      <details class="panel collapsible-panel">
-        <summary><h2>Shared Bundle Agents (${formatNumber(report.sharedAgents.length)})</h2><span class="muted">The reusable cards behind the roster above; project-local cards replace shared ids.</span></summary>
-        <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Source</th><th>Category</th><th>Purpose</th><th>Capabilities</th><th>Approvals</th><th>Context</th><th>Definition</th></tr></thead><tbody>${sharedRows || '<tr><td colspan="8">No shared agents found.</td></tr>'}</tbody></table></div>
-      </details>
-      ${dashboardRowFilterScript()}
-    </main>
-  </body>
-  </html>`;
   }
 
   function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {

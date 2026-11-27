@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 const page = source.slice(source.indexOf("  function renderRunDetailHtml("));
 const commandCenter = source.slice(source.indexOf("  function renderRunCommandCenterBody("), source.indexOf("  function renderRunContinuationBanner("));
 

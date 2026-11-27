@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 
 test("bulk approval sits after the list as a secondary review link, not among the filters", () => {
   const filters = source.slice(source.indexOf('aria-label="Approval status filters"'), source.indexOf('class="panel approval-inbox-panel"'));

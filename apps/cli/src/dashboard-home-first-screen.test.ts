@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 const home = source.slice(source.indexOf("  function renderDashboardHtml("), source.indexOf('<section class="ops-panel start-work" id="start-work">'));
 
 test("home opens with Needs you, Running now and Failed or blocked before the KPIs and charts", () => {
