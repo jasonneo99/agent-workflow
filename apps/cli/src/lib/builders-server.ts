@@ -956,6 +956,38 @@ export async function loadRegisteredProjectConfig(summary: DashboardProjectSumma
   }
 }
 
+export type ServerPreviewProjectConfig = {
+  config: ProjectConfig | null;
+  checkoutAvailable: boolean;
+  source: "checkout" | "registry" | "minimal" | "invalid-checkout";
+};
+
+/**
+ * Project config for a server request preview on this host. A checkout's own
+ * .agent-workflow/project.yaml wins (an invalid one stays a failure). Without a
+ * checkout, the config stored in the project registry is used, and failing
+ * that a minimal valid config, so a missing file is never reported as a role
+ * or schema error. checkoutAvailable says whether the project root (after
+ * AGENTFLOW_PROJECT_PATH_MAP mapping) exists here at all.
+ */
+export async function resolveServerPreviewProjectConfig(summary: DashboardProjectSummary): Promise<ServerPreviewProjectConfig> {
+  const projectPath = await resolveDashboardProjectPath(summary.rootUri);
+  const checkoutAvailable = projectPath.localPathExists;
+  if (checkoutAvailable && await pathExists(path.join(projectPath.localRootUri, ".agent-workflow", "project.yaml"))) {
+    try {
+      return { config: await loadProjectConfig(projectPath.localRootUri), checkoutAvailable, source: "checkout" };
+    } catch {
+      return { config: null, checkoutAvailable, source: "invalid-checkout" };
+    }
+  }
+  const stored = projectConfigSchema.safeParse(summary.config);
+  if (stored.success) {
+    return { config: stored.data, checkoutAvailable, source: "registry" };
+  }
+  const minimal = projectConfigSchema.parse({ project: { name: summary.name.trim() || "unknown" } });
+  return { config: minimal, checkoutAvailable, source: "minimal" };
+}
+
 export async function loadServerApprovalActionReport(ctx: CliContext, input: {
   projectId: string;
   approvalId: string;
@@ -1685,7 +1717,10 @@ export async function loadServerRequestPreview(ctx: CliContext, input: {
   const workflows = await loadWorkflows(ctx.rootDir);
   const workflowFound = workflows.some((workflow) => workflow.id === input.workflowId);
   const projectRoot = projectResolution.project?.rootUri ?? null;
-  const projectConfig = projectRoot ? await loadRegisteredProjectConfig({
+  const storedSummary = projectResolution.resolved
+    ? (await listProjectStorageSummaries(500)).find((summary) => summary.id === projectResolution.project?.projectId) ?? null
+    : null;
+  const previewConfig = projectRoot ? await resolveServerPreviewProjectConfig(storedSummary ?? {
     id: projectResolution.project?.projectId ?? input.projectId,
     name: projectResolution.project?.name ?? "unknown",
     rootUri: projectRoot,
@@ -1706,6 +1741,8 @@ export async function loadServerRequestPreview(ctx: CliContext, input: {
     lastWorkflowId: null,
     lastRunStatus: null
   }) : null;
+  const projectConfig = previewConfig?.config ?? null;
+  const projectName = projectResolution.project?.name ?? input.projectId;
   const roleGate = projectConfig
     ? evaluateRoleGate(projectConfig, input.actorRole, "can_request_approvals")
     : { allowed: false, message: "Project config is unavailable; role capability cannot be checked." };
@@ -1737,6 +1774,13 @@ export async function loadServerRequestPreview(ctx: CliContext, input: {
       status: projectResolution.resolved ? "pass" : "fail",
       detail: projectResolution.resolved ? "Project id resolves to one registered project." : projectResolution.reason ?? "Project id did not resolve."
     },
+    ...(projectResolution.resolved ? [{
+      label: "Project checkout",
+      status: previewConfig?.checkoutAvailable ? "pass" as const : "fail" as const,
+      detail: previewConfig?.checkoutAvailable
+        ? `A checkout of ${projectName} is available on this host.`
+        : `No checkout of ${projectName} on this host.`
+    }] : []),
     {
       label: "Workflow",
       status: workflowFound ? "pass" : "fail",
