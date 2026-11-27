@@ -2,7 +2,7 @@ import type { CliContext } from "./context.js";
 import type { DashboardActionApproval, DashboardFollowUpResult, DashboardProjectSummary, DashboardRoleProject, ServerApprovalActionPlanReport, ServerApprovalActionReport, ServerApprovalActionTestAdapterReport, ServerApprovalPreviewReport, ServerAuthHardeningReport, ServerConversationReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerProjectResolution, ServerQueueReport, ServerReadinessReport, ServerReadinessStatus, ServerRequestAuditEvent, ServerRequestAuditReport, ServerRequestPreviewReport, ServerRoutePreviewReport, TeamRoleCapability } from "./cli-types.js";
 import { approvalRuleExactTarget, dismissApprovedAction, processDashboardApprovalRuleAction } from "./builders-approvals.js";
 import { envFlag } from "./builders-learning.js";
-import { approveAndExecuteAction, evaluateRoleGate, evaluateSeparationOfDuties, executeApprovedAction, isExecutableApprovalAction, loadAgentsForProject, loadApprovedFileWrite, objectValue, pathExists, queueWorkflow, resolveDashboardProjectPath, shellQuote, stableHash, stringFromRecord, stringValue } from "./builders-shared.js";
+import { approveAndExecuteAction, evaluateRoleGate, evaluateSeparationOfDuties, executeApprovedAction, isExecutableApprovalAction, loadAgentsForProject, loadApprovedFileWrite, objectValue, pathExists, queueWorkflow, resolveDashboardProjectPath, resolveLocalProjectRootUri, shellQuote, stableHash, stringFromRecord, stringValue } from "./builders-shared.js";
 import { assertFilePatchAllowed } from "../../../../packages/local-tools/src/file-patcher.js";
 import { loadProjectConfig, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { type ProjectConfig, projectConfigSchema } from "../../../../packages/agent-registry/src/schemas.js";
@@ -2012,11 +2012,14 @@ export async function processServerQueueRequest(ctx: CliContext, request: http.I
     && clientProvidedIdempotency
     && rateLimit.ok;
   if (canQueue && routePreview.route) {
-    const configuredProject = requestedExecutionProfile === "adaptive" ? await loadProjectConfig(routePreview.route.projectRootUri) : null;
+    // The route keeps the registered storage root (often the Mac's path); the
+    // config and agents must be read from this host's mapped checkout.
+    const localProjectRoot = await resolveLocalProjectRootUri(routePreview.route.projectRootUri);
+    const configuredProject = requestedExecutionProfile === "adaptive" ? await loadProjectConfig(localProjectRoot) : null;
     const adaptiveWorkflow = configuredProject ? constructDynamicWorkflow({
       goal: routePreview.route.task,
       project: configuredProject,
-      agents: await loadAgentsForProject(ctx, routePreview.route.projectRootUri),
+      agents: await loadAgentsForProject(ctx, localProjectRoot),
       executionProfile: "adaptive"
     }) : null;
     const selectedWorkflowId = adaptiveWorkflow?.id ?? routePreview.route.workflowId;
@@ -2229,8 +2232,10 @@ export async function processSynchronousConversation(ctx: CliContext, body: unkn
       receipt: conversationReceipt(parsed, requestHash, [])
     };
   } else {
-    const projectConfig = await loadProjectConfig(resolution.project.rootUri);
-    const agents = await loadAgentsForProject(ctx, resolution.project.rootUri);
+    // Registered roots are storage paths (often the Mac's); read this host's checkout.
+    const localProjectRoot = await resolveLocalProjectRootUri(resolution.project.rootUri);
+    const projectConfig = await loadProjectConfig(localProjectRoot);
+    const agents = await loadAgentsForProject(ctx, localProjectRoot);
     const agent = parsed.assistantMode === "queue-partner"
       ? agents.find((candidate) => candidate.id === "queue-partner")
       : agents.find((candidate) => candidate.id === "workflow-orchestrator") ?? agents.find((candidate) => candidate.id === "task-triager");
