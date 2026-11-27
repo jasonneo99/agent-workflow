@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
-const nav = source.slice(source.indexOf("  function dashboardNav("), source.indexOf("    </nav>`;", source.indexOf("  function dashboardNav(")));
+const source = dashboardSource();
+const navStart = source.indexOf("function dashboardNav(");
+const nav = source.slice(navStart, source.indexOf("</nav>`;", navStart));
 
 test("the navigation keeps five everyday pages at the top", () => {
   const primary = nav.slice(nav.indexOf("const primary = ["), nav.indexOf("] as const", nav.indexOf("const primary = [")));

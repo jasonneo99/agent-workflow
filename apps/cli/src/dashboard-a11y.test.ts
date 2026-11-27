@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { dashboardCss } from "./dashboard/styles.js";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 
 test("every dashboard page offers a skip link to its main content", () => {
   assert.match(source, /<a class="skip-link" href="#main-content">Skip to content<\/a>/u);

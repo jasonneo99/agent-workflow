@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { dashboardCss } from "./styles.js";
+import { dashboardSourcePaths } from "./test-source.js";
 
 test("dashboard defaults to light and retains a selectable dark theme", async () => {
   const css = dashboardCss();
@@ -20,7 +21,7 @@ test("dashboard defaults to light and retains a selectable dark theme", async ()
         "../commands/local-llm.ts",
         "../commands/server.ts",
         "../commands/context-extra.ts",
-        "../commands/daemon.ts",
+        ...dashboardSourcePaths(),
         "../lib/builders-shared.ts",
         "../lib/builders-server.ts",
       ].map(async (p) => {

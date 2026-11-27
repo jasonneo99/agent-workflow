@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSourcePaths } from "./dashboard/test-source.js";
 
 const source = [
   "./index.ts",
@@ -14,7 +15,7 @@ const source = [
   "./commands/local-llm.ts",
   "./commands/server.ts",
   "./commands/context-extra.ts",
-  "./commands/daemon.ts",
+  ...dashboardSourcePaths(),
   "./lib/builders-shared.ts",
   "./lib/builders-learning.ts",
       "./lib/builders-server.ts",

@@ -1,10 +1,11 @@
+import { escapeHtml, dashboardNav, iconLabel, renderDashboardFlash, renderDashboardActionHistory, renderDashboardDateTime, metricCard, renderDashboardStatusPage, dashboardReturnInput, dashboardPagePath, renderDashboardFlashValues, safeDashboardReturnPath } from "../dashboard/ui/layout.js";
 import type { CliContext } from "../lib/context.js";
 import { withClient } from "../../../../packages/storage/src/client.js";
 import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js";
 import { runStateCounts } from "../dashboard/run-state.js";
 import { matchesQuery, pageOf, pagerHtml } from "../dashboard/paging.js";
 import type { Command } from "commander";
-import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonMode, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessCheckStatus, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary} from "../lib/cli-types.js";
+import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary } from "../lib/cli-types.js";
 import {countAgentImprovementPendingPromotions, renderAgentImprovementPendingBannerHtml} from "../lib/builders-learning.js";
 import { approvalOneLineSummary, approvalRuleBroadTarget, approvalRuleDisplayTarget, approvalRuleExactTarget, buildApprovalBacklogReport, classifyApprovalAutopilotRisk, dismissApprovedAction, formatApprovalAutopilotResult, loadProjectApprovalRules, parseApprovalAutopilotRisk, processDashboardApprovalRuleAction, processRequesterApprovalReply, removeProjectApprovalRule, rolePreviewForApproval, runApprovalAutopilot } from "../lib/builders-approvals.js";
 import { loadContextOperatorReport } from "../lib/builders-context.js";
@@ -18,27 +19,27 @@ import { buildObjectArtifactProofReport, formatOfflineFallbackQueue, formatOffli
 import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, roleAuditSummaryFromPayload, safeFileSegment, updateEnvValue, writeRoleAuditSnapshot } from "../lib/builders-system.js";
 import { loadAgentRecords, loadAgents, loadProjectConfig, loadWorkflowRecords, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
 import { loadCommittedBundleManifest } from "../../../../packages/agent-registry/src/manifest.js";
-import { type AgentCard, type ProjectConfig, type WorkflowDefinition, agentCardSchema, projectConfigSchema } from "../../../../packages/agent-registry/src/schemas.js";
+import { type ProjectConfig, type WorkflowDefinition, agentCardSchema, projectConfigSchema } from "../../../../packages/agent-registry/src/schemas.js";
 import { addGlobalTrustedCommand, globalTrustedCommandsPath, loadGlobalTrustedCommands, normalizeTrustedCommandPattern, removeGlobalTrustedCommand } from "../../../../packages/agent-registry/src/trusted-commands.js";
-import { type BundleCompatibilityReport, type BundleRegistryReport, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState, buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundleRegistryReport, buildBundleUpgradePreview, formatBundleLifecyclePlan, loadBundleRegistry, normalizePolicy, verifyBundle, writeBundleLifecyclePlan } from "../../../../packages/bundle-trust/src/index.js";
+import { type BundleRegistryReport, type ProjectBundlePin, type ProjectBundleState, buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundleRegistryReport, buildBundleUpgradePreview, formatBundleLifecyclePlan, loadBundleRegistry, normalizePolicy, verifyBundle, writeBundleLifecyclePlan } from "../../../../packages/bundle-trust/src/index.js";
 import { buildClientCapabilityContract } from "../../../../packages/client-capabilities/src/index.js";
-import { type ContractTestReport, runDefinitionContractTests } from "../../../../packages/contract-tests/src/index.js";
-import { type DaemonTrustSettings, type FleetProjectScope, classifyFleetProject, daemonLanes, defaultDaemonTrustSettings, fleetProjectAvailable } from "../../../../packages/daemon-control/src/index.js";
+import { runDefinitionContractTests } from "../../../../packages/contract-tests/src/index.js";
+import { type DaemonTrustSettings, classifyFleetProject, daemonLanes, defaultDaemonTrustSettings, fleetProjectAvailable } from "../../../../packages/daemon-control/src/index.js";
 import { buildDaemonControlStatus } from "../../../../packages/daemon-control/src/status.js";
 import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../../packages/dashboard/src/report-cache.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../../packages/dashboard/src/queue-watcher.js";
 import {resolveRunExecutionRoot} from '../../../../packages/storage/src/run-pipeline.js';
-import {withQueueCardActivity,type QueueCardActivity} from '../lib/queue-card-activity.js';
-import {withQueueWaitReasons,type QueueWaitReason} from '../lib/queue-wait-reasons.js';
+import { withQueueCardActivity } from '../lib/queue-card-activity.js';
+import { withQueueWaitReasons } from '../lib/queue-wait-reasons.js';
 import {QueueCardSnapshotCache,type QueueCardSnapshot} from '../lib/queue-card-snapshot.js';
 import {queueLatencyBudget} from '../lib/queue-latency-budget.js';
-import { signWorkerHeartbeat, verifyWorkerHeartbeat, workerRuntimeBuildDigest, type WorkerHeartbeatAttestation, type WorkerHeartbeatTrustDecision, type WorkerHeartbeatTrustStore } from "../lib/worker-heartbeat-attestation.js";
+import { signWorkerHeartbeat, verifyWorkerHeartbeat, workerRuntimeBuildDigest, type WorkerHeartbeatTrustDecision, type WorkerHeartbeatTrustStore } from "../lib/worker-heartbeat-attestation.js";
 import { applyWorkerHostRegistryPlan, buildWorkerHostRegistryPlan, type WorkerHostRegistryAction } from "../lib/worker-host-registry.js";
 import { ingestRemoteWorkerHeartbeat, loadRemoteWorkerHeartbeatHealth } from "../lib/worker-heartbeat-ingestion.js";
 import {queueCardActivityScript,renderQueueCardActivityLine} from '../dashboard/queue-card-activity.js';
 import {queueCardRefreshScript} from '../dashboard/queue-card-refresh.js';
 import {renderApprovalWait} from '../dashboard/approval-waits.js';
-import { type DefinitionMigrationPlan, buildDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../../packages/definition-migrations/src/index.js";
+import { buildDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../../packages/definition-migrations/src/index.js";
 import { constructDynamicWorkflow } from "../../../../packages/dynamic-workflow/src/index.js";
 import { type FleetUsageReceipt, readFleetUsageReceipts, summarizeFleetUsage } from "../../../../packages/fleet-model-gateway/src/index.js";
 import { type HighRiskApprovalInbox, buildHighRiskApprovalInbox, redactApprovalCardText } from "../../../../packages/governance/src/high-risk-approval-inbox.js";
@@ -47,14 +48,14 @@ import { type LearningApplicationPlan, type LearningApprovalQueue, type Learning
 import { type LearningLoopDashboard, buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence } from "../../../../packages/learning-loop/src/index.js";
 import { buildLearningProposalSet } from "../../../../packages/learning-loop/src/proposals.js";
 import { executeAllowedCommand, probeCommandExecutionCapabilities, type ExecutionCapabilityProbe } from "../../../../packages/local-tools/src/command-executor.js";
-import { type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy, explainModelCatalogSelection, normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
+import { type CatalogProviderKind, explainModelCatalogSelection, normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../../packages/model-providers/src/openai.js";
 import { type ModelTier } from "../../../../packages/model-providers/src/types.js";
 import { type ObservabilityReport, buildObservabilityReport } from "../../../../packages/observability/src/index.js";
 import { canonicalJsonHash, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { type GovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
-import { type ServerRoadmapSnapshot, parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap/src/index.js";
+import { parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap/src/index.js";
 import { resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../../packages/roadmap/src/index.js";
 import { type CostQualityReport, type PreferenceScorecard, type TuningApprovalHistory, type TuningHistoryStatus, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildTuningApplicationPlan, buildTuningProposals, formatCandidateComparisonPlan, formatTuningApplicationPlan } from "../../../../packages/run-reporter/src/index.js";
 import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
@@ -85,13 +86,13 @@ import { buildHumanInterventionItems } from "../dashboard/human-intervention.js"
 import { type DashboardIconName, dashboardIcon } from "../dashboard/icons.js";
 import { renderLearningLoopHtml } from "../dashboard/learning-loop.js";
 import { renderPreferenceScorecardHtml } from "../dashboard/outcome-accuracy.js";
-import { isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "../dashboard/question-chat.js";
+import { isTrustedLocalDashboardRequest } from "../dashboard/question-chat.js";
 import { renderQueuePartnerOverlay } from "../dashboard/queue-partner-overlay.js";
 import {renderQueuePartnerHistory} from '../dashboard/queue-partner-history.js';
 import {queueHistoryScript,renderQueueHistoryPanel} from '../dashboard/queue-history.js';
 import {queueLifecyclePresentation} from '../dashboard/queue-lifecycle.js';
 import {queueHistoryRangeMinutes,recordAndLoadQueueHistory} from '../lib/queue-history.js';
-import {queueRemovalRefusal,failedCardRemovalSnapshot,parseFailedCardRemovals,removeReviewedFailedCards,withFailedCardRemovalCandidates,type FailedCardRemoval} from '../lib/queue-removal.js';
+import { queueRemovalRefusal, failedCardRemovalSnapshot, parseFailedCardRemovals, removeReviewedFailedCards, withFailedCardRemovalCandidates } from '../lib/queue-removal.js';
 import {discardGuideEvidenceReductionCheckpoint,guideEvidenceCheckpointStorageKey,loadOrCreateGuideEvidenceCheckpointKey,persistGuideEvidenceReductionCheckpoint,readGuideEvidenceReductionCheckpoint} from '../lib/guide-evidence-checkpoint-store.js';
 import {loadQueuePartnerHistoryForRuns,type QueuePartnerHistorySummary} from '../lib/queue-partner-memory.js';
 import { buildQueuePartnerActivity } from "../lib/queue-partner-activity.js";
@@ -116,7 +117,6 @@ import { renderEvidenceSource } from "../dashboard/project-evidence-source.js";
 import { readProjectEvidenceGraph } from "../../../../packages/storage/src/project-evidence.js";
 import type { ProjectEvidenceGraph } from "../../../../packages/project-evidence/src/index.js";
 import { dashboardCss, roadmapDashboardCss } from "../dashboard/styles.js";
-import { themeBootstrapScript } from "../dashboard/dark-theme.js";
 import { resolveTrainingProjectChoices } from "../dashboard/training-projects.js";
 import { parseBoundedPositiveInteger, parseDashboardRunLimit, parseNonNegativeInteger, parseOptionalNumber, parsePositiveInteger } from "../numeric-options.js";
 import { type OrchestrationPlan, type OrchestrationStep, createOrchestrationPlan } from "../orchestration-plan.js";
@@ -124,7 +124,6 @@ import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } 
 import { buildRunOutcomeContract } from "../run-outcome.js";
 import { probeWorkerProviderCapabilities, probeWorkerProviderExecution } from "../worker-provider-capabilities.js";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
-import escapeHtmlText from "escape-html";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWorkerIdentity } from "../../../../packages/workflow-engine/src/worker-identity.js";
@@ -135,8 +134,8 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import YAML from "yaml";
-import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReceiptPreview, ArtifactLifecycleReport, ArtifactLifecycleRequestedActionType, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSource, DashboardAgentSummary, DashboardAgentsReport, DashboardArtifactLifecycleRow, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, RoadmapSuggestionDecisionLog, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardTuningOverlayStatus, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FailedRunResolution, FocusedStageDeltaSummary, FocusedStageOutcomeSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapMilestone, RoadmapMilestoneSource, RoadmapPriority, RoadmapTask, RoadmapTaskKind, RoadmapTaskStatus, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, TuningOverlayDocument, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
-import { cleanRoadmapFormText, cleanRoadmapTaskTitle, compareRoadmapTasks, inferRoadmapMilestoneNumber, inferRoadmapPriority, parseRoadmapMilestones, parseRoadmapPriority, parseRoadmapTasks, roadmapPriorityOrder, roadmapPriorityRank, roadmapTaskId } from "../lib/roadmap-tasks.js";
+import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReceiptPreview, ArtifactLifecycleReport, ArtifactLifecycleRequestedActionType, ArtifactPrunePlan, BackupRestoreReport, DashboardAgentSource, DashboardAgentSummary, DashboardAgentsReport, DashboardArtifactLifecycleRow, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphHandoffViewResult, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardGraphPresetFilters, DashboardHomeHealth, DashboardModelCatalogProvider, DashboardModelCatalogReport, DashboardModelImprovementReport, DashboardModelTierExplanation, DashboardProjectDetail, RoadmapSuggestionDecision, RoadmapSuggestionDecisionLog, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardTrustedCommandSummary, DashboardTuningOverlayStatus, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, FailedRunResolution, FocusedStageDeltaSummary, FocusedStageOutcomeSummary, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapMilestone, RoadmapPriority, RoadmapTask, RoadmapTaskKind, RunDecisionExplanation, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, ServerOrchestrationStatusReport, ServerRoadmapSnapshotReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, TrainingProposalEvaluationView, TuningOverlayDocument, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
+import { cleanRoadmapFormText, compareRoadmapTasks, parseRoadmapMilestones, parseRoadmapPriority, parseRoadmapTasks, roadmapPriorityOrder } from "../lib/roadmap-tasks.js";
 
 export function registerDaemonCommands(program: Command, ctx: CliContext): void {
   const RUN_APPROVAL_LEVELS = ["0", "1", "2", "3", "4", "5", "wide-open"] as const;
@@ -1273,38 +1272,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   const dashboardMaxConcurrentRequests = 6;
 
-  function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "training-proposals" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
-    // Five everyday pages stay at the top; every other page stays reachable under "More".
-    const primary = [
-      ["dashboard", "/", "Home", "grid"],
-      ["queue", "/queue", "Queue", "list"],
-      ["approvals", "/approvals", "Approvals", "shield"],
-      ["runs", "/runs", "Runs", "activity"],
-      ["projects", "/projects", "Projects", "file"]
-    ] as const satisfies ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]>;
-    const groups = [
-      { label: "Work", items: [["activity", "/activity", "Activity"]] },
-      { label: "Projects", items: [["agents", "/agents", "Agents"], ["discovery", "/discovery", "Discovery"], ["workflow-graph", "/workflow-graph", "Graph"], ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"]] },
-      { label: "Learning", items: [["learning", "/learning", "Learning overview"], ["learning-diagnostics", "/learning?view=diagnostics", "Diagnostics"], ["daemon-control", "/learning?view=settings", "Daemon settings"], ["training-proposals", "/training-proposals", "Training proposals"], ["evaluations", "/evaluations", "Evaluations"], ["feedback-inbox", "/feedback-inbox", "Feedback"], ["model-improvement", "/model-improvement", "Model improvements"], ["candidate-comparisons", "/candidate-comparisons", "Comparisons"], ["context-gateway", "/context-gateway", "Context efficiency"], ["roadmap", "/roadmap", "Roadmap"]] },
-      { label: "Settings", items: [["info", "/settings", "Settings"], ["governance", "/governance", "Governance"], ["approval-rules", "/approval-rules", "Trusted commands"], ["roles", "/roles", "Roles"], ["backup-report", "/backup-report", "Backup"], ["server-readiness", "/server-readiness", "System readiness"], ["fleet-model-usage", "/fleet-model-usage", "Fleet model usage"], ["bundles", "/bundles", "Workflow bundles"], ["providers", "/providers", "Providers"], ["model-catalog", "/model-catalog", "Model catalog"]] }
-    ] as const satisfies ReadonlyArray<{ label: string; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string]> }>;
-    const moreActive = groups.some((group) => group.items.some(([id]) => id === active));
-    return `<a class="skip-link" href="#main-content">Skip to content</a><script>(()=>{const icon=document.createElement('link');icon.rel='icon';icon.type='image/png';icon.href='/assets/agent-workflow-favicon.png';document.head.append(icon);const key='agentflow.dashboard.theme';${themeBootstrapScript}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
-      <div class="nav-brand"><a class="nav-brand-link" href="/" aria-label="Agent Workflow home"><img src="/assets/agent-workflow-mark.png" alt="" width="34" height="34"><strong>Agent Workflow</strong></a><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
-      <div id="dashboard-menu" class="dashboard-menu">
-        ${primary.map(([id, href, label, icon]) => `<a class="primary-nav-link ${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${iconLabel(icon, label)}${id === "approvals" ? '<span class="nav-badge" data-nav-badge="approvals" hidden></span>' : ""}</a>`).join("")}
-        <a class="primary-nav-link nav-studio-link ${active === "studio" ? "active" : ""}" ${active === "studio" ? 'aria-current="page"' : ""} href="/studio">${iconLabel("sparkles", "Studio")}<small>Task workspace</small></a>
-        <div class="nav-cluster nav-more ${moreActive ? "active-group" : ""}"><div class="primary-nav-row"><button type="button" class="primary-nav-link nav-more-toggle" aria-expanded="${moreActive ? "true" : "false"}" aria-controls="dashboard-more" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${iconLabel("layers", "More")}${dashboardIcon("chevrons")}</button></div><div id="dashboard-more" class="nav-children">${groups.map((group) => `<span class="nav-more-heading">${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}`).join("")}</div></div>
-      </div>
-      <script>fetch('/api/nav-counts',{headers:{accept:'application/json'}}).then(r=>r.ok?r.json():null).then(counts=>{const n=counts&&Number(counts.pendingApprovals);const badge=document.querySelector('[data-nav-badge="approvals"]');if(!badge||!n)return;badge.textContent=n>99?'99+':String(n);badge.setAttribute('aria-label',n+' pending approval'+(n===1?'':'s'));badge.hidden=false}).catch(()=>{});</script>
-    </nav>`;
-  }
-
-  function dashboardPagePath(pathname: string, params?: URLSearchParams): string {
-    const query = params?.toString() ?? "";
-    return `${pathname}${query ? `?${query}` : ""}`;
-  }
-
   const dashboardReportCache = new Map<string, { expiresAt: number; value: unknown }>();
   const dashboardReportCacheTtlMs = 30_000;
   const DASHBOARD_LOADING_WAIT_MS = 400;
@@ -1316,12 +1283,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   function dashboardResultRunPath(result: DashboardFollowUpResult, fallbackPath: string): string {
     return result.ok && result.runId ? `/run?id=${encodeURIComponent(result.runId)}` : fallbackPath;
-  }
-
-  function dashboardReturnInput(pathname: string, params?: URLSearchParams): string {
-    const pathValue = dashboardPagePath(pathname, params);
-    const safePath = safeDashboardReturnPath(pathValue) ?? pathname;
-    return `<input type="hidden" name="returnTo" value="${escapeHtml(safePath)}">`;
   }
 
   function dashboardRunMatchesStatus(status: string, filter: string): boolean {
@@ -1869,10 +1830,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   function emptyServerOrchestrationProgress(): ServerOrchestrationStatusReport["progress"] {
     return { totalStages: 0, completedStages: 0, runningStages: 0, queuedStages: 0, blockedStages: 0, failedStages: 0, cancelledStages: 0, percent: 0, currentStages: [], pendingApprovals: 0, approvals: [] };
-  }
-
-  function escapeHtml(value: string): string {
-    return escapeHtmlText(value);
   }
 
   function estimateCatalogCostClass(model: string): "low" | "medium" | "high" | "unknown" {
@@ -5867,23 +5824,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return value.replace(/ENOENT/giu, "missing executable");
   }
 
-  function iconForMetric(label: string): DashboardIconName {
-    const normalized = label.toLowerCase();
-    if (/fail|error|critical|warning|missing|blocked|attention/u.test(normalized)) return "warning";
-    if (/success|healthy|ready|complete|pass|online|matched|trusted/u.test(normalized)) return "check";
-    if (/run|queue|task|worker|active/u.test(normalized)) return "activity";
-    if (/project|source|file|indexed|artifact|archive|backup/u.test(normalized)) return "file";
-    if (/provider|model|route|routing|tier|catalog/u.test(normalized)) return "route";
-    if (/approval|role|govern|auth|trust|policy/u.test(normalized)) return "shield";
-    if (/server|service|storage|database|redis|minio|sharedHost|sync/u.test(normalized)) return "server";
-    if (/learning|feedback|eval|proposal|optimizer|comparison/u.test(normalized)) return "brain";
-    return "gauge";
-  }
-
-  function iconLabel(iconName: DashboardIconName, label: string): string {
-    return `${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span>`;
-  }
-
   async function indexDashboardProject(input: {
     project: string;
     maxFiles: string;
@@ -8761,11 +8701,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   /** "On this page" links to every section heading of a long page, built in the browser. */
   function dashboardSectionIndex(): string {
     return `<nav class="panel section-index" aria-label="On this page" hidden><div class="section-index-head"><strong>On this page</strong><button type="button" class="secondary compact-button" data-section-toggle-all>Expand all</button></div><ul></ul></nav><script>(()=>{const nav=document.currentScript.previousElementSibling;document.addEventListener("DOMContentLoaded",()=>{const list=nav.querySelector("ul");const sections=[...document.querySelectorAll("main section.panel")].filter((section)=>section.querySelector("h2")&&!section.contains(nav)&&section.getClientRects().length>0);if(sections.length<6)return;nav.hidden=false;const setOpen=(section,open)=>{section.classList.toggle("is-collapsed",!open);const button=section.querySelector(":scope [data-section-toggle]");if(button){button.setAttribute("aria-expanded",String(open));button.textContent=open?"Hide":"Show"}};sections.forEach((section,index)=>{const heading=section.querySelector("h2");if(!section.id)section.id="section-"+(index+1);const item=document.createElement("li");const link=document.createElement("a");link.href="#"+section.id;link.textContent=heading.textContent.trim();link.addEventListener("click",()=>setOpen(section,true));item.append(link);list.append(item);const button=document.createElement("button");button.type="button";button.className="secondary compact-button section-toggle";button.setAttribute("data-section-toggle","");button.setAttribute("aria-label","Show or hide "+heading.textContent.trim());button.addEventListener("click",()=>setOpen(section,section.classList.contains("is-collapsed")));heading.after(button);setOpen(section,index<2)});nav.querySelector("[data-section-toggle-all]").addEventListener("click",(event)=>{const open=event.currentTarget.textContent==="Expand all";sections.forEach((section)=>setOpen(section,open));event.currentTarget.textContent=open?"Collapse all":"Expand all"})})})();</script>`;
-  }
-
-  /** The one metric card: small uppercase label, large value, short detail. */
-  function metricCard(label: string, value: string | number, detail: string, iconName: DashboardIconName = iconForMetric(label), className = ""): string {
-    return `<div class="metric${className ? ` ${escapeHtml(className)}` : ""}"><strong>${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span></strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
   }
 
   function modelEnvForProvider(provider: string): string | undefined {
@@ -12055,59 +11990,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     return `<div class="ops-daemon-layout"><div class="ops-daemon-chart">${bars || '<div class="ops-empty"><strong>No daemon action receipts yet</strong><span>Heartbeat monitoring remains active.</span></div>'}</div><div class="ops-daemon-facts"><div><span>Status</span><strong class="${status === "running" ? "good-text" : "warn-text"}">${escapeHtml(status)}</strong></div><div><span>Cycles</span><strong>${formatNumber(daemon?.ticks ?? supervisor.ticks)}</strong></div><div><span>Last cycle</span><strong>${renderDashboardDateTime(lastCycle, "none")}</strong></div><div><span>Actions</span><strong>${formatNumber(events.length)}</strong></div></div></div><div class="ops-legend"><span><i class="daemon-applied"></i>Applied</span><span><i class="daemon-planned"></i>Planned</span><span><i class="daemon-other"></i>Closed</span></div>`;
   }
 
-  function renderDashboardActionHistory(): string {
-    return `<section id="dashboard-action-history" class="panel action-history" hidden>
-      <div class="section-heading">
-        <div>
-          <h2>Recent Dashboard Actions</h2>
-          <span class="muted">Browser-local history for this dashboard.</span>
-        </div>
-        <button type="button" class="secondary compact-button" onclick="window.localStorage.removeItem('agentflow.dashboard.actions'); document.getElementById('dashboard-action-history').hidden = true;">Clear</button>
-      </div>
-      <ul></ul>
-    </section>
-    <script>
-      (() => {
-        try {
-          const normalizeActionMessage = (value) => {
-            const message = String(value || "Action completed");
-            const missing = /spawn\\s+([^\\s]+)\\s+ENOENT/i.exec(message);
-            if (missing) return "Missing " + missing[1] + " on PATH";
-            return message.replace(/ENOENT/g, "missing executable");
-          };
-          const panel = document.getElementById("dashboard-action-history");
-          const list = panel?.querySelector("ul");
-          const actions = JSON.parse(window.localStorage.getItem("agentflow.dashboard.actions") || "[]");
-          if (!panel || !list || !Array.isArray(actions) || !actions.length) return;
-          const now = Date.now();
-          const freshActions = actions.filter((item) => {
-            const at = Date.parse(String(item?.at || ""));
-            if (!Number.isFinite(at)) return false;
-            const maxAgeMs = item?.level === "error" ? 30 * 60 * 1000 : 10 * 60 * 1000;
-            return now - at <= maxAgeMs;
-          }).slice(0, 5);
-          window.localStorage.setItem("agentflow.dashboard.actions", JSON.stringify(freshActions));
-          if (!freshActions.length) return;
-          list.innerHTML = freshActions.map((item) => {
-            const level = item.level === "error" ? "error" : "success";
-            const date = item.at ? new Date(item.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "unknown time";
-            const message = normalizeActionMessage(item.message)
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-            const path = String(item.path || "/")
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-            const marker = level === "error" ? "!" : "OK";
-            return '<li class="' + level + '"><strong><span aria-hidden="true">' + marker + '</span>' + message + '</strong><span>' + path + ' · ' + date + '</span></li>';
-          }).join("");
-          panel.hidden = false;
-        } catch {}
-      })();
-    </script>`;
-  }
-
   function renderDashboardActionResult(result: DashboardFollowUpResult): string {
     const actionLinks = `
       <div class="actions">
@@ -12133,20 +12015,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  /** A not-found or error page inside the normal dashboard layout. */
-  function renderDashboardStatusPage(status: 404 | 500, title: string, message: string): string {
-    return `<!doctype html>
-  <html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${escapeHtml(title)} · Agent Workflow</title>
-    <style>${dashboardCss()}</style>
-  </head>
-  <body>${dashboardNav("dashboard")}<main id="main-content"><section class="panel status-page" data-http-status="${status}"><p class="muted">Error ${status}</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><div class="actions"><a class="button" href="/">Home</a><a class="button secondary" href="/runs">Runs</a><a class="button secondary" href="/queue">Queue</a></div></section></main></body>
-  </html>`;
-  }
-
   /** Errors on API and asset paths stay plain text; page requests get the layout. */
   function finishDashboardPageError(request: http.IncomingMessage, response: http.ServerResponse): void {
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
@@ -12156,68 +12024,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       try { html = renderDashboardStatusPage(500, "Something went wrong", "The dashboard could not load this page. The error was logged; try again, or go back to a page that works."); } catch { html = undefined; }
     }
     finishDashboardError(response, publicHttpError("Dashboard request failed."), html);
-  }
-
-  function renderDashboardDateTime(value: string | null | undefined, fallback = "n/a"): string {
-    if (!value) {
-      return escapeHtml(fallback);
-    }
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      return escapeHtml(value);
-    }
-    const label = formatDashboardDateTimeText(value);
-    return `<time datetime="${escapeHtml(parsed.toISOString())}" title="${escapeHtml(value)}">${escapeHtml(label)}</time>`;
-  }
-
-  function renderDashboardFlash(params: URLSearchParams): string {
-    return renderDashboardFlashValues({
-      notice: params.get("notice") ?? undefined,
-      error: params.get("error") ?? undefined,
-      actionRun: params.get("actionRun") ?? undefined
-    });
-  }
-
-  function renderDashboardFlashValues(input: {notice?:string;error?:string;actionRun?:string}): string {
-    const {notice, error, actionRun} = input;
-    if (!notice && !error) return "";
-    const message = error ?? notice ?? "";
-    const runLink = actionRun ? `<a class="button secondary" href="/run?id=${encodeURIComponent(actionRun)}">Open Run</a>` : "";
-    const historyEntry = {
-      level: error ? "error" : "success",
-      message,
-      path: "",
-      at: ""
-    };
-    return `<section class="panel flash-panel ${error ? "error" : "success"}">
-      <div>
-        <strong>${dashboardIcon(error ? "warning" : "check")}${error ? "Action needs attention" : "Action complete"}</strong>
-        <span>${escapeHtml(message)}</span>
-      </div>
-      ${runLink}
-    </section>
-    <script>
-      (() => {
-        try {
-          const key = "agentflow.dashboard.actions";
-          const entry = ${serializeInlineScriptJson(historyEntry)};
-          entry.path = window.location.pathname;
-          entry.at = new Date().toISOString();
-          const current = JSON.parse(window.localStorage.getItem(key) || "[]");
-          const currentList = Array.isArray(current) ? current : [];
-          const isDuplicate = currentList[0]?.level === entry.level && currentList[0]?.message === entry.message && currentList[0]?.path === entry.path;
-          const now = Date.now();
-          const isFresh = (item) => {
-            const at = Date.parse(String(item?.at || ""));
-            if (!Number.isFinite(at)) return false;
-            const maxAgeMs = item?.level === "error" ? 30 * 60 * 1000 : 10 * 60 * 1000;
-            return now - at <= maxAgeMs;
-          };
-          const next = (isDuplicate ? currentList : [entry, ...currentList]).filter(isFresh).slice(0, 5);
-          window.localStorage.setItem(key, JSON.stringify(next));
-        } catch {}
-      })();
-    </script>`;
   }
 
   function renderDashboardGraphHandoffView(result: DashboardGraphHandoffViewResult): string {
@@ -19451,21 +19257,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       current = parent;
     }
     return `${role}:${root.pid}`;
-  }
-
-  function safeDashboardReturnPath(value: string): string | null {
-    try {
-      const parsed = new URL(value, "http://localhost");
-      if (parsed.origin !== "http://localhost" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
-        return null;
-      }
-      if (!parsed.pathname.startsWith("/") || parsed.pathname.startsWith("/api/")) {
-        return null;
-      }
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    } catch {
-      return null;
-    }
   }
 
   function safeWorkerHeartbeatFileSegment(value: string): string {

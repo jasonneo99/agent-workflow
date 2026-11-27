@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { dashboardSource } from "./dashboard/test-source.js";
 
-const source = await readFile(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+const source = dashboardSource();
 
 test("unknown paths get a 404 page inside the layout instead of the home page", () => {
   const home = source.indexOf("const [runs, throughput, workflows, worker, supervisor");
@@ -18,7 +19,8 @@ test("a malformed or unknown run id is a 404 page, not a server error", () => {
 });
 
 test("the status page renders the dashboard navigation and recovery links", () => {
-  const page = source.slice(source.indexOf("function renderDashboardStatusPage"), source.indexOf("function finishDashboardPageError"));
+  const start = source.indexOf("function renderDashboardStatusPage");
+  const page = source.slice(start, source.indexOf("\n}\n", start) + 3);
   assert.match(page, /dashboardNav\("dashboard"\)/u);
   assert.match(page, /<main id="main-content">/u);
   assert.match(page, /href="\/runs">Runs/u);

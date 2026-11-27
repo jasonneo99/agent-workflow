@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { dashboardSourcePaths } from "./test-source.js";
 
 const source = [
     "../blocked-run-supersession.ts",
@@ -12,7 +13,7 @@ const source = [
     "../commands/context-extra.ts",
     "../commands/context-thresholds.ts",
     "../commands/context.ts",
-    "../commands/daemon.ts",
+    ...dashboardSourcePaths(),
     "../commands/learning.ts",
     "../commands/local-llm.ts",
     "../commands/project.ts",
