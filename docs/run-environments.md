@@ -10,6 +10,44 @@ blocked command, replay an older run, or accept a product requirement.
 See [prepared execution and queue reprocessing](workflow-rollout.md) for rollout,
 isolated workspaces and paused preparation entries.
 
+## Default profile for new projects
+
+`npm run init-project -- --project <dir>` (enterprise profile) writes a safe
+default when it creates `.agent-workflow/project.yaml` and the project has a
+supported behavioral test contract:
+
+| Detected | Test command | Verification format |
+|---|---|---|
+| `package.json` whose `test` script runs `node --test` | `npm test` | `node-test` |
+| Python with pytest (`[tool.pytest…]`, `pytest.ini`, `conftest.py` or `pytest` in requirements) | `python3 -m pytest` | `pytest` |
+| Python with `tests/test_*.py` modules and no pytest | `python3 -m unittest discover` | `unittest` |
+
+The default is a `native` profile for this host's exact platform, for example
+`darwin/arm64`. It uses the toolchain already installed, inside the existing
+command sandbox. It has no setup steps, no build network and no services, and
+installs nothing. Its readiness probe is `node --version` or
+`python3 --version`. Its source paths are the existing project directories
+and the files the project's read policy allows. It becomes `default_profile`.
+
+`actions.allowed_commands` is replaced with only:
+
+- Agent Workflow's `environments` and `repair-checkpoint` capabilities, which
+  source-changing workflows require;
+- the readiness probe and the test command;
+- `npm run build`, `npm run typecheck` and `npm run lint` when those scripts
+  exist, or `python3 -m mypy .` and `python3 -m ruff check .` when mypy or
+  ruff is configured.
+
+Deploys, publishing, package installs and other scripts are not allowed. The
+template's blocked commands, including `git push *`, stay in place. Commands
+trusted for every project on a host are still added at load time.
+
+Other stacks get no profile. This includes Jest, Vitest, Go, a missing test
+script, or a host without a native platform target. `init-project` prints why
+and leaves the policy unchanged. An existing `project.yaml` is never rewritten
+unless `--force` replaces it. Declare a profile yourself as described below,
+for example a container profile with a pinned image.
+
 ## Configure a profile
 
 Merge an `execution.environments` section into the project's existing

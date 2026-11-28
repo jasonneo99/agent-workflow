@@ -16,6 +16,8 @@ import { listProjectFileSummaries, listProjectStorageSummaries } from "../../../
 import { parsePositiveInteger } from "../numeric-options.js";
 import { resolveWorkflow } from "../reference-resolution.js";
 import { loadTemplateManifestEntries } from "../template-manifest.js";
+import { detectDefaultEnvironment, writeDefaultEnvironment } from "../lib/default-environment.js";
+import { assertFileReadAllowed } from "../../../../packages/local-tools/src/file-reader.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -228,6 +230,7 @@ export function registerProjectCommands(program: Command, ctx: CliContext): void
       const projectDir = path.resolve(process.cwd(), options.project);
       const templateDir = path.join(ctx.rootDir, "templates", templateNameForProfile(options.profile));
       const hadBundleState = await exists(path.join(projectDir, ".agent-workflow", "bundle-state.json"));
+      const hadProjectConfig = await exists(path.join(projectDir, ".agent-workflow", "project.yaml"));
       const existingRoadmap = await discoverProjectRoadmap(projectDir);
       const result = await copyTemplate(templateDir, projectDir, Boolean(options.force));
       const roadmap = existingRoadmap.exists
@@ -241,7 +244,23 @@ export function registerProjectCommands(program: Command, ctx: CliContext): void
       console.log(`${bundleState.status === "written" ? "Wrote" : "Skipped"} ${bundleState.relativePath}.`);
       console.log(`${roadmap.created ? "Created" : "Using"} roadmap ${roadmap.relativePath}.`);
       if (namedProject) console.log(`Named project ${namedProject} (edit project.name in .agent-workflow/project.yaml to change it).`);
-      const initializedConfig = await loadProjectConfig(projectDir).catch(() => undefined);
+      let initializedConfig = await loadProjectConfig(projectDir).catch(() => undefined);
+      // A project.yaml this run just wrote gets the safe default profile; an
+      // existing one is the owner's policy and is never rewritten here.
+      if (options.profile === "enterprise" && initializedConfig && !initializedConfig.execution?.environments && (!hadProjectConfig || options.force)) {
+        const policy = initializedConfig;
+        const detected = await detectDefaultEnvironment(projectDir, {
+          readable: (relative) => { try { assertFileReadAllowed(relative, policy); return true; } catch { return false; } }
+        });
+        if (detected.ok) {
+          await writeDefaultEnvironment(projectDir, detected.environment);
+          initializedConfig = await loadProjectConfig(projectDir);
+          console.log(`Wrote a native ${detected.environment.stack} environment profile (${detected.environment.profileName}) that runs ${detected.environment.testCommand} on this host's toolchain.`);
+          console.log(`Allowed commands are now only: ${detected.environment.allowedCommands.join(", ")}.`);
+        } else {
+          console.log(detected.reason);
+        }
+      }
       if (options.profile === "enterprise" && !initializedConfig?.execution?.environments) {
         console.log("Source-changing workflows such as build-feature need a declared execution environment profile.");
         console.log("Add execution.environments to .agent-workflow/project.yaml (see docs/run-environments.md); read-only workflows run without one.");
