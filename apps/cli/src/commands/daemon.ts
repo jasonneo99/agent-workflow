@@ -149,7 +149,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { gzipSync } from "node:zlib";
+import { configureDashboardCompression } from "../dashboard/compression.js";
 import YAML from "yaml";
 import type { ArtifactLifecycleActionPlan, ArtifactLifecycleApprovalActionType, ArtifactLifecycleApprovalQueue, ArtifactLifecycleReport, BackupRestoreReport, DashboardAgentSummary, DashboardAgentsReport, DashboardBundleReadiness, DashboardFleetUsageReport, DashboardGraphExportSummary, DashboardGraphPreset, DashboardGraphPresetActionResult, DashboardGraphPresetFile, DashboardHomeHealth, DashboardModelImprovementReport, DashboardProjectDetail, RoadmapSuggestionDecision, DashboardQueueItem, DashboardQueueSnapshot, DashboardRoleAuditViewResult, DashboardWorkflowGraphReport, DashboardWorkflowGraphRun, DashboardWorkflowStageHealth, DashboardWorkflowStageRun, GraphHandoffPayload, RestoreDrillCheck, RestoreDrillReport, RoadmapDashboardReport, RoadmapPriority, RoadmapTaskKind, RunUsageEstimate, ScheduleEntry, ServerDaemonFleetHealthReport, ServerOrchestrationReport, SharedStatePlaneProof, StorageMigrationPlanListing, SupervisorHeartbeat, UnifiedActivityEvent, UnifiedActivityReport, WorkerHeartbeat } from "./daemon-types.js";
 import { cleanRoadmapFormText, parseRoadmapMilestones, parseRoadmapPriority, parseRoadmapTasks, roadmapPriorityOrder } from "../lib/roadmap-tasks.js";
@@ -348,17 +348,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   function configureDashboardResponse(request: http.IncomingMessage, response: http.ServerResponse): void {
     response.setHeader("cache-control", "no-store");
     response.setHeader("vary", "Accept-Encoding");
-    if (request.method !== "GET" || !/\bgzip\b/u.test(request.headers["accept-encoding"] ?? "")) return;
-
-    response.setHeader("content-encoding", "gzip");
-    const originalEnd = response.end.bind(response);
-    response.end = ((chunk?: string | Uint8Array, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
-      if (chunk === undefined) return originalEnd(callback ?? (typeof encodingOrCallback === "function" ? encodingOrCallback : undefined));
-      const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
-      const body = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
-      const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-      return originalEnd(gzipSync(body, { level: 4 }), done);
-    }) as typeof response.end;
+    configureDashboardCompression(request, response);
   }
 
   let dashboardActiveRequests = 0;
