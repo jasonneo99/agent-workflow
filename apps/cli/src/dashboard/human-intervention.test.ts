@@ -53,3 +53,12 @@ test("agent-improvement pending entries with no undecided items stay silent", ()
   });
   assert.deepEqual(items, []);
 });
+
+test('observed host supervision replaces only the platform-specific notices', () => {
+  const base = { pendingApprovals: [], approvedExecutableApprovals: [], queue: [{runId:'blocked',runStatus:'blocked',task:'needs approval'}], workerStatus:'running',supervisorStatus:'missing',mcpStatus:'error',missingServices:[] };
+  const healthy = buildHumanInterventionItems({...base,supervision:{adapter:'systemd',status:'running',detail:'three active units'},mcpRequired:false});
+  assert.deepEqual(healthy.map(item=>item.id),['blocked:blocked']);
+  const degraded = buildHumanInterventionItems({...base,supervision:{adapter:'systemd',status:'degraded',detail:'worker inactive'}});
+  assert.ok(degraded.some(item=>item.id==='runtime:supervisor' && item.detail==='worker inactive'));
+  assert.ok(degraded.some(item=>item.id==='runtime:mcp'));
+});

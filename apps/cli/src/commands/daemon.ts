@@ -1,3 +1,4 @@
+import {inspectRuntimeSupervision, type RuntimeSupervision} from '../dashboard/runtime-supervision.js';
 import { renderTrainingProposalsHtml, loadTrainingProposalEvaluationViews, renderCandidateComparisonsHtml, renderLearningDashboardHtml, loadAgentImprovementPendingSummary, renderFeedbackBulkReviewHtml, renderFeedbackInboxHtml, writeLearningSettings } from "../dashboard/pages/learning/view.js";
 import { renderWorkflowGraphDashboardHtml, normalizeDashboardGraphPreset, listDashboardGraphHandoffExports, isFocusedStageVerificationRun, isFocusedStageFixRun, dashboardWorkflowGraphRunFromStorage, dashboardRunMatchesStatus, renderDashboardGraphHandoffView, loadDashboardGraphHandoffView } from "../dashboard/pages/workflow-graph/view.js";
 import { renderReadinessGroup, renderSharedStatePlaneProofPanel, renderPrimaryStatePlaneOperatorPanel, renderOfflineFallbackPanel, renderPostMergeEvidencePanel, renderServerRequestAuditPanel, renderServerApprovalActionPlanPanel, renderServerMutationControlsPanel, renderServerAuthHardeningPanel, renderBackupRestoreHtml, loadBackupRestoreReport, renderArtifactLifecycleHtml, serverOrchestrationStatusIsTerminal, loadServerOrchestrationStatus, buildServerRequestBodyErrorAuditEvent, loadServerHighRiskApprovalInbox, loadServerRoadmapSnapshot, buildSharedStatePlaneProof } from "../dashboard/pages/server/view.js";
@@ -4420,7 +4421,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       readLearningActionReceipts(daemonProject).catch(() => null)
     ]);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardHtml(runs, workflows, health, throughput));
+    const supervision = await loadCachedDashboardReport("home:runtime-supervision", () => inspectRuntimeSupervision({ legacyStatus: supervisor.status }), 2_000);
+    response.end(renderDashboardHtml(runs, workflows, health, throughput, supervision));
   }
 
   async function indexDashboardProject(input: {
@@ -8087,9 +8089,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
   }
 
-  function renderDaemonLanes(supervisor: DashboardSupervisorStatus, daemon: DashboardLearningDaemonStatus | null): string {
+  function renderDaemonLanes(supervisor: DashboardSupervisorStatus, daemon: DashboardLearningDaemonStatus | null, supervision?: RuntimeSupervision): string {
     const lanes = [
-      ["Supervisor", supervisor.status === "running", `${formatNumber(supervisor.ticks)} ticks`],
+      [supervision?.adapter === "systemd" ? "Systemd" : "Supervisor", (supervision?.status ?? supervisor.status) === "running", supervision?.adapter === "systemd" ? supervision.status : `${formatNumber(supervisor.ticks)} ticks`],
       ["Worker", supervisor.workerManaged, supervisor.workerManaged ? "managed" : "external"],
       ["Learning", daemon?.status === "running", daemon?.mode ?? supervisor.learningMode ?? "disabled"],
       ["Dashboard", supervisor.dashboardManaged, supervisor.dashboardManaged ? "managed" : "external"]
@@ -8131,10 +8133,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     finishDashboardError(response, publicHttpError("Dashboard request failed."), html);
   }
 
-  function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[]): string {
+  function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[], supervision?: RuntimeSupervision): string {
     const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
     const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 8);
-    const humanInterventions = buildHumanInterventionItems({ pendingApprovals: health.pendingApprovals, approvedExecutableApprovals: health.approvedExecutableApprovals, queue: health.queue, workerStatus: health.worker.status, supervisorStatus: health.supervisor.status, mcpStatus: health.runtimeMonitor.mcpPipeline.status, missingServices: health.services.filter((service) => !service.reachable).map((service) => service.endpoint.name), learningDaemonError: health.learningDaemon?.lastError, approvalBacklogErrors: health.learningDaemon?.approvalBacklogErrors, approvalBacklogWarnings: health.learningDaemon?.approvalBacklogWarnings, agentImprovementPending: health.agentImprovementPendingPromotions });
+    const humanInterventions = buildHumanInterventionItems({ supervision, mcpRequired: supervision?.mcpRequired, pendingApprovals: health.pendingApprovals, approvedExecutableApprovals: health.approvedExecutableApprovals, queue: health.queue, workerStatus: health.worker.status, supervisorStatus: health.supervisor.status, mcpStatus: health.runtimeMonitor.mcpPipeline.status, missingServices: health.services.filter((service) => !service.reachable).map((service) => service.endpoint.name), learningDaemonError: health.learningDaemon?.lastError, approvalBacklogErrors: health.learningDaemon?.approvalBacklogErrors, approvalBacklogWarnings: health.learningDaemon?.approvalBacklogWarnings, agentImprovementPending: health.agentImprovementPendingPromotions });
     const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
     const terminalRuns = runs.filter((run) => run.status === "completed" || run.status === "failed");
     const completedRuns = terminalRuns.filter((run) => run.status === "completed").length;
@@ -8144,7 +8146,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const activeStageTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks + item.runningTasks, 0);
     const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
     const servicesReady = health.services.filter((service) => service.reachable).length;
-    const systemHealthy = servicesReady === health.services.length && health.worker.status === "running" && health.supervisor.status === "running" && failedRuns === 0;
+    const systemHealthy = servicesReady === health.services.length && health.worker.status === "running" && (supervision?.status ?? health.supervisor.status) === "running" && failedRuns === 0;
     const interventionRows = humanInterventions.map((item) => `
       <a class="ops-approval-row" href="${escapeHtml(item.href)}">
         <span class="ops-status-dot ${item.severity}"></span>
@@ -8197,7 +8199,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       </div>
       <section class="ops-pulse-panel">
         <div class="ops-pulse-heading">
-          <a class="ops-system-state ${systemHealthy ? "good" : "warn"}" href="/settings"><i></i><span><strong>${systemHealthy ? "All systems operational" : "System attention required"}</strong><small>${servicesReady}/${health.services.length} services · worker ${escapeHtml(health.worker.status)} · supervisor ${escapeHtml(health.supervisor.status)}</small></span>${dashboardIcon("chevrons")}</a>
+          <a class="ops-system-state ${systemHealthy ? "good" : "warn"}" href="/settings"><i></i><span><strong>${systemHealthy ? "All systems operational" : "System attention required"}</strong><small>${servicesReady}/${health.services.length} services · worker ${escapeHtml(health.worker.status)} · ${escapeHtml(supervision?.adapter ?? "supervisor")} ${escapeHtml(supervision?.status ?? health.supervisor.status)}</small></span>${dashboardIcon("chevrons")}</a>
         </div>
         <div class="ops-metric-row">
           ${renderOpsMetric("Recent runs", formatNumber(runs.length), `${activeRuns.length} active`, runs.map((_, index) => index + 1), "cyan")}
@@ -8216,7 +8218,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue, runs, health.worker.status === "running" || health.supervisor.status === "running")}</section>
         <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Project activity</h2><span>Runs across registered projects</span></div><a href="/projects">Projects</a></div>${renderOpsProjectActivity(health.projects)}</section>
         <section class="ops-panel ops-span-2 ops-daemon-panel"><div class="ops-panel-heading"><div><h2>Daemon monitor</h2><span>Learning cycles, autonomous actions, and heartbeat health</span></div><a href="/learning">Open learning</a></div>${renderDaemonMonitor(health.supervisor, health.learningDaemon, health.learningReceipts)}</section>
-        <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Daemon lanes</h2><span>Managed runtime responsibilities</span></div><a href="/settings">Settings</a></div>${renderDaemonLanes(health.supervisor, health.learningDaemon)}</section>
+        <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Daemon lanes</h2><span>Managed runtime responsibilities</span></div><a href="/settings">Settings</a></div>${renderDaemonLanes(health.supervisor, health.learningDaemon, supervision)}</section>
       </div>
       <div class="ops-lower-grid">
         <section class="ops-panel ops-runs-panel"><div class="ops-panel-heading"><div><h2>Recent runs</h2><span>Latest terminal workflow outcomes</span></div><a href="/runs">View all runs</a></div><div class="table-wrap"><table class="ops-table"><colgroup><col class="ops-col-run"><col class="ops-col-task"><col class="ops-col-workflow"><col class="ops-col-status"><col class="ops-col-duration"><col class="ops-col-started"></colgroup><thead><tr><th>Run</th><th>Task</th><th>Workflow</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead><tbody>${recentRows || '<tr><td colspan="6">No terminal runs in the current window.</td></tr>'}</tbody></table></div></section>

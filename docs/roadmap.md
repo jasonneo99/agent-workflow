@@ -13,6 +13,19 @@ use reviewed lessons to make small, tested changes. V2 architecture and pilot
 proposals are not automatic v1 commitments. Historical status and checkboxes
 below retain their original scope and evidence limits.
 
+## Runtime delivery hardening (2026-11-27)
+
+- [x] Interrupt learning-daemon idle waits on termination, install handlers before
+  the first tick, stop admitting new project work, and drain owned operations.
+- [x] Add explicit systemd supervision probes for the Home dashboard; unavailable
+  evidence remains unknown/degraded. MCP is required unless deployment explicitly
+  configures it as optional. Preserve actual blocked work and service warnings.
+- [ ] Verify these behaviors in the installed runtime separately from source tests.
+
+Deployment ownership, host-specific release jobs, build/cache retention and
+operational receipts belong in private deployment configuration, outside the
+shared engine. No public publication is implied by local runtime delivery.
+
 ## V1 stabilization (2026-11-02)
 
 The active repair scope is recorded in [V1 stabilization](v1-stabilization.md).

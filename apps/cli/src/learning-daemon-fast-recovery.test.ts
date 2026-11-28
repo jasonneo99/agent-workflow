@@ -64,7 +64,7 @@ test("all-project daemon sweeps every queue between expensive project analyses",
   );
   assert.match(
     source,
-    /for \(const target of targets\) \{\s+await runFastRecoverySweep\(\);[\s\S]+await runFastRecoverySweep\(\);\s+mcpCleanup/u
+    /for \(const target of targets\) \{\s+if\(stop\)break;\s+await runFastRecoverySweep\(\);\s+if\(stop\)break;[\s\S]+await runFastRecoverySweep\(\);\s+if\(stop\)return;\s+mcpCleanup/u
   );
 });
 

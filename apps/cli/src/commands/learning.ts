@@ -1,3 +1,4 @@
+import {createDaemonShutdown} from '../lib/daemon-shutdown.js';
 import {createProviderCreditMonitor,startProviderCreditMonitor} from '../lib/provider-credit-monitor.js';
 import type { CliContext } from "../lib/context.js";
 import { automaticRepairProjectAllowed } from "../repair-project-boundary.js";
@@ -2639,6 +2640,10 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const startedAt = new Date().toISOString();
       const providerCreditMonitor=createProviderCreditMonitor();
       let stop = false;
+      const shutdown=createDaemonShutdown(()=>{
+        stop=true;
+        console.log("Stopping learning daemon after current owned operation...");
+      });
       let ticks = 0;
       let lastStatus: LearningDaemonHeartbeat | null = null;
       const writeStatus = async (
@@ -2764,13 +2769,16 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             : [{ projectDir, enabled: true, paused: false, mode, limit }];
           let healed = stale.reconciled.filter((item) => item.updated).length;
           for (const target of discoveredTargets.filter((item) => item.enabled && !item.paused && item.mode === "apply-approved")) {
+            if(stop)break;
             const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
               projectRootUri: target.projectDir,
               actor: "learning-daemon",
               reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
             });
             healed += leaseRecovery.affectedRuns;
+            if(stop)break;
             await learnFromWorkflowRepairs(target.projectDir);
+            if(stop)break;
             healed += await autoRepairOneWorkflowRun(target.projectDir, target.mode);
           }
           return { stale, healed };
@@ -2810,15 +2818,18 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       };
 
       const runTick = async (): Promise<void> => {
+        if(stop)return;
         ticks += 1;
         try {
           await providerCreditMonitor.tick();
+          if(stop)return;
           const discoveredTargets = allProjects
             ? await loadLearningDaemonProjectTargets(projectDir)
             : [{ projectDir, enabled: true, paused: false, mode, limit }];
           const enabledTargets = discoveredTargets.filter((target) => target.enabled && !target.paused);
           const fairIds = fairProjectOrder(enabledTargets.map((target) => ({ projectId: target.projectDir, maxActions: target.limit, consumedActions: 0, queueDepth: 0 }))).map((item) => item.projectId);
           const targets = [...enabledTargets].sort((a, b) => fairIds.indexOf(a.projectDir) - fairIds.indexOf(b.projectDir));
+          if(stop)return;
           let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
           let analyzedRuns = 0;
           let proposalCount = 0;
@@ -2858,6 +2869,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             projectErrors.push(`${projectDir} training discovery: ${error instanceof Error ? error.message : String(error)}`);
           }
           const runFastRecoverySweep = async (): Promise<void> => {
+            if(stop)return;
             // Parent run state and repair supervision are queue-health work, not
             // learning analysis. Do them first so a slow all-project learning
             // pass cannot leave completed work shown as queued or actionable
@@ -2871,6 +2883,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
               projectErrors.push(`${projectDir} stale run reconciliation: ${message}`);
             }
             for (const recoveryTarget of targets) {
+              if(stop)break;
               if (recoveryTarget.mode !== "apply-approved") continue;
               try {
                 const targetAutopilotEnabled = approvalAutopilotOverride
@@ -2905,7 +2918,9 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           // heavy target and once more at the end so new low-risk approvals and
           // expired leases are recovered within at most one project's analysis.
           for (const target of targets) {
+            if(stop)break;
             await runFastRecoverySweep();
+            if(stop)break;
             const targetProjectDir = target.projectDir;
             try {
               const update = await runIsolatedProjectTick(targetProjectDir, () => runLearningDaemonTick({
@@ -2952,6 +2967,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             }
           }
           await runFastRecoverySweep();
+          if(stop)return;
           mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
           staleRunReconciliation ??= await runLearningDaemonStaleRunReconciliation(projectDir);
           await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
@@ -2980,7 +2996,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             staleRunReconciliation,
             trainingDiscovery
           });
-          if (!options.disableOfflineSync) {
+          if (!stop && !options.disableOfflineSync) {
             const offlineSync = await runDaemonOfflineSyncScheduler(ctx, {
               actor: daemonId,
               minIntervalMs: offlineSyncIntervalMs,
@@ -3009,8 +3025,9 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       if (!options.json && recoveredApprovalExecutions.length) {
         console.log(`Recovered ${recoveredApprovalExecutions.length} interrupted approval execution${recoveredApprovalExecutions.length === 1 ? "" : "s"} for ${daemonId}.`);
       }
-      await runQueueRecoveryLane();
+      if(!stop)await runQueueRecoveryLane();
       queueRecoveryTimer = setInterval(() => {
+        if(stop)return;
         void runQueueRecoveryLane().catch((error) => {
           console.error(`Queue recovery lane failed: ${error instanceof Error ? error.message : String(error)}`);
         });
@@ -3023,17 +3040,11 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           return;
         }
 
-      const stopDaemon = () => {
-        stop = true;
-        console.log("Stopping learning daemon after current tick...");
-      };
-      process.once("SIGINT", stopDaemon);
-      process.once("SIGTERM", stopDaemon);
       if (!options.json) {
         console.log(`Learning daemon watching. id=${daemonId} mode=${mode} scope=${allProjects ? "all-projects" : "project"} project=${projectDir} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
       }
         while (!stop) {
-          await sleep(intervalMs);
+          await shutdown.wait(intervalMs);
           if (!stop) await runTick();
         }
         const stopped = await writeStatus("stopped");
@@ -3041,6 +3052,8 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       } finally {
         if(queueRecoveryTimer)clearInterval(queueRecoveryTimer);
         stopCreditMonitor();
+        await shutdown.drain([...projectTicksInFlight.values(),...(queueRecoveryInFlight?[queueRecoveryInFlight]:[])]);
+        shutdown.close();
       }
     });
 

@@ -18,6 +18,8 @@ export function buildHumanInterventionItems(input: {
   workerStatus: string;
   supervisorStatus: string;
   mcpStatus: string;
+  mcpRequired?: boolean;
+  supervision?: { adapter: string; status: string; detail: string };
   missingServices: string[];
   learningDaemonError?: string | null;
   approvalBacklogErrors?: number;
@@ -35,8 +37,9 @@ export function buildHumanInterventionItems(input: {
     if (run.runningLeaseExpiresAt && Date.parse(run.runningLeaseExpiresAt) <= now) items.push({ id: `lease:${run.runId}`, severity: "bad", kind: "expired-lease", title: "Recover expired worker lease", detail: run.task, href: "/queue", action: "Recover" });
   }
   if (input.workerStatus !== "running") items.push({ id: "runtime:worker", severity: "bad", kind: "runtime", title: "Restore background worker", detail: `Worker is ${input.workerStatus}.`, href: "/settings", action: "Settings" });
-  if (input.supervisorStatus !== "running") items.push({ id: "runtime:supervisor", severity: "bad", kind: "runtime", title: "Restore local supervisor", detail: `Supervisor is ${input.supervisorStatus}.`, href: "/settings", action: "Settings" });
-  if (input.mcpStatus !== "ok") items.push({ id: "runtime:mcp", severity: "bad", kind: "runtime", title: "Repair MCP connectivity", detail: `MCP pipeline is ${input.mcpStatus}.`, href: "/server-readiness", action: "Runtime" });
+  const supervision = input.supervision ?? { adapter: "local", status: input.supervisorStatus, detail: `Supervisor is ${input.supervisorStatus}.` };
+  if (supervision.status !== "running") items.push({ id: "runtime:supervisor", severity: "bad", kind: "runtime", title: `Restore ${supervision.adapter} supervision`, detail: supervision.detail, href: "/settings", action: "Settings" });
+  if (input.mcpRequired !== false && input.mcpStatus !== "ok") items.push({ id: "runtime:mcp", severity: "bad", kind: "runtime", title: "Repair MCP connectivity", detail: `MCP pipeline is ${input.mcpStatus}.`, href: "/server-readiness", action: "Runtime" });
   if (input.missingServices.length) items.push({ id: "runtime:storage", severity: "bad", kind: "runtime", title: "Restore required services", detail: input.missingServices.join(", "), href: "/server-readiness", action: "Runtime" });
   if (input.learningDaemonError) items.push({ id: "runtime:learning", severity: "bad", kind: "runtime", title: "Repair learning daemon", detail: input.learningDaemonError, href: "/learning?view=diagnostics", action: "Diagnose" });
   const backlog = (input.approvalBacklogErrors ?? 0) + (input.approvalBacklogWarnings ?? 0);
