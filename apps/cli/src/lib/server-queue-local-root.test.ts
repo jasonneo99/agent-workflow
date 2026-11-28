@@ -38,3 +38,12 @@ test("queueing and conversations read config and agents from the mapped root", a
     assert.ok(source.includes(`resolveLocalProjectRootUri(${registered})`));
   }
 });
+
+test("the queued workflow runs from the mapped checkout under its registered root", async () => {
+  const source = await readFile(path.join(here, "builders-server.ts"), "utf8");
+  // queueWorkflow loads project config and agents from projectPath, so an
+  // unmapped Mac root failed every non-adaptive queue request with ENOENT.
+  assert.ok(!source.includes("projectPath: routePreview.route.projectRootUri"),
+    "queueWorkflow must not receive the unmapped registered root");
+  assert.match(source, /projectPath: localProjectRoot,\s*registeredProjectRootUri: routePreview\.route\.projectRootUri,/u);
+});

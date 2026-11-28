@@ -2050,7 +2050,10 @@ export async function processServerQueueRequest(ctx: CliContext, request: http.I
       const queued = await queueWorkflow(ctx, {
         workflowId: selectedWorkflowId,
         workflowOverride: adaptiveWorkflow ?? undefined,
-        projectPath: routePreview.route.projectRootUri,
+        // Read config and agents from this host's checkout; the run keeps
+        // the registered (storage) root as its project identity.
+        projectPath: localProjectRoot,
+        registeredProjectRootUri: routePreview.route.projectRootUri,
         task: routePreview.route.task,
         policyProfile: routePreview.route.policyProfile,
         evaluationMetadata: {
