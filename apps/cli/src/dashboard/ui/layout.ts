@@ -4,6 +4,7 @@ import { serializeInlineScriptJson } from "../security.js";
 import { dashboardCss } from "../styles.js";
 import { themeBootstrapScript } from "../dark-theme.js";
 import escapeHtmlText from "escape-html";
+import { deploymentStatusWidget } from '../deployment-status.js';
 
 export function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "training-proposals" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
   // Five everyday pages stay at the top; every other page stays reachable under "More".
@@ -29,7 +30,7 @@ export function dashboardNav(active: "dashboard" | "studio" | "queue" | "approva
       <div class="nav-cluster nav-more ${moreActive ? "active-group" : ""}"><div class="primary-nav-row"><button type="button" class="primary-nav-link nav-more-toggle" aria-expanded="${moreActive ? "true" : "false"}" aria-controls="dashboard-more" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${iconLabel("layers", "More")}${dashboardIcon("chevrons")}</button></div><div id="dashboard-more" class="nav-children">${groups.map((group) => `<span class="nav-more-heading">${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}`).join("")}</div></div>
     </div>
     <script>fetch('/api/nav-counts',{headers:{accept:'application/json'}}).then(r=>r.ok?r.json():null).then(counts=>{const n=counts&&Number(counts.pendingApprovals);const badge=document.querySelector('[data-nav-badge="approvals"]');if(!badge||!n)return;badge.textContent=n>99?'99+':String(n);badge.setAttribute('aria-label',n+' pending approval'+(n===1?'':'s'));badge.hidden=false}).catch(()=>{});</script>
-  </nav>`;
+  ${deploymentStatusWidget()}</nav>`;
 }
 
 export function dashboardPagePath(pathname: string, params?: URLSearchParams): string {

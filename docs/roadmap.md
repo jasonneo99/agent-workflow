@@ -482,3 +482,11 @@ portable. Do not cut a release claiming them until they are.
 - [ ] Adopt the validated capability through maintained runtime integrity/release and original-run recovery before claiming installed independent acceptance.
 
 See [scoped native PTY fixtures](scoped-native-pty.md). No deployment or existing approval boundary changes are implied.
+
+### Local deployment freshness and coordinated schema upgrades
+
+- [x] Serialize framework schema migrators with a shared advisory lock, short lock waits and bounded transient retries; restore session settings and release ownership on failure.
+- [x] Expose optional, read-only deployment freshness from a local status file through `/api/deployment-status` and a periodically refreshed dashboard indicator. Invalid or stale evidence remains visibly unknown/stale.
+- [x] Cover real concurrent PostgreSQL readers, competing migrators, exhausted retries, permanent errors, status validation and safe text rendering with regression tests.
+- Deployment overlays own host enrollment, commit watching, local source transfer, backup, activation and rollback. Shared framework files contain no private deployment identities or paths.
+- Configure the optional dashboard indicator with `AGENTFLOW_DEPLOYMENT_STATUS_PATH` pointing to a trusted controller-owned JSON file. Accepted fields are `phase`, `sourceRevision`, `installedRevision`, `commitsBehind`, `lastAttemptAt`, `updatedAt`, and `blocker`; files over 16 KiB, malformed records and evidence older than five minutes are never presented as fresh. The endpoint exposes no other file/configuration fields.

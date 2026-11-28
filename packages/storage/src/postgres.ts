@@ -21,6 +21,7 @@ import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
+import { coordinatedSchemaMigration } from "./schema-migration.js";
 import { commandEvidencePacket } from "./command-evidence.js";
 import { loadReplayEvidencePacket } from "./replay-evidence.js";
 import { validateRecoveryCheckpoint } from "./checkpoint-provenance.js";
@@ -74,9 +75,8 @@ export {
  *
  * - Idempotent: every DDL statement uses IF NOT EXISTS, so running the
  *   migration twice (or after a partial failure) is safe.
- * - Concurrency-safe: Postgres DDL takes an ACCESS EXCLUSIVE lock, so
- *   concurrent migrateStorage() calls serialize; the loser sees the objects
- *   already exist and skips.
+ * - Coordinated: an advisory lock serializes migrators. Short DDL lock waits
+ *   and bounded conflict retries avoid long lock cycles with live clients.
  * - Backward-compatible: only ADD COLUMN (nullable or with DEFAULT) and
  *   CREATE TABLE/INDEX. No column renames, drops, or type changes, so old
  *   code continues to work against a migrated database.
@@ -84,7 +84,7 @@ export {
  *   existing databases pick up deltas via `agentflow migrate-storage`.
  */
 export async function migrateStorage(): Promise<void> {
-  await withClient(async (client) => {
+  await withClient(raw => coordinatedSchemaMigration(raw, async (client) => {
     await client.query(projectIdentitySchemaSql);
     await client.query(runtimeEventFunctionSql);
     if(!(await runSetSchemaInstalled(client)))await client.query(workflowRunSetMigrationSql);
@@ -494,7 +494,7 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS artifacts_task_kind_idx ON artifacts(task_id, kind)`);
     // Queue presentation reads coordinator lineage even before the coordinator runs.
     await client.query(queueCoordinatorSchemaSql);
-  });
+  }));
 }
 
 export async function resetStorage(input: { includeRegistry?: boolean } = {}): Promise<{

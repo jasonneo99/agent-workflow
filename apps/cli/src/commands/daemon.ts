@@ -26,6 +26,7 @@ import { renderRunInfoDialog, estimateQueueItemEta, dashboardRunCanProgress, wor
 import { readFormBody, readJsonBody, respondDashboardAction, renderDashboardActionResult, dashboardUrlFromRequest, renderDashboardLoadingPage, parseDashboardRunScope, parseDashboardRunStatusFilter } from "../dashboard/ui/http.js";
 import { formatNumber, formatSignedRate, countBy, runApprovalLevelLabel, runApprovalLevelRank, withTimeout } from "../dashboard/ui/format.js";
 import { escapeHtml, dashboardNav, iconLabel, renderDashboardFlash, renderDashboardActionHistory, renderDashboardDateTime, metricCard, renderDashboardStatusPage, dashboardReturnInput, renderDashboardFlashValues } from "../dashboard/ui/layout.js";
+import {deploymentStatus} from '../dashboard/deployment-status.js';
 import type { CliContext } from "../lib/context.js";
 import { withClient } from "../../../../packages/storage/src/client.js";
 import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js";
@@ -1287,6 +1288,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     configureDashboardResponse(request, response);
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+    if (request.method === 'GET' && requestUrl.pathname === '/api/deployment-status') {
+      response.writeHead(200, {'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
+      response.end(JSON.stringify(deploymentStatus()));
+      return;
+    }
     if (request.method === "POST" && requestUrl.pathname.startsWith("/api/bundle")) {
       for (const key of [...dashboardReportCache.keys()]) if (key.startsWith("bundles:")) dashboardReportCache.delete(key);
     }
